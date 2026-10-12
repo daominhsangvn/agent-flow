@@ -1,0 +1,61 @@
+import { TelemetryAttribute } from "@agentflow-ai/telemetry-contract/attributes";
+import { TelemetryEmitMetadataKey } from "@agentflow-ai/telemetry-contract/emit";
+import { TelemetrySchemaName } from "@agentflow-ai/telemetry-contract/schema-name";
+import type { SpanTelemetry } from "@agentflow-ai/telemetry-contract/span";
+import { SpanTelemetrySchema } from "@agentflow-ai/telemetry-contract/span";
+import { spanPayload } from "@agentflow-ai/telemetry-contract/test-fixtures";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { log } from "../log";
+import { emit, ReservedLoggerMetadataKey } from "../telemetry/contract";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("telemetry contract observability adapter", () => {
+  it("calls the existing log.info channel with span metadata", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
+    const attributes = SpanTelemetrySchema.parse(spanPayload());
+
+    emit(TelemetrySchemaName.Span, {
+      name: "http.request",
+      attributes,
+    });
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith("http.request", {
+      ...attributes,
+      [TelemetryEmitMetadataKey.SchemaName]: TelemetrySchemaName.Span,
+    });
+  });
+
+  it("strips reserved logger metadata before invoking log.info", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
+    const attributes = {
+      ...SpanTelemetrySchema.parse(spanPayload()),
+      [ReservedLoggerMetadataKey.Origin]: "spoofed",
+      [ReservedLoggerMetadataKey.Level]: "error",
+      // `status` is Datadog's reserved severity attribute, so a payload
+      // carrying one would decide the emitted log's severity (ISS-6341).
+      [ReservedLoggerMetadataKey.Status]: "error",
+    } as SpanTelemetry;
+
+    emit(TelemetrySchemaName.Span, {
+      name: "http.request",
+      attributes,
+    });
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(
+      "http.request",
+      expect.objectContaining({
+        [TelemetryAttribute.HttpRequestMethod]: "GET",
+        [TelemetryEmitMetadataKey.SchemaName]: TelemetrySchemaName.Span,
+      })
+    );
+    const metadata = info.mock.calls[0]?.[1];
+    expect(metadata).not.toHaveProperty(ReservedLoggerMetadataKey.Origin);
+    expect(metadata).not.toHaveProperty(ReservedLoggerMetadataKey.Level);
+    expect(metadata).not.toHaveProperty(ReservedLoggerMetadataKey.Status);
+  });
+});

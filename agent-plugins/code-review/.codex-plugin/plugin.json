@@ -1,0 +1,30 @@
+{
+  "name": "code-review",
+  "version": "2.34.0",
+  "description": "Code review plugin for automated review workflows and inline GitHub PR comments.",
+  "author": {
+    "name": "AgentFlow",
+    "email": "support@agentflow.ai",
+    "url": "https://agentflow.ai"
+  },
+  "homepage": "https://github.com/agentflow-ai/claude-plugins",
+  "repository": "https://github.com/agentflow-ai/claude-plugins",
+  "license": "Apache-2.0",
+  "keywords": ["code-review", "quality", "github", "agents", "agent-plugin"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "AgentFlow Code Review",
+    "shortDescription": "Automated agentic code review workflows.",
+    "longDescription": "AgentFlow Code Review provides review dispatch, finding verification, local presentation, and fix workflow guidance for agent-assisted software delivery.",
+    "developerName": "AgentFlow",
+    "category": "Development",
+    "capabilities": ["Review", "Analyze", "Write"],
+    "websiteURL": "https://github.com/agentflow-ai/claude-plugins",
+    "defaultPrompt": [
+      "Review this PR for regressions.",
+      "Verify these review findings.",
+      "Prepare inline PR comments."
+    ],
+    "brandColor": "#6D28D9"
+  }
+}

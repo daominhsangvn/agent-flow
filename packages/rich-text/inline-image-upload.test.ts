@@ -1,0 +1,243 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  getInlineImageFilesFromTransfer,
+  insertInlineImageFileForEditor,
+} from "./inline-image-upload";
+import type { TiptapEditor } from "./types";
+
+const ATTACHMENT_REF = "attachment://00000000-0000-4000-8000-000000000001";
+
+function createEditor() {
+  const transaction = {
+    setMeta: vi.fn(() => transaction),
+  };
+  const chain = {
+    focus: vi.fn(() => chain),
+    insertContentAt: vi.fn(() => chain),
+    run: vi.fn(),
+  };
+  const editor = {
+    chain: vi.fn(() => chain),
+    commands: { focus: vi.fn() },
+    isDestroyed: false,
+    state: {
+      selection: { from: 7 },
+      tr: transaction,
+    },
+    view: {
+      dispatch: vi.fn(),
+    },
+  } as unknown as TiptapEditor;
+
+  return { chain, editor, transaction };
+}
+
+describe("inline image upload lifecycle", () => {
+  it("filters paste/drop transfer files to image files", () => {
+    const image = new File(["image"], "diagram.png", { type: "image/png" });
+    const text = new File(["text"], "notes.txt", { type: "text/plain" });
+
+    expect(getInlineImageFilesFromTransfer([image, text])).toEqual([image]);
+  });
+
+  it("adds a placeholder and replaces it with a durable attachment ref", async () => {
+    const { chain, editor } = createEditor();
+    const addInlineImagePlaceholder = vi.fn();
+    const removeInlineImagePlaceholder = vi.fn();
+    const uploadInlineImage = vi.fn().mockResolvedValue({
+      alt: "diagram",
+      src: ATTACHMENT_REF,
+    });
+    const file = new File(["image"], "diagram.png", { type: "image/png" });
+
+    await insertInlineImageFileForEditor({
+      addInlineImagePlaceholder,
+      createUploadId: () => "upload-1",
+      editor,
+      file,
+      findPlaceholderPosition: () => 11,
+      inlineImagesEnabled: true,
+      removeInlineImagePlaceholder,
+      uploadInlineImage,
+    });
+
+    expect(addInlineImagePlaceholder).toHaveBeenCalledWith({
+      id: "upload-1",
+      label: "Uploading diagram.png",
+      pos: 7,
+    });
+    expect(removeInlineImagePlaceholder).toHaveBeenCalledWith("upload-1");
+    expect(chain.insertContentAt).toHaveBeenCalledWith(11, {
+      attrs: {
+        alt: "diagram",
+        src: ATTACHMENT_REF,
+      },
+      type: "inlineImage",
+    });
+    expect(chain.run).toHaveBeenCalled();
+  });
+
+  it("reports validation failures without adding a placeholder", async () => {
+    const { chain, editor } = createEditor();
+    const onInlineImageUploadError = vi.fn();
+    const uploadInlineImage = vi.fn();
+
+    await insertInlineImageFileForEditor({
+      addInlineImagePlaceholder: vi.fn(),
+      editor,
+      file: new File(["svg"], "diagram.svg", { type: "image/svg+xml" }),
+      findPlaceholderPosition: () => null,
+      inlineImagesEnabled: true,
+      onInlineImageUploadError,
+      removeInlineImagePlaceholder: vi.fn(),
+      uploadInlineImage,
+      validateInlineImageFile: () => "SVG is not supported",
+    });
+
+    expect(onInlineImageUploadError).toHaveBeenCalledWith(
+      "SVG is not supported"
+    );
+    expect(editor.view.dispatch).not.toHaveBeenCalled();
+    expect(uploadInlineImage).not.toHaveBeenCalled();
+    expect(chain.insertContentAt).not.toHaveBeenCalled();
+  });
+
+  it("removes the placeholder and reports upload failures", async () => {
+    const { chain, editor } = createEditor();
+    const onInlineImageUploadError = vi.fn();
+    const removeInlineImagePlaceholder = vi.fn();
+
+    await insertInlineImageFileForEditor({
+      addInlineImagePlaceholder: vi.fn(),
+      createUploadId: () => "upload-2",
+      editor,
+      file: new File(["image"], "broken.png", { type: "image/png" }),
+      findPlaceholderPosition: () => 11,
+      inlineImagesEnabled: true,
+      onInlineImageUploadError,
+      removeInlineImagePlaceholder,
+      uploadInlineImage: vi.fn().mockRejectedValue(new Error("PUT failed")),
+    });
+
+    expect(removeInlineImagePlaceholder).toHaveBeenCalledWith("upload-2");
+    expect(onInlineImageUploadError).toHaveBeenCalledWith("PUT failed");
+    expect(chain.insertContentAt).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch or report an error when the editor is destroyed after a successful upload", async () => {
+    const { chain, editor } = createEditor();
+    (editor as { isDestroyed: boolean }).isDestroyed = true;
+    const onInlineImageUploadError = vi.fn();
+    const removeInlineImagePlaceholder = vi.fn();
+    const findPlaceholderPosition = vi.fn(() => 11);
+    const uploadInlineImage = vi.fn().mockResolvedValue({
+      alt: "diagram",
+      src: ATTACHMENT_REF,
+    });
+
+    await insertInlineImageFileForEditor({
+      addInlineImagePlaceholder: vi.fn(),
+      createUploadId: () => "upload-3",
+      editor,
+      file: new File(["image"], "diagram.png", { type: "image/png" }),
+      findPlaceholderPosition,
+      inlineImagesEnabled: true,
+      onInlineImageUploadError,
+      removeInlineImagePlaceholder,
+      uploadInlineImage,
+    });
+
+    expect(uploadInlineImage).toHaveBeenCalledOnce();
+    expect(findPlaceholderPosition).not.toHaveBeenCalled();
+    expect(removeInlineImagePlaceholder).not.toHaveBeenCalled();
+    expect(chain.insertContentAt).not.toHaveBeenCalled();
+    expect(onInlineImageUploadError).not.toHaveBeenCalled();
+  });
+
+  it("does not upload when inline images are disabled", async () => {
+    const { editor } = createEditor();
+    const uploadInlineImage = vi.fn();
+
+    await insertInlineImageFileForEditor({
+      addInlineImagePlaceholder: vi.fn(),
+      editor,
+      file: new File(["image"], "diagram.png", { type: "image/png" }),
+      findPlaceholderPosition: () => null,
+      inlineImagesEnabled: false,
+      removeInlineImagePlaceholder: vi.fn(),
+      uploadInlineImage,
+    });
+
+    expect(uploadInlineImage).not.toHaveBeenCalled();
+    expect(editor.view.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("uses a generated upload id and filename fallback for missing alt text", async () => {
+    const { chain, editor } = createEditor();
+    const addInlineImagePlaceholder = vi.fn();
+    const removeInlineImagePlaceholder = vi.fn();
+    const file = new File(["image"], "fallback.png", { type: "image/png" });
+
+    await insertInlineImageFileForEditor({
+      addInlineImagePlaceholder,
+      editor,
+      file,
+      findPlaceholderPosition: () => 9,
+      inlineImagesEnabled: true,
+      removeInlineImagePlaceholder,
+      uploadInlineImage: vi.fn().mockResolvedValue({ src: ATTACHMENT_REF }),
+    });
+
+    const placeholder = addInlineImagePlaceholder.mock.calls[0][0];
+    expect(placeholder).toEqual({
+      id: expect.any(String),
+      label: "Uploading fallback.png",
+      pos: 7,
+    });
+    expect(removeInlineImagePlaceholder).toHaveBeenCalledWith(placeholder.id);
+    expect(chain.insertContentAt).toHaveBeenCalledWith(9, {
+      attrs: { alt: "fallback.png", src: ATTACHMENT_REF },
+      type: "inlineImage",
+    });
+  });
+
+  it("removes a completed placeholder when its position no longer exists", async () => {
+    const { chain, editor } = createEditor();
+    const removeInlineImagePlaceholder = vi.fn();
+
+    await insertInlineImageFileForEditor({
+      addInlineImagePlaceholder: vi.fn(),
+      createUploadId: () => "upload-gone",
+      editor,
+      file: new File(["image"], "gone.png", { type: "image/png" }),
+      findPlaceholderPosition: () => null,
+      inlineImagesEnabled: true,
+      removeInlineImagePlaceholder,
+      uploadInlineImage: vi.fn().mockResolvedValue({ src: ATTACHMENT_REF }),
+    });
+
+    expect(removeInlineImagePlaceholder).toHaveBeenCalledWith("upload-gone");
+    expect(chain.insertContentAt).not.toHaveBeenCalled();
+  });
+
+  it("reports the generic failure for non-Error upload rejections", async () => {
+    const { editor } = createEditor();
+    const onInlineImageUploadError = vi.fn();
+
+    await insertInlineImageFileForEditor({
+      addInlineImagePlaceholder: vi.fn(),
+      createUploadId: () => "upload-rejected",
+      editor,
+      file: new File(["image"], "broken.png", { type: "image/png" }),
+      findPlaceholderPosition: () => 4,
+      inlineImagesEnabled: true,
+      onInlineImageUploadError,
+      removeInlineImagePlaceholder: vi.fn(),
+      uploadInlineImage: vi.fn().mockRejectedValue("offline"),
+    });
+
+    expect(onInlineImageUploadError).toHaveBeenCalledWith(
+      "Image upload failed"
+    );
+  });
+});

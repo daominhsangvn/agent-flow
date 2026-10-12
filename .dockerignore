@@ -1,0 +1,15 @@
+.git
+node_modules
+**/node_modules
+.next
+**/.next
+**/dist
+!packages/loops-api/dist
+*.log
+.turbo
+**/.turbo
+.env*
+!.env.example
+**/dist-headless
+**/test-results
+**/playwright-report

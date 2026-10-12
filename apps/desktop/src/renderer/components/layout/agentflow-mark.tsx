@@ -1,0 +1,36 @@
+type AgentFlowMarkProps = {
+  /** Sizing utilities for the SVG root. Defaults to the sidebar's size. */
+  className?: string;
+};
+
+/**
+ * The AgentFlow brand mark.
+ *
+ * Lifted out of `Sidebar` when the first-run landing (ISS-5112, PLN-1600 Step F)
+ * needed the same mark at a larger size. Re-inlining the paths in a second
+ * production component would be the SSOT-drift-by-copy this repo calls out by
+ * name: the accent stop is a literal brand color rather than a theme token, so
+ * two copies drift silently the first time the brand moves.
+ *
+ * The literal brand colour is deliberate and not a token violation — a logo is
+ * fixed artwork, not themed surface, and it must render identically in light and
+ * dark. It is the middle stop of the brand gradient
+ * (packages/design-system/brand/agentflow-mark.svg): a solid fill needs no
+ * gradient id, which would collide when several marks render on one page.
+ */
+export function AgentFlowMark({ className = "size-4" }: AgentFlowMarkProps) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      fill="none"
+      viewBox="0 -87.565 855.92 855.92"
+    >
+      <path
+        d="M307.53 0.94 L302.98 4.72 L300.38 9.72 L203.41 218.72 L82.16 489.72 L7.23 659.72 L0.34 675.72 L-0 678.72 L1.53 680.46 L82.53 680.79 L83.82 679.72 L145.76 548.72 L146.8 544.72 L138.8 499.72 L139.06 496.72 L204.99 354.72 L204.96 352.72 L198.22 344.72 L196.06 340.72 L192.37 328.72 L192.14 318.72 L194.53 309.8 L196.24 305.72 L202.53 296.96 L206.83 292.72 L214.74 287.72 L220.53 285.5 L227.53 284.27 L234.53 284.07 L241.53 285.23 L249.53 288.45 L254.52 291.72 L260.98 297.72 L264.7 302.72 L268.28 310.72 L269.73 316.72 L269.59 330.72 L263.99 344.72 L254.53 354.78 L242.53 361.11 L233.53 362.63 L226.53 362.63 L225.53 363.99 L162.06 499.72 L162.25 506.72 L169.64 544.72 L169.83 550.72 L112.08 671.72 L109.18 679.72 L112.53 680.56 L138.53 680.67 L145.36 679.72 L209.55 544.72 L209.89 521.72 L215.94 507.72 L337.53 250.71 L337.53 249.03 L333.11 243.72 L329.12 236.72 L325.48 224.72 L325.74 212.72 L329.25 201.72 L336.89 190.72 L346.53 183.45 L354.53 179.92 L360.53 178.54 L372.53 178.57 L382.53 181.48 L389.53 185.29 L396.62 191.72 L401.53 197.89 L405.53 207.85 L406.81 213.72 L406.73 224.72 L404.83 232.72 L399.56 242.72 L394.5 248.72 L389.53 252.86 L377.53 258.8 L368.53 260.49 L358.53 260.33 L355.09 265.72 L234.22 521.72 L231.59 528.72 L231.9 550.72 L170.16 679.72 L174.53 680.57 L197.53 680.47 L200.81 679.72 L303.64 463.72 L303.63 461.72 L299.97 456.72 L296.46 448.72 L294.42 440.72 L294.59 432.72 L298.32 419.72 L306.53 408.66 L314.53 403.03 L324.53 399.34 L337.53 399.36 L345.53 401.51 L352.53 405.32 L357.53 409.54 L363.59 417.72 L366.98 425.72 L368.15 432.72 L367.76 441.72 L365.62 449.72 L362.07 456.72 L358.07 461.72 L351.53 467.45 L345.53 470.53 L337.53 473.06 L325.53 473.18 L323.24 474.72 L243.26 641.72 L226.24 679.72 L278.53 680.29 L281.53 679.71 L285.51 676.72 L454.28 287.72 L580 8.72 L581.05 4.72 L580.53 1.7 L576.53 0.01 L320.53 -0 Z M594.53 135.96 L589.06 145.72 L563.19 201.72 L490.34 361.72 L484.2 375.72 L483.27 382.72 L494.4 408.72 L618.23 675.72 L620.53 678.04 L625.53 680.26 L854.53 679.93 L855.85 678.72 L855.92 675.72 L843.28 647.72 L603.7 139.72 L601.85 136.72 L599.53 135.28 L596.53 135.08 Z"
+        fill="#01B8FC"
+        fillRule="evenodd"
+      />
+    </svg>
+  );
+}

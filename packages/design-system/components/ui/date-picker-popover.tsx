@@ -1,0 +1,161 @@
+"use client";
+
+import * as React from "react";
+import { CalendarIcon, XIcon } from "lucide-react";
+import { format } from "date-fns";
+import { cn } from "@agentflow-ai/design-system/lib/utils";
+import { Button } from "@agentflow-ai/design-system/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@agentflow-ai/design-system/components/ui/popover";
+import { Calendar } from "@agentflow-ai/design-system/components/ui/calendar";
+
+interface DatePickerPopoverProps {
+  /** Currently selected date */
+  value?: Date | null;
+  /** Callback when date is selected */
+  onSelect: (date: Date | null) => void;
+  /** Placeholder text when no date is selected */
+  placeholder?: string;
+  /** Whether to show the trigger as just an icon (for inline use) */
+  iconOnly?: boolean;
+  /** Trigger element (optional, defaults to calendar icon button) */
+  trigger?: React.ReactNode;
+  /** Disable the popover */
+  disabled?: boolean;
+  /** Additional class name for trigger */
+  className?: string;
+  /** Date format string (default: "MMM d, yyyy") */
+  dateFormat?: string;
+  /** Disable dates before this date */
+  fromDate?: Date;
+  /** Disable dates after this date */
+  toDate?: Date;
+}
+
+/**
+ * DatePickerPopover provides a calendar dropdown for selecting a date
+ * Can be used inline in tables with icon-only mode
+ */
+function DatePickerPopover({
+  value,
+  onSelect,
+  placeholder = "Select date...",
+  iconOnly = false,
+  trigger,
+  disabled = false,
+  className,
+  dateFormat = "MMM d, yyyy",
+  fromDate,
+  toDate,
+}: DatePickerPopoverProps) {
+  const [open, setOpen] = React.useState(false);
+
+  const handleSelect = (date: Date | undefined) => {
+    onSelect(date || null);
+    setOpen(false);
+  };
+
+  const handleClear = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSelect(null);
+  };
+
+  const handleClearKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      onSelect(null);
+    }
+  };
+
+  const defaultTrigger = iconOnly ? (
+    <Button
+      variant="ghost"
+      size="icon"
+      className={cn("h-8 w-8 text-muted-foreground hover:text-foreground", className)}
+      disabled={disabled}
+    >
+      <CalendarIcon className="h-4 w-4" />
+      <span className="sr-only">{placeholder}</span>
+    </Button>
+  ) : (
+    <Button
+      variant="outline"
+      role="combobox"
+      aria-expanded={open}
+      className={cn(
+        "w-[200px] justify-start text-left font-normal",
+        !value && "text-muted-foreground",
+        className
+      )}
+      disabled={disabled}
+    >
+      <CalendarIcon className="mr-2 h-4 w-4" />
+      {value ? (
+        <div className="flex items-center justify-between flex-1">
+          <span>{format(value, dateFormat)}</span>
+          {/* Not a <button>: this trigger is rendered via PopoverTrigger
+              asChild, so the parent is already a <button> — nesting one would
+              be invalid DOM. Use a focusable role=button on the icon instead.
+              `pointer-events-auto` overrides the Button base's
+              `[&_svg]:pointer-events-none` so the icon receives mouse clicks
+              and hover (otherwise the click falls through to the trigger). */}
+          <XIcon
+            aria-label="Clear date"
+            className="h-4 w-4 cursor-pointer opacity-50 pointer-events-auto hover:opacity-100"
+            onClick={handleClear}
+            onKeyDown={handleClearKeyDown}
+            role="button"
+            tabIndex={0}
+          />
+        </div>
+      ) : (
+        <span>{placeholder}</span>
+      )}
+    </Button>
+  );
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>{trigger || defaultTrigger}</PopoverTrigger>
+      <PopoverContent className="w-auto p-0" align="start">
+        <Calendar
+          mode="single"
+          selected={value || undefined}
+          onSelect={handleSelect}
+          initialFocus
+          disabled={
+            fromDate && toDate
+              ? { before: fromDate, after: toDate }
+              : fromDate
+                ? { before: fromDate }
+                : toDate
+                  ? { after: toDate }
+                  : undefined
+          }
+        />
+        {value && (
+          <div className="border-t p-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full text-muted-foreground"
+              onClick={() => {
+                onSelect(null);
+                setOpen(false);
+              }}
+            >
+              Clear date
+            </Button>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+export { DatePickerPopover };
+export type { DatePickerPopoverProps };

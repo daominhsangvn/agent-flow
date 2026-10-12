@@ -1,0 +1,6 @@
+Vendored from https://github.com/closedloop-ai/claude-plugins
+Upstream commit: b9a1f25dd960b9de72b518cf1363116fa43224dd
+License: Apache License 2.0 (see LICENSE in this directory).
+Loaded at runtime with `claude --plugin-dir <dir>`; never installed through `/plugin install`.
+Modified here: code/hooks/secret-guard.py (PreToolUse secret guard, registered in code/hooks/hooks.json).
+Modified and distributed as part of AgentFlow (product and identifiers renamed from ClosedLoop).

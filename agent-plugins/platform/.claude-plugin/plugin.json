@@ -1,0 +1,9 @@
+{
+  "name": "platform",
+  "description": "AgentFlow Platform plugin",
+  "version": "1.1.4",
+  "author": {
+    "name": "AgentFlow",
+    "email": "support@agentflow.ai"
+  }
+}

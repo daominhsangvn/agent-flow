@@ -1,0 +1,197 @@
+"use client";
+
+import type { Priority } from "@repo/api/src/types/common";
+import type { CreateProjectInput } from "@repo/api/src/types/project";
+import { ProjectStatus } from "@repo/api/src/types/project";
+import { TableViewMenu } from "@repo/app/documents/components/table/table-view-menu";
+import {
+  useCreateProject,
+  useDeleteProject,
+  useProjectsByTeam,
+  useUpdateProjectAssignee,
+  useUpdateProjectPriority,
+  useUpdateProjectStatus,
+  useUpdateProjectTargetDate,
+} from "@repo/app/projects/hooks/use-projects";
+import {
+  PROJECT_DEFAULT_COLUMNS,
+  useColumnVisibility,
+} from "@repo/app/shared/hooks/use-column-visibility";
+import { useTeam } from "@repo/app/teams/hooks/use-teams";
+import { getStringRouteParam } from "@repo/navigation/route-param";
+import { useNavigation } from "@repo/navigation/use-navigation";
+import { useRouteParams } from "@repo/navigation/use-route-params";
+import { Loader2Icon } from "lucide-react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+import { Header } from "@/app/(authenticated)/components/header";
+import { useOrgSlug } from "@/hooks/use-org-slug";
+import { CreateProjectModal } from "./components/create-project-modal";
+import { ProjectsTable } from "./components/projects-table";
+
+const COLUMN_VISIBILITY_KEY = "table:columns:team-projects";
+
+export default function TeamProjectsPage() {
+  const params = useRouteParams();
+  const navigation = useNavigation();
+  const orgSlug = useOrgSlug();
+  const teamId = getStringRouteParam(params, "teamId");
+  const [createProjectOpen, setCreateProjectOpen] = useState(false);
+
+  const { visibility, userVisibility, toggleColumn } = useColumnVisibility({
+    storageKey: COLUMN_VISIBILITY_KEY,
+  });
+  const visibleColumns = useMemo(
+    () => PROJECT_DEFAULT_COLUMNS.filter((c) => userVisibility[c] !== false),
+    [userVisibility]
+  );
+
+  // Queries
+  const {
+    data: team,
+    isLoading: loadingTeam,
+    error: teamError,
+  } = useTeam(teamId);
+  const {
+    data: projects = [],
+    isLoading: loadingProjects,
+    error: projectsError,
+  } = useProjectsByTeam(teamId, undefined, {
+    excludeStatus: [ProjectStatus.Archived],
+  });
+
+  const loading = loadingTeam || loadingProjects;
+  const error = teamError?.message || projectsError?.message || null;
+
+  // Mutations
+  const updateAssigneeMutation = useUpdateProjectAssignee();
+  const updateTargetDateMutation = useUpdateProjectTargetDate();
+  const updatePriorityMutation = useUpdateProjectPriority();
+  const createProjectMutation = useCreateProject();
+  const deleteProjectMutation = useDeleteProject();
+  const updateStatusMutation = useUpdateProjectStatus();
+
+  const handleUpdateAssignee = (
+    projectId: string,
+    assigneeId: string | null
+  ) => {
+    updateAssigneeMutation.mutate({ projectId, assigneeId });
+  };
+
+  const handleUpdateTargetDate = (projectId: string, date: Date | null) => {
+    updateTargetDateMutation.mutate({ projectId, targetDate: date });
+  };
+
+  const handleUpdatePriority = (projectId: string, priority: Priority) => {
+    updatePriorityMutation.mutate({ projectId, priority });
+  };
+
+  const handleCreateProject = async (projectData: CreateProjectInput) => {
+    // mutateAsync (not the preferred mutate) is intentional here: the modal
+    // awaits this promise to only close + reset on success — a rejection keeps
+    // it open with input intact — and we need the resolved project id to
+    // navigate. The global QueryClient onError handler still owns the failure
+    // toast, so we do not add a local catch.
+    const newProject = await createProjectMutation.mutateAsync(projectData);
+    navigation.navigate(
+      `/${orgSlug}/teams/${teamId}/projects/${newProject.id}`
+    );
+  };
+
+  const handleDeleteProject = async (projectId: string) => {
+    const result = await deleteProjectMutation.mutateAsync(projectId);
+    return result.deleted ?? false;
+  };
+
+  const handleUpdateStatus = (
+    projectId: string,
+    status: ProjectStatus,
+    previousStatus: ProjectStatus
+  ) => {
+    updateStatusMutation.mutate(
+      { projectId, status },
+      {
+        onSuccess: () => {
+          if (status === ProjectStatus.Archived) {
+            toast.success("Project archived", {
+              action: {
+                label: "Undo",
+                onClick: () => {
+                  updateStatusMutation.mutate({
+                    projectId,
+                    status: previousStatus,
+                  });
+                },
+              },
+            });
+            return;
+          }
+          toast.success("Project unarchived");
+        },
+      }
+    );
+  };
+
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (error || !team) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="text-muted-foreground">{error || "Team not found"}</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <Header
+        breadcrumbs={[
+          { label: "Home", href: `/${orgSlug}` },
+          { label: team.name, href: `/${orgSlug}/teams/${teamId}/projects` },
+          { label: "Projects" },
+        ]}
+        suppressPageHeading
+      >
+        <CreateProjectModal
+          onCreateProject={handleCreateProject}
+          onOpenChange={setCreateProjectOpen}
+          open={createProjectOpen}
+          teamId={teamId}
+          teamName={team.name}
+        />
+      </Header>
+      {/* plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate). */}
+      <div className="flex flex-1 flex-col overflow-hidden">
+        {/* Title bar */}
+        <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">
+          <h1 className="font-semibold text-xl">Projects</h1>
+          <TableViewMenu
+            columns={PROJECT_DEFAULT_COLUMNS}
+            onToggle={toggleColumn}
+            visibility={visibility}
+          />
+        </div>
+        {/* Table scroll area */}
+        <div className="flex-1 overflow-auto">
+          <ProjectsTable
+            onCreateProject={() => setCreateProjectOpen(true)}
+            onDelete={handleDeleteProject}
+            onUpdateAssignee={handleUpdateAssignee}
+            onUpdatePriority={handleUpdatePriority}
+            onUpdateStatus={handleUpdateStatus}
+            onUpdateTargetDate={handleUpdateTargetDate}
+            projects={projects}
+            teamId={teamId}
+            visibleColumns={visibleColumns}
+          />
+        </div>
+      </div>
+    </>
+  );
+}

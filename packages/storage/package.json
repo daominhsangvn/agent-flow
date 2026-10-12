@@ -1,0 +1,25 @@
+{
+  "name": "@repo/storage",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=*.ts'",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "smoke": "node --env-file=../../apps/api/.env.local --conditions=react-server --import tsx scripts/e2e-smoke.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.985.0",
+    "@aws-sdk/s3-request-presigner": "^3.987.0",
+    "@t3-oss/env-nextjs": "^0.13.11",
+    "server-only": "^0.0.1",
+    "zod": "^4.3.6",
+    "@aws-sdk/crc64-nvme": "3.972.0"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.9"
+  }
+}

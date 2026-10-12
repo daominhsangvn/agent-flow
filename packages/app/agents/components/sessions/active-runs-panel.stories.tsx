@@ -1,0 +1,103 @@
+import type { Meta, StoryObj } from "@storybook/react";
+import { ACTIVE_RUN_STALL_TIMEOUT_MS } from "../../lib/active-runs";
+import { ActiveRunsPanel } from "./active-runs-panel";
+import { createAgentSessionListItemFixture } from "./session-list-fixtures";
+
+/**
+ * Fixed "now" for both the fixtures below and the panel itself (ISS-5286).
+ *
+ * Pinning only the fixtures would not have been enough. The panel reads
+ * `Date.now()` at mount and re-reads it every 10s, so with a pinned base every
+ * elapsed timer drifted by however long collection-to-render took and then
+ * advanced on a timer — and pinning the fixtures to a fixed past date without
+ * pinning the panel would classify all three runs as stalled, collapsing the
+ * working/awaiting/stalled spread these stories exist to show. So the panel takes
+ * the same instant through its `pinnedNowMs` prop, which also stops the ticking.
+ *
+ * Local date components, not a parsed ISO string: `"2025-06-11"` parses as UTC
+ * midnight and would shift the rendered day by timezone.
+ */
+const NOW = new Date(2025, 5, 11, 12, 0, 0);
+const now = NOW.getTime();
+
+const working = createAgentSessionListItemFixture({
+  id: "ses-working",
+  name: "Implement active-runs panel",
+  status: "active",
+  harness: "claude",
+  endedAt: null,
+  startedAt: new Date(now - 4 * 60 * 1000),
+  lastActivityAt: new Date(now - 20 * 1000),
+  inputTokens: 120_000,
+  outputTokens: 38_000,
+  phases: [
+    {
+      key: "stream",
+      label: "Streaming turn",
+      dur: "2m",
+      cost: "$0",
+      cIn: 0,
+      cOut: 0,
+      cCache: 0,
+    },
+  ],
+});
+
+const awaiting = createAgentSessionListItemFixture({
+  id: "ses-awaiting",
+  name: "Refactor session sync bridge",
+  status: "active",
+  harness: "codex",
+  endedAt: null,
+  startedAt: new Date(now - 9 * 60 * 1000),
+  awaitingInputSince: new Date(now - 60 * 1000),
+  lastActivityAt: new Date(now - 60 * 1000),
+});
+
+const stalled = createAgentSessionListItemFixture({
+  id: "ses-stalled",
+  name: "Backfill telemetry analytics",
+  status: "active",
+  harness: "cursor",
+  endedAt: null,
+  startedAt: new Date(now - 22 * 60 * 1000),
+  lastActivityAt: new Date(now - ACTIVE_RUN_STALL_TIMEOUT_MS - 2 * 60 * 1000),
+});
+
+const meta = {
+  title: "App Core/Agents/Active Runs Panel",
+  component: ActiveRunsPanel,
+  parameters: {
+    layout: "padded",
+  },
+  args: {
+    getSessionHref: (run) => `/sessions/${run.id}`,
+    isLoading: false,
+    items: [working, awaiting, stalled],
+    pinnedNowMs: now,
+  },
+} satisfies Meta<typeof ActiveRunsPanel>;
+
+export default meta;
+
+type Story = StoryObj<typeof meta>;
+
+export const Populated: Story = {};
+
+export const SingleWorkingRun: Story = {
+  args: {
+    items: [working],
+  },
+};
+
+export const Loading: Story = {
+  args: {
+    isLoading: true,
+  },
+};
+
+export const Empty: Story = {
+  args: {
+    items: [],
+  },
+};

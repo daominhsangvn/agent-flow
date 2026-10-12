@@ -1,0 +1,13 @@
+{
+  "extends": "@repo/typescript-config/nextjs.json",
+  "compilerOptions": {
+    "paths": {
+      "@repo/api/*": ["../api/*"],
+      "@agentflow-ai/loops-api/*": ["../loops-api/src/*"],
+      "@repo/loops-api/*": ["../loops-api/src/*"],
+      "@agentflow-ai/telemetry-contract/*": ["../telemetry-contract/src/*"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}

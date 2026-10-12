@@ -1,0 +1,9 @@
+{
+  "name": "code",
+  "description": "Code and planning framework plugin",
+  "version": "1.17.7",
+  "author": {
+    "name": "AgentFlow",
+    "email": "support@agentflow.ai"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "index",
+    "getting-started",
+    "concepts",
+    "mechanisms",
+    "mcp",
+    "workflows",
+    "integrations",
+    "collaboration",
+    "mcp",
+    "api-reference",
+    "resources",
+    "glossary"
+  ]
+}

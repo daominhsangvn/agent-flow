@@ -1,0 +1,27 @@
+{
+  "name": "relay",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch --env-file=.env.local src/index.ts",
+    "build": "tsc",
+    "start": "node dist/apps/relay/src/index.js",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "lint": "biome check src/",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=src/**/*.{ts,tsx}'"
+  },
+  "dependencies": {
+    "@agentflow-ai/shared-platform": "workspace:*",
+    "@repo/api": "workspace:*",
+    "@repo/observability": "workspace:*",
+    "@repo/redis": "workspace:*",
+    "socket.io": "^4.8.1",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.9"
+  }
+}

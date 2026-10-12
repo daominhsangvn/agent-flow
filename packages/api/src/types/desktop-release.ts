@@ -1,0 +1,647 @@
+import { z } from "zod";
+
+export const DesktopReleaseOwner = "agentflow-ai" as const;
+export const DesktopReleaseRepo = "symphony-alpha" as const;
+/**
+ * Public open-source repo the signed DMG is mirrored to so it can be downloaded
+ * with no GitHub account (FEA-3372). The release itself still lives in
+ * `DesktopReleaseRepo` and is still the source of truth for the updater feed —
+ * only the DMG is copied here, purely to give the installer a public URL.
+ */
+export const DesktopPublicMirrorRepo = "agentflow-ai" as const;
+const AllowedDesktopReleaseDownloadRepos: ReadonlySet<string> = new Set([
+  DesktopReleaseRepo,
+  DesktopPublicMirrorRepo,
+]);
+export const DesktopReleaseRepository =
+  `${DesktopReleaseOwner}/${DesktopReleaseRepo}` as const;
+export const DesktopReleaseTagPrefix = "desktop-v" as const;
+export const DesktopReleaseChannel = "desktop-latest" as const;
+export const DesktopReleaseMetadataAssetName = "desktop-release.json" as const;
+export const DesktopReleaseUpdaterMetadataAssetName = "latest-mac.yml" as const;
+export const DesktopReleaseDmgAssetSuffix = "-universal.dmg" as const;
+export const DesktopReleaseZipAssetSuffix = "-universal-mac.zip" as const;
+const DesktopReleaseVersionRegex = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+// Release assets are named "AgentFlow-<version>-…". The "legacy" asset-name
+// helpers below covered an earlier casing change of the product name
+// (FEA-2101); they now return the same name and are removed in FEA-2107.
+const DesktopReleaseUpdaterZipAssetNameRegex =
+  /^AgentFlow-(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-universal-mac\.zip$/;
+const DesktopReleaseUpdaterFeedFileUrlRegex =
+  /^\s*-\s*url:\s*['"]?([^'"\s#]+)['"]?/m;
+const DesktopReleaseUpdaterFeedPathRegex = /^path:\s*['"]?([^'"\s#]+)['"]?/m;
+const DesktopReleaseUpdaterFeedLegacyUrlRegex =
+  /^url:\s*['"]?([^'"\s#]+)['"]?/m;
+const AllowedDesktopReleaseAssetRedirectHosts = new Set([
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+]);
+
+export const DesktopReleasePreflightStatus = {
+  PublishRequiredMissingRelease: "publish_required_missing_release",
+  SkipExistingCompleteCurrent: "skip_existing_complete_current",
+  FailExistingDraft: "fail_existing_draft",
+  FailPartialAssets: "fail_partial_assets",
+  FailWrongTarget: "fail_wrong_target",
+  FailMalformedMetadata: "fail_malformed_metadata",
+  FailNonDesktopReleaseSelected: "fail_non_desktop_release_selected",
+  /**
+   * @deprecated ISS-5434 removed the packaging gate from the release path, so
+   * nothing emits this any more — the release job proves packaging by building
+   * it. Retained rather than deleted under the AGENTS.md Compatibility
+   * Guardrail: dropping a contract value needs explicit human approval, and
+   * historical workflow runs still carry this string.
+   * `desktop-release-preflight.test.ts` asserts it is now unreachable.
+   */
+  FailUnvalidatedPackaging: "fail_unvalidated_packaging",
+  FailGitHubApiError: "fail_github_api_error",
+} as const;
+export type DesktopReleasePreflightStatus =
+  (typeof DesktopReleasePreflightStatus)[keyof typeof DesktopReleasePreflightStatus];
+
+/**
+ * GitHub commit-status context the scheduled packaging validation (FEA-1935,
+ * retargeted to the release target by ISS-5215) posts on a `main` SHA.
+ *
+ * ADVISORY / DETECTION ONLY since ISS-5434. It used to gate the release
+ * (FEA-1936 preflight + FEA-1941 pre-check); it no longer does, and no code on
+ * the release path reads it. Its consumers are now the per-episode main-health
+ * alerter (`scripts/ci/main-health-alert.ts`) and the scheduled validator's own
+ * target resolver (`scripts/deploy/desktop-packaging-target.ts`), both via
+ * `scripts/deploy/desktop-validation-status.ts`.
+ *
+ * SSOT for the context string on the consumer side; the producing workflow
+ * (`desktop-packaging-validation.yml`) pins the same literal, asserted equal by
+ * `desktop-validation-status.test.ts`.
+ */
+export const DesktopPackagingValidationContext =
+  "desktop-packaging/validated" as const;
+
+/**
+ * GitHub commit-status context the post-merge desktop TEST validation (FEA-2341)
+ * posts on a `main` SHA. Produced now (FEA-3902) so the per-episode main-health
+ * alerter (`scripts/ci/main-health-alert.ts`) can suppress duplicate red-streak
+ * Slack pings; the release-gating consumer (mirroring FEA-1936 packaging) is a
+ * tracked follow-up (FEA-3902 item 2b child FEA). It shares the generic
+ * commit-status state vocabulary of {@link DesktopPackagingValidationState} — the
+ * states are GitHub's own commit-status states, not packaging-specific — so no
+ * parallel state enum is defined. The producing workflow
+ * (`desktop-test-validation.yml`) pins the same literal, asserted equal by
+ * `desktop-test-validation-workflow.test.ts`.
+ */
+export const DesktopTestValidationContext = "desktop-test/validated" as const;
+
+/**
+ * Resolved state of the `desktop-packaging/validated` commit status for a SHA.
+ * `Success`/`Pending`/`Failure`/`Error` mirror GitHub's commit-status states;
+ * `Missing` is the synthetic state for a SHA carrying no such status.
+ *
+ * ISS-5434: no release gate consumes this any more. The scheduled validator
+ * treats `Success`/`Failure` as decided (anything else means "validate this
+ * target"), and the main-health alerter uses the same notion for its ancestry
+ * walk — but a non-`Success` state no longer blocks a release.
+ */
+export const DesktopPackagingValidationState = {
+  Success: "success",
+  Pending: "pending",
+  Failure: "failure",
+  Error: "error",
+  Missing: "missing",
+} as const;
+export type DesktopPackagingValidationState =
+  (typeof DesktopPackagingValidationState)[keyof typeof DesktopPackagingValidationState];
+
+/**
+ * Generic alias for the same value set, for consumers that resolve a commit
+ * status independent of the packaging backstop — e.g. the shared per-episode
+ * alert reducer (`scripts/ci/main-health-alert.ts`) that now drives BOTH the
+ * `desktop-packaging/validated` and `desktop-test/validated` statuses. The
+ * states are GitHub's own commit-status vocabulary (plus the synthetic
+ * `missing`), so a generically-named import reads correctly in code with no
+ * packaging-specific logic. Same object — not a copy — so there is one SSOT.
+ */
+export const GithubCommitStatusState = DesktopPackagingValidationState;
+export type GithubCommitStatusState = DesktopPackagingValidationState;
+
+/**
+ * Returns true only when a SHA's packaging-validation status is `success`. The
+ * release preflight gate treats every other state (pending/failure/error/
+ * missing) as not releasable (fail closed) per PRD-470 Q-005.
+ */
+export function isDesktopPackagingValidated(
+  state: DesktopPackagingValidationState
+): boolean {
+  return state === DesktopPackagingValidationState.Success;
+}
+
+/**
+ * Validates the Desktop release metadata asset shared by release producers and
+ * consumers.
+ */
+export const DesktopReleaseMetadataSchema = z.object({
+  owner: z.literal(DesktopReleaseOwner),
+  repo: z.literal(DesktopReleaseRepo),
+  version: z.string().refine(isSupportedDesktopReleaseVersion),
+  tagName: z.string().min(1),
+  channel: z.literal(DesktopReleaseChannel),
+  targetCommitish: z.string().min(1),
+  assets: z.object({
+    dmg: z.string().min(1),
+    zip: z.string().min(1),
+    updaterMetadata: z.literal(DesktopReleaseUpdaterMetadataAssetName),
+  }),
+  downloadUrl: z.string().min(1),
+});
+
+export type DesktopReleaseMetadata = z.infer<
+  typeof DesktopReleaseMetadataSchema
+>;
+
+/**
+ * Builds the Desktop-only GitHub Release tag used by producers and consumers.
+ */
+export function getDesktopReleaseTag(version: string): string {
+  return `${DesktopReleaseTagPrefix}${version}`;
+}
+
+/**
+ * Builds the Desktop DMG asset name for the supported macOS universal build.
+ */
+export function getDesktopReleaseDmgAssetName(version: string): string {
+  return `AgentFlow-${version}${DesktopReleaseDmgAssetSuffix}`;
+}
+
+/**
+ * Builds the public-mirror download URL for a version's DMG (FEA-3372) — the
+ * login-free URL the release workflow writes into `downloadUrl` once the mirror
+ * succeeds. Always the current "AgentFlow-*" casing: the legacy "AgentFlow-*"
+ * assets predate the mirror and only ever existed on the private release repo.
+ */
+export function getPublicDesktopReleaseDownloadUrl(version: string): string {
+  return `https://github.com/${DesktopReleaseOwner}/${DesktopPublicMirrorRepo}/releases/download/${getDesktopReleaseTag(version)}/${getDesktopReleaseDmgAssetName(version)}`;
+}
+
+/**
+ * Whether a release's `downloadUrl` is the right one for that release.
+ *
+ * The DMG is attached to the private release AND mirrored to the public repo so
+ * it can be downloaded without a GitHub account (FEA-3372), so `downloadUrl`
+ * legitimately points at a different repo than the release it hangs off. Exactly
+ * two values are valid: the release's own DMG asset URL (what the workflow falls
+ * back to when the mirror fails) or the public mirror URL for THIS EXACT
+ * version. Anything else — a metadata/asset mismatch, or a URL for a different
+ * version — is a mismatch.
+ *
+ * Both release-completeness checks share this: `isCompleteDesktopRelease` in
+ * packages/github/electron-release.ts (which decides whether the app can resolve
+ * a release at all) and `hasRequiredDesktopAssets` in
+ * scripts/deploy/desktop-release-preflight.ts (which decides whether an existing
+ * release is complete). They must agree — when this rule lived in both files
+ * independently, updating only one of them was enough to break the other.
+ */
+export function isDesktopReleaseDownloadUrlForRelease(
+  downloadUrl: string,
+  releaseDmgAssetUrl: string,
+  version: string
+): boolean {
+  return (
+    downloadUrl === releaseDmgAssetUrl ||
+    downloadUrl === getPublicDesktopReleaseDownloadUrl(version)
+  );
+}
+
+/**
+ * Builds the pre-rename Desktop DMG asset name ("AgentFlow-<version>-…").
+ * Used only by the transition consumer guards (the download-URL guard and the
+ * release-completeness check in packages/github/electron-release.ts) during the
+ * brand-rename transition (FEA-2101) so already-published `AgentFlow-*` release
+ * assets remain resolvable. Producers always emit the current name above; this
+ * is removed once no legacy assets remain on `desktop-latest` (FEA-2107).
+ */
+export function getDesktopReleaseLegacyDmgAssetName(version: string): string {
+  return `AgentFlow-${version}${DesktopReleaseDmgAssetSuffix}`;
+}
+
+/**
+ * Builds the Desktop ZIP asset name for the supported macOS universal build.
+ */
+export function getDesktopReleaseZipAssetName(version: string): string {
+  return `AgentFlow-${version}${DesktopReleaseZipAssetSuffix}`;
+}
+
+/**
+ * Builds the pre-rename Desktop ZIP asset name ("AgentFlow-<version>-…").
+ * Transition-only counterpart to {@link getDesktopReleaseLegacyDmgAssetName}
+ * (FEA-2101); removed alongside it (FEA-2107).
+ */
+export function getDesktopReleaseLegacyZipAssetName(version: string): string {
+  return `AgentFlow-${version}${DesktopReleaseZipAssetSuffix}`;
+}
+
+/**
+ * Returns true when `assetName` is the DMG asset name for `version` in either
+ * the current "AgentFlow-*" form or the pre-rename "AgentFlow-*" form. Single
+ * source of truth for the dual-casing acceptance the brand-rename transition
+ * (FEA-2101) requires across every consumer guard; remove the legacy arm in
+ * FEA-2107.
+ */
+export function isAcceptedDesktopReleaseDmgAssetName(
+  assetName: string,
+  version: string
+): boolean {
+  return (
+    assetName === getDesktopReleaseDmgAssetName(version) ||
+    assetName === getDesktopReleaseLegacyDmgAssetName(version)
+  );
+}
+
+/**
+ * Returns true when `assetName` is the ZIP asset name for `version` in either
+ * the current "AgentFlow-*" form or the pre-rename "AgentFlow-*" form. See
+ * {@link isAcceptedDesktopReleaseDmgAssetName} (FEA-2101 transition; FEA-2107).
+ */
+export function isAcceptedDesktopReleaseZipAssetName(
+  assetName: string,
+  version: string
+): boolean {
+  return (
+    assetName === getDesktopReleaseZipAssetName(version) ||
+    assetName === getDesktopReleaseLegacyZipAssetName(version)
+  );
+}
+
+/**
+ * Returns true when a Desktop metadata version is in the supported semver form.
+ */
+export function isSupportedDesktopReleaseVersion(version: string): boolean {
+  return DesktopReleaseVersionRegex.test(version);
+}
+
+/**
+ * Extracts the supported Desktop semver from a versioned Desktop release tag.
+ */
+export function getDesktopReleaseVersionFromTag(
+  tagName: string
+): string | null {
+  if (!tagName.startsWith(DesktopReleaseTagPrefix)) {
+    return null;
+  }
+
+  const version = tagName.slice(DesktopReleaseTagPrefix.length);
+  return isSupportedDesktopReleaseVersion(version) ? version : null;
+}
+
+/**
+ * Returns true when the tag is a selectable versioned Desktop release tag.
+ */
+export function isVersionedDesktopReleaseTag(tagName: string): boolean {
+  return getDesktopReleaseVersionFromTag(tagName) !== null;
+}
+
+/**
+ * Numeric parts of a supported Desktop release version.
+ */
+export type DesktopReleaseVersionParts = {
+  major: number;
+  minor: number;
+  patch: number;
+};
+
+/**
+ * Parses a supported Desktop release version into numeric parts, or null when
+ * it is not a supported `major.minor.patch` semver.
+ */
+export function parseDesktopReleaseVersion(
+  version: string
+): DesktopReleaseVersionParts | null {
+  if (!isSupportedDesktopReleaseVersion(version)) {
+    return null;
+  }
+  const [major, minor, patch] = version
+    .split(".")
+    .map((part) => Number.parseInt(part, 10));
+  return { major, minor, patch };
+}
+
+/**
+ * Returns the `major.minor` release *series* for a version (e.g. "0.16"), or
+ * null when the version is not supported. Under release-time version assignment
+ * (PRD-470), `apps/desktop/package.json` declares only the series; the release
+ * workflow assigns the patch from the `desktop-v*` tag history.
+ */
+export function getDesktopReleaseSeries(version: string): string | null {
+  const parts = parseDesktopReleaseVersion(version);
+  if (parts === null) {
+    return null;
+  }
+  return `${parts.major}.${parts.minor}`;
+}
+
+/**
+ * Returns the highest supported Desktop release version from a list, or null
+ * when the list contains no supported version. Used at release time to pick the
+ * version a SHA ships: the highest `desktop-v*` tag reachable from the target
+ * commit (FEA-2135 — the patch is minted as a tag at merge time, so the release
+ * reads it rather than deriving a fresh number).
+ */
+export function getHighestDesktopReleaseVersion(
+  versions: string[]
+): string | null {
+  let highest: { version: string; parts: DesktopReleaseVersionParts } | null =
+    null;
+  for (const candidate of versions) {
+    const parts = parseDesktopReleaseVersion(candidate);
+    if (parts === null) {
+      continue;
+    }
+    if (
+      highest === null ||
+      parts.major > highest.parts.major ||
+      (parts.major === highest.parts.major &&
+        parts.minor > highest.parts.minor) ||
+      (parts.major === highest.parts.major &&
+        parts.minor === highest.parts.minor &&
+        parts.patch > highest.parts.patch)
+    ) {
+      highest = { version: candidate, parts };
+    }
+  }
+  return highest === null ? null : highest.version;
+}
+
+/**
+ * Resolves the next Desktop version, keyed to the target SHA for idempotency.
+ *
+ * `apps/desktop/package.json` declares the `major.minor` series anchor and a
+ * patch FLOOR; the next patch is `max(highest ledger patch in the series + 1,
+ * anchor patch)`, so customer-facing versions increment without reusing a
+ * number. Under FEA-2135 this runs at **merge time** to mint the
+ * `desktop-v<next>` tag (the counter lives in the tag/release ledger);
+ * `releasedVersions` is therefore the union of published releases and existing
+ * `desktop-v*` tags so two merges never compute the same patch.
+ *
+ * The anchor patch as a floor (FEA-2156) does double duty: a fresh series anchor
+ * (e.g. `0.17.0`) starts the series at its own patch, and a deliberately-raised
+ * anchor (e.g. `0.16.71`) keeps the auto-mint above a high-water mark the ledger
+ * has not yet reached — guarding against re-issuing a number an earlier `main`
+ * commit already carried in the manifest.
+ *
+ * Idempotency (FEA-1936): when the target SHA already carries a release tag
+ * (`shaReleasedVersion`), that exact version is reused so re-running on a
+ * tagged SHA does not mint a fresh number for byte-identical code.
+ */
+export function resolveDesktopReleaseVersion(input: {
+  seriesVersion: string;
+  releasedVersions: string[];
+  shaReleasedVersion: string | null;
+}): { version: string } | { error: string } {
+  if (
+    input.shaReleasedVersion !== null &&
+    isSupportedDesktopReleaseVersion(input.shaReleasedVersion)
+  ) {
+    return { version: input.shaReleasedVersion };
+  }
+
+  const series = parseDesktopReleaseVersion(input.seriesVersion);
+  if (series === null) {
+    return {
+      error: `Desktop series anchor "${input.seriesVersion}" is not a supported major.minor.patch version.`,
+    };
+  }
+
+  let maxPatch = -1;
+  let highestMajor = series.major;
+  let highestMinor = series.minor;
+  for (const candidate of input.releasedVersions) {
+    const parts = parseDesktopReleaseVersion(candidate);
+    if (parts === null) {
+      continue;
+    }
+    if (
+      parts.major > highestMajor ||
+      (parts.major === highestMajor && parts.minor > highestMinor)
+    ) {
+      highestMajor = parts.major;
+      highestMinor = parts.minor;
+    }
+    if (
+      parts.major === series.major &&
+      parts.minor === series.minor &&
+      parts.patch > maxPatch
+    ) {
+      maxPatch = parts.patch;
+    }
+  }
+
+  // Fail closed if the anchor series is behind the highest released series:
+  // deriving a lower series here would publish a release/feed promotion that
+  // *downgrades* the channel (e.g. anchor 0.16 while 0.17.x already shipped).
+  // The anchor must be advanced deliberately before such a release (Codex P2).
+  if (highestMajor !== series.major || highestMinor !== series.minor) {
+    return {
+      error: `Desktop series anchor ${series.major}.${series.minor} is behind the highest released series ${highestMajor}.${highestMinor}; refusing to derive a lower release series (would downgrade the channel). Advance the apps/desktop/package.json anchor first.`,
+    };
+  }
+
+  // Floor the next patch at the anchor's own patch (FEA-2156). The anchor patch
+  // is the release FLOOR: the next version is never below it, even when the
+  // tag/release ledger is lower. This both preserves "start a fresh series at
+  // its anchor patch" (e.g. anchor 0.17.0 with no 0.17 releases → 0.17.0) and
+  // lets the anchor act as a deliberate one-time floor/override — e.g. setting
+  // 0.16.71 makes the next release 0.16.71 even though the ledger only reached
+  // 0.16.47, so the auto-mint can never re-issue a number an earlier `main`
+  // commit already carried in apps/desktop/package.json (which had climbed to
+  // 0.16.70 before this control existed). Once the ledger passes the floor, the
+  // contiguous +1 leads again.
+  const nextPatch = Math.max(maxPatch + 1, series.patch);
+  return { version: `${series.major}.${series.minor}.${nextPatch}` };
+}
+
+/**
+ * Returns true only for the supported macOS updater ZIP asset basename.
+ */
+export function isDesktopReleaseUpdaterZipAssetName(
+  assetName: string
+): boolean {
+  return (
+    isSafeDesktopReleaseAssetBasename(assetName) &&
+    DesktopReleaseUpdaterZipAssetNameRegex.test(assetName)
+  );
+}
+
+/**
+ * Extracts the current updater ZIP basename from an Electron latest-mac.yml feed.
+ */
+export function getDesktopReleaseUpdaterZipAssetNameFromFeed(
+  feedText: string
+): string | null {
+  const candidates = [
+    DesktopReleaseUpdaterFeedFileUrlRegex.exec(feedText)?.[1],
+    DesktopReleaseUpdaterFeedPathRegex.exec(feedText)?.[1],
+    DesktopReleaseUpdaterFeedLegacyUrlRegex.exec(feedText)?.[1],
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    const zipAssetName =
+      getDesktopReleaseUpdaterZipAssetNameFromCandidate(candidate);
+    if (zipAssetName !== null) {
+      return zipAssetName;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extracts the current updater ZIP basename from desktop-release.json
+ * metadata, validating the unknown metadata shape with Zod.
+ */
+export function getDesktopReleaseUpdaterZipAssetNameFromMetadata(
+  metadata: unknown
+): string | null {
+  const parsed = DesktopReleaseMetadataSchema.safeParse(metadata);
+  if (!parsed.success) {
+    return null;
+  }
+
+  const zipAssetName = parsed.data.assets.zip;
+  return isDesktopReleaseUpdaterZipAssetName(zipAssetName)
+    ? zipAssetName
+    : null;
+}
+
+/**
+ * Returns true only for short-lived GitHub object URLs suitable for redirecting
+ * updater ZIP requests.
+ */
+export function isAllowedDesktopReleaseAssetRedirectUrl(
+  candidateUrl: string
+): boolean {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(candidateUrl);
+  } catch {
+    return false;
+  }
+
+  if (parsedUrl.protocol !== "https:") {
+    return false;
+  }
+  if (parsedUrl.username !== "" || parsedUrl.password !== "") {
+    return false;
+  }
+  if (!AllowedDesktopReleaseAssetRedirectHosts.has(parsedUrl.hostname)) {
+    return false;
+  }
+  if (parsedUrl.pathname === "" || parsedUrl.pathname === "/") {
+    return false;
+  }
+
+  return parsedUrl.hash === "";
+}
+
+/**
+ * Returns true only for active macOS Desktop DMG download URLs — either on the
+ * private release repo (`DesktopReleaseRepo`) or on the public mirror the DMG is
+ * copied to for login-free download (`DesktopPublicMirrorRepo`, FEA-3372).
+ */
+export function isAllowedDesktopReleaseDownloadUrl(
+  candidateUrl: string
+): boolean {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(candidateUrl);
+  } catch {
+    return false;
+  }
+
+  if (parsedUrl.protocol !== "https:") {
+    return false;
+  }
+  if (parsedUrl.username !== "" || parsedUrl.password !== "") {
+    return false;
+  }
+  if (parsedUrl.hostname !== "github.com") {
+    return false;
+  }
+  if (parsedUrl.search !== "" || parsedUrl.hash !== "") {
+    return false;
+  }
+
+  const pathParts = parsedUrl.pathname.split("/").filter(Boolean);
+  const decodedPathParts = pathParts.map((part) =>
+    safeDecodeURIComponent(part)
+  );
+  if (decodedPathParts.some((part) => part === null)) {
+    return false;
+  }
+
+  const [owner, repo, releasesSegment, downloadSegment, tagName, assetName] =
+    decodedPathParts as [string, string, string, string, string, string];
+  if (
+    pathParts.length !== 6 ||
+    owner !== DesktopReleaseOwner ||
+    !AllowedDesktopReleaseDownloadRepos.has(repo) ||
+    releasesSegment !== "releases" ||
+    downloadSegment !== "download"
+  ) {
+    return false;
+  }
+
+  const version = getDesktopReleaseVersionFromTag(tagName);
+  if (version === null) {
+    return false;
+  }
+
+  if (
+    assetName.includes("/") ||
+    assetName.includes("\\") ||
+    assetName.includes("..")
+  ) {
+    return false;
+  }
+
+  // Accept both the current "AgentFlow-*" name and the pre-rename
+  // "AgentFlow-*" name during the brand-rename transition (FEA-2101) so
+  // download URLs for already-published legacy assets keep validating.
+  return isAcceptedDesktopReleaseDmgAssetName(assetName, version);
+}
+
+function safeDecodeURIComponent(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function getDesktopReleaseUpdaterZipAssetNameFromCandidate(
+  candidate: string
+): string | null {
+  const decodedCandidate = safeDecodeURIComponent(candidate);
+  if (decodedCandidate === null) {
+    return null;
+  }
+
+  if (decodedCandidate.includes("/") || decodedCandidate.includes("\\")) {
+    return null;
+  }
+
+  return isDesktopReleaseUpdaterZipAssetName(decodedCandidate)
+    ? decodedCandidate
+    : null;
+}
+
+function isSafeDesktopReleaseAssetBasename(assetName: string): boolean {
+  return (
+    assetName.length > 0 &&
+    !assetName.includes("/") &&
+    !assetName.includes("\\") &&
+    !assetName.includes("..") &&
+    safeDecodeURIComponent(assetName) === assetName
+  );
+}

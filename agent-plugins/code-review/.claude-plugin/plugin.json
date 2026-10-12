@@ -1,0 +1,9 @@
+{
+  "name": "code-review",
+  "description": "Code review plugin",
+  "version": "3.10.3",
+  "author": {
+    "name": "AgentFlow",
+    "email": "support@agentflow.ai"
+  }
+}

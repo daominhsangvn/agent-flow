@@ -1,0 +1,166 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  InsightsResultCache,
+  insightsCacheKey,
+} from "../src/main/database/db-host/insights-cache.js";
+
+const KEY_A = insightsCacheKey(["delivery", "90"]);
+const KEY_B = insightsCacheKey(["utilization", "90"]);
+
+test("returns a cached result without recomputing on a hit at the same epoch", async () => {
+  let calls = 0;
+  const cache = new InsightsResultCache();
+  const compute = () => {
+    calls++;
+    return Promise.resolve({ n: calls });
+  };
+
+  const first = await cache.get(KEY_A, compute);
+  const second = await cache.get(KEY_A, compute);
+
+  assert.deepEqual(first, { n: 1 });
+  assert.deepEqual(second, { n: 1 });
+  assert.equal(calls, 1, "second hit must not recompute");
+});
+
+test("recomputes after the epoch advances past the cooldown", async () => {
+  let nowMs = 1000;
+  let calls = 0;
+  const cache = new InsightsResultCache({
+    staleServeCooldownMs: 100,
+    now: () => nowMs,
+  });
+  const compute = () => {
+    calls++;
+    return Promise.resolve({ n: calls });
+  };
+
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 1 });
+  cache.bumpDataEpoch();
+  // Advance the clock past the cooldown so the stale entry recomputes.
+  nowMs += 200;
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 2 });
+  assert.equal(calls, 2);
+});
+
+test("serves the last-good value while the epoch churns inside the cooldown (backfill debounce)", async () => {
+  let nowMs = 1000;
+  let calls = 0;
+  const cache = new InsightsResultCache({
+    staleServeCooldownMs: 5000,
+    now: () => nowMs,
+  });
+  const compute = () => {
+    calls++;
+    return Promise.resolve({ n: calls });
+  };
+
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 1 });
+  // Simulate a backfill: epoch advances many times within the cooldown window.
+  for (let i = 0; i < 50; i++) {
+    cache.bumpDataEpoch();
+    nowMs += 10; // still well under the 5000ms cooldown in aggregate
+    assert.deepEqual(
+      await cache.get(KEY_A, compute),
+      { n: 1 },
+      "stale-but-present value is served during backfill"
+    );
+  }
+  assert.equal(calls, 1, "no recompute thrash during backfill");
+});
+
+test("markReadStart snapshots the epoch at read time, not compute-invocation time", async () => {
+  const nowMs = 1000;
+  let calls = 0;
+  const cache = new InsightsResultCache({
+    staleServeCooldownMs: 100,
+    now: () => nowMs,
+  });
+  // Simulate a caller (the db-host worker) that waits on the heavy-op gate
+  // before reading: writes land during the wait, THEN it reads and marks the
+  // read start. The recorded epoch must reflect the post-wait read, so the
+  // entry is fresh at the current epoch and does not force a needless recompute.
+  const compute = (markReadStart: () => void) => {
+    calls++;
+    // Backfill commits land while we wait on the gate.
+    cache.bumpDataEpoch();
+    cache.bumpDataEpoch();
+    markReadStart();
+    return Promise.resolve({ n: calls });
+  };
+
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 1 });
+  // Second request at the same (post-read) epoch is a fresh hit — no recompute,
+  // even though the epoch advanced between invocation and the marked read.
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 1 });
+  assert.equal(calls, 1, "read-time epoch snapshot keeps the entry fresh");
+});
+
+test("without markReadStart, a write during compute correctly marks the entry stale", async () => {
+  let nowMs = 1000;
+  let calls = 0;
+  const cache = new InsightsResultCache({
+    staleServeCooldownMs: 100,
+    now: () => nowMs,
+  });
+  const compute = () => {
+    calls++;
+    // A write lands during the read; with the default invoke-time snapshot the
+    // entry is (correctly) marked stale so the next request recomputes.
+    cache.bumpDataEpoch();
+    return Promise.resolve({ n: calls });
+  };
+
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 1 });
+  nowMs += 200; // past cooldown
+  assert.deepEqual(await cache.get(KEY_A, compute), { n: 2 });
+  assert.equal(calls, 2, "invoke-time snapshot marks the entry stale");
+});
+
+test("single-flights concurrent identical requests", async () => {
+  let calls = 0;
+  // Seeded with a no-op rather than `null` so the type stays callable: the
+  // real resolver is installed inside the promise executor below, which
+  // control-flow analysis cannot see from this scope.
+  let resolveCompute: () => void = () => undefined;
+  const cache = new InsightsResultCache();
+  const compute = () =>
+    new Promise<{ n: number }>((resolve) => {
+      calls++;
+      resolveCompute = () => resolve({ n: calls });
+    });
+
+  const p1 = cache.get(KEY_A, compute);
+  const p2 = cache.get(KEY_A, compute);
+  // Let the concurrency slot acquire (a microtask) so compute actually starts.
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(calls, 1, "only one computation starts for identical keys");
+
+  resolveCompute();
+  const [r1, r2] = await Promise.all([p1, p2]);
+  assert.deepEqual(r1, { n: 1 });
+  assert.deepEqual(r2, { n: 1 });
+});
+
+test("bounds concurrency across different keys to one computation at a time", async () => {
+  let running = 0;
+  let maxRunning = 0;
+  const cache = new InsightsResultCache({ maxConcurrency: 1 });
+  const makeCompute = (value: string) => async () => {
+    running++;
+    maxRunning = Math.max(maxRunning, running);
+    await new Promise((r) => setTimeout(r, 10));
+    running--;
+    return value;
+  };
+
+  const [a, b] = await Promise.all([
+    cache.get(KEY_A, makeCompute("a")),
+    cache.get(KEY_B, makeCompute("b")),
+  ]);
+
+  assert.equal(a, "a");
+  assert.equal(b, "b");
+  assert.equal(maxRunning, 1, "at most one computation runs concurrently");
+});

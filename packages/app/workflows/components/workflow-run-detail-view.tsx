@@ -1,0 +1,694 @@
+"use client";
+
+import {
+  LoopCommandSchema,
+  LoopStatusSchema,
+} from "@agentflow-ai/loops-api/commands";
+import { DocumentType } from "@repo/api/src/types/document";
+import {
+  type WorkflowActionRun,
+  WorkflowActionRunStatus,
+  WorkflowActionStage,
+  type WorkflowRunDetail,
+  type WorkflowRunDocumentRef,
+  type WorkflowRunError,
+  type WorkflowRunLoopRef,
+} from "@repo/api/src/types/workflow";
+// Cross-slice: run documents route through the documents slice, loops render
+// with the loops slice badge, and providers/errors come from integrations.
+import { getDocumentRoute } from "@repo/app/documents/lib/document-navigation";
+import { DOCUMENT_TYPE_LABELS } from "@repo/app/documents/lib/document-type-labels";
+import { ProviderIcon } from "@repo/app/integrations/components/provider-icon";
+import { QueryErrorMessage } from "@repo/app/integrations/components/query-error-message";
+import { useIntegrationProviders } from "@repo/app/integrations/hooks/use-integrations";
+import { getProviderDisplayName } from "@repo/app/integrations/lib/integration-labels";
+import { LoopStatusBadge } from "@repo/app/loops/components/loop-status-badge";
+import { ApiError } from "@repo/app/shared/api/api-error";
+import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dialog";
+import { loopCommandLabels } from "@repo/app/shared/components/status-badge";
+import {
+  formatDateTime,
+  formatRelativeTime,
+} from "@repo/app/shared/lib/date-utils";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@repo/design-system/components/ui/alert";
+import { Badge } from "@repo/design-system/components/ui/badge";
+import { Button } from "@repo/design-system/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@repo/design-system/components/ui/card";
+import { EmptyState } from "@repo/design-system/components/ui/empty-state";
+import { Skeleton } from "@repo/design-system/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@repo/design-system/components/ui/table";
+import { Link } from "@repo/navigation/link";
+import { useOrgPath } from "@repo/navigation/use-org-path";
+import {
+  AlertCircleIcon,
+  BanIcon,
+  ExternalLinkIcon,
+  GitPullRequestIcon,
+  HistoryIcon,
+  Loader2Icon,
+  RotateCcwIcon,
+} from "lucide-react";
+import { Fragment, useState } from "react";
+import { z } from "zod";
+import {
+  isFinalWorkflowRunStatus,
+  useCancelWorkflowRun,
+  useRetryWorkflowActionRun,
+  useWorkflowRun,
+} from "../hooks/use-workflows";
+import { getActionLabel } from "../lib/workflow-catalog";
+import { describeWorkflowRunError } from "../lib/workflow-error-messages";
+import {
+  WORKFLOW_ACTION_STAGE_LABELS,
+  WORKFLOW_RUN_EVENT_LABELS,
+} from "../lib/workflow-labels";
+import { WorkflowRunProcessCard } from "./workflow-run-process-card";
+import { WorkflowRunTimeline } from "./workflow-run-timeline";
+import {
+  WorkflowActionRunStatusBadge,
+  WorkflowRunStatusBadge,
+} from "./workflow-status-badges";
+
+export type WorkflowRunDetailViewProps = {
+  runId: string;
+  /** Admins can cancel an active run and retry failed or skipped post actions. */
+  isAdmin: boolean;
+};
+
+/**
+ * One workflow run: its progress (received, pre actions, importing, planning,
+ * implementing), the source item, the imported Issue and plan, the loops the
+ * agent team ran, the pull request, and every pre and post action run with
+ * its delivery status. Polls while the run is still moving.
+ */
+export function WorkflowRunDetailView({
+  runId,
+  isAdmin,
+}: Readonly<WorkflowRunDetailViewProps>) {
+  const run = useWorkflowRun(runId);
+
+  if (run.isLoading) {
+    return (
+      <div aria-label="Loading run" className="space-y-4" role="status">
+        <Skeleton className="h-10 w-80" />
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-48 w-full" />
+      </div>
+    );
+  }
+  if (run.error instanceof ApiError && run.error.isNotFound()) {
+    return (
+      <EmptyState
+        description="It may belong to a deleted workflow."
+        icon={HistoryIcon}
+        title="Run not found"
+      />
+    );
+  }
+  if (run.error || !run.data) {
+    return (
+      <QueryErrorMessage
+        error={run.error}
+        onRetry={() => {
+          run.refetch();
+        }}
+        title="Couldn't load the run"
+      />
+    );
+  }
+
+  return <RunDetailContent isAdmin={isAdmin} run={run.data} />;
+}
+
+function RunDetailContent({
+  run,
+  isAdmin,
+}: Readonly<{ run: WorkflowRunDetail; isAdmin: boolean }>) {
+  const providers = useIntegrationProviders();
+  const cancelRun = useCancelWorkflowRun();
+  const buildOrgPath = useOrgPath();
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const isActive = !isFinalWorkflowRunStatus(run.status);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <ProviderIcon className="size-5" provider={run.source.provider} />
+            <h2 className="font-semibold text-xl">
+              {run.source.key}
+              {run.source.title ? (
+                <span className="font-normal text-muted-foreground">
+                  {" "}
+                  {run.source.title}
+                </span>
+              ) : null}
+            </h2>
+            <WorkflowRunStatusBadge status={run.status} />
+          </div>
+          <p className="text-muted-foreground text-sm">
+            {"Workflow "}
+            <Link
+              className="text-foreground hover:underline"
+              href={buildOrgPath(`/workflows/${run.workflowId}`)}
+            >
+              {run.workflowName}
+            </Link>
+            {` · started ${formatRelativeTime(run.createdAt)}`}
+            {run.completedAt
+              ? ` · finished ${formatRelativeTime(run.completedAt)}`
+              : null}
+          </p>
+        </div>
+        {isAdmin && isActive ? (
+          <Button
+            disabled={cancelRun.isPending}
+            onClick={() => setConfirmCancel(true)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <BanIcon className="size-4" />
+            Cancel run
+          </Button>
+        ) : null}
+      </div>
+
+      <WorkflowRunTimeline run={run} />
+
+      {run.error ? <RunErrorAlert error={run.error} /> : null}
+
+      <WorkflowRunProcessCard isAdmin={isAdmin} run={run} />
+
+      <RunLinksCard
+        providerName={getProviderDisplayName(
+          providers.data,
+          run.source.provider
+        )}
+        run={run}
+      />
+      <RunLoopsCard loops={run.loops} stepNames={stepNames(run)} />
+      <ActionRunsCard
+        actionRuns={run.actionRuns}
+        getLabel={(type) => getActionLabel(providers.data, type)}
+        isAdmin={isAdmin}
+        runId={run.id}
+      />
+
+      <ConfirmationDialog
+        confirmLabel="Cancel run"
+        description="Active loops of this run are cancelled and the run stops. Actions already delivered are not undone."
+        isPending={cancelRun.isPending}
+        onConfirm={async () => {
+          await cancelRun.mutateAsync(run.id);
+        }}
+        onOpenChange={setConfirmCancel}
+        open={confirmCancel}
+        title="Cancel this run?"
+        variant="destructive"
+      />
+    </div>
+  );
+}
+
+function RunErrorAlert({ error }: Readonly<{ error: WorkflowRunError }>) {
+  const text = describeWorkflowRunError(error);
+
+  return (
+    <Alert variant="error">
+      <AlertCircleIcon />
+      <AlertTitle>{text.title}</AlertTitle>
+      <AlertDescription>
+        <p className="break-words">{text.detail}</p>
+        {text.title === error.code ? null : (
+          <p className="font-mono text-muted-foreground text-xs">
+            {error.code}
+          </p>
+        )}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function RunLinksCard({
+  run,
+  providerName,
+}: Readonly<{ run: WorkflowRunDetail; providerName: string }>) {
+  const buildOrgPath = useOrgPath();
+  const sourceType = run.feature?.type ?? DocumentType.Feature;
+  const featureRoute = documentRoute(sourceType, run.feature);
+  const planRoute = documentRoute(DocumentType.ImplementationPlan, run.plan);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Work items</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[10rem_1fr]">
+          <dt className="text-muted-foreground">Source</dt>
+          <dd>
+            <ExternalOrText
+              href={run.source.url}
+              text={`${providerName} ${run.source.key}`}
+            />
+          </dd>
+          <dt className="text-muted-foreground">
+            {sourceType === DocumentType.Prd ? "PRD" : "Issue"}
+          </dt>
+          <dd data-testid="run-source-document">
+            <DocumentLink
+              document={run.feature}
+              href={featureRoute ? buildOrgPath(featureRoute) : null}
+              pendingText="Not imported yet"
+            />
+          </dd>
+          <dt className="text-muted-foreground">Implementation plan</dt>
+          <dd>
+            <DocumentLink
+              document={run.plan}
+              href={planRoute ? buildOrgPath(planRoute) : null}
+              pendingText="Not created yet"
+            />
+          </dd>
+          {run.documents.map((document) => {
+            const route = documentRoute(document.type, document);
+            return (
+              <Fragment key={document.id}>
+                <dt className="text-muted-foreground">
+                  {DOCUMENT_TYPE_LABELS[document.type]}
+                </dt>
+                <dd data-testid="run-published-document">
+                  <DocumentLink
+                    document={document}
+                    href={route ? buildOrgPath(route) : null}
+                    pendingText=""
+                  />
+                </dd>
+              </Fragment>
+            );
+          })}
+          <dt className="text-muted-foreground">Pull request</dt>
+          <dd>
+            {run.prUrl ? (
+              <a
+                className="inline-flex items-center gap-1 text-[var(--link)] hover:underline"
+                href={run.prUrl}
+                rel="noreferrer noopener"
+                target="_blank"
+              >
+                <GitPullRequestIcon className="size-3.5" />
+                {run.prUrl}
+              </a>
+            ) : (
+              <span className="text-muted-foreground">None yet</span>
+            )}
+            {run.branchName ? (
+              <span className="ml-2 font-mono text-muted-foreground text-xs">
+                {run.branchName}
+              </span>
+            ) : null}
+          </dd>
+        </dl>
+      </CardContent>
+    </Card>
+  );
+}
+
+function DocumentLink({
+  document,
+  href,
+  pendingText,
+}: Readonly<{
+  document: WorkflowRunDocumentRef | null;
+  href: string | null;
+  pendingText: string;
+}>) {
+  if (!document) {
+    return <span className="text-muted-foreground">{pendingText}</span>;
+  }
+  const label = document.slug
+    ? `${document.slug} ${document.title}`
+    : document.title;
+  if (!href) {
+    return <span>{label}</span>;
+  }
+  return (
+    <Link className="text-[var(--link)] hover:underline" href={href}>
+      {label}
+    </Link>
+  );
+}
+
+function ExternalOrText({
+  href,
+  text,
+}: Readonly<{ href: string | null; text: string }>) {
+  if (!(href && isHttpUrl(href))) {
+    return <span>{text}</span>;
+  }
+  return (
+    <a
+      className="inline-flex items-center gap-1 text-[var(--link)] hover:underline"
+      href={href}
+      rel="noreferrer noopener"
+      target="_blank"
+    >
+      {text}
+      <ExternalLinkIcon className="size-3" />
+    </a>
+  );
+}
+
+function RunLoopsCard({
+  loops,
+  stepNames,
+}: Readonly<{
+  loops: WorkflowRunLoopRef[];
+  /** Process step names by id, for the loops that ran a step. */
+  stepNames: ReadonlyMap<string, string>;
+}>) {
+  const buildOrgPath = useOrgPath();
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Agent loops</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {loops.length === 0 ? (
+          <p className="text-muted-foreground text-sm">
+            No loop has been launched for this run yet.
+          </p>
+        ) : (
+          <div className="overflow-x-auto rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Command</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Started</TableHead>
+                  <TableHead>Finished</TableHead>
+                  <TableHead>Pull request</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loops.map((loop) => (
+                  <TableRow key={loop.loopId}>
+                    <TableCell>
+                      <Link
+                        className="font-medium hover:underline"
+                        href={buildOrgPath(`/loops/${loop.loopId}`)}
+                      >
+                        {getLoopCommandLabel(loop.command)}
+                      </Link>
+                      {loop.stepId ? (
+                        <span className="ml-2 text-muted-foreground text-xs">
+                          {stepNames.get(loop.stepId) ?? loop.stepId}
+                        </span>
+                      ) : null}
+                      {loop.adopted ? (
+                        <Badge
+                          className="ml-2"
+                          title="Started by a person and attached to this run"
+                          variant="muted"
+                        >
+                          Adopted
+                        </Badge>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>
+                      <RunLoopStatus status={loop.status} />
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-muted-foreground">
+                      {loop.startedAt ? formatDateTime(loop.startedAt) : "-"}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-muted-foreground">
+                      {loop.completedAt
+                        ? formatDateTime(loop.completedAt)
+                        : "-"}
+                    </TableCell>
+                    <TableCell>
+                      {loop.prUrl ? (
+                        <ExternalOrText href={loop.prUrl} text="Open" />
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RunLoopStatus({ status }: Readonly<{ status: string }>) {
+  const parsed = LoopStatusSchema.safeParse(status);
+  if (parsed.success) {
+    return <LoopStatusBadge status={parsed.data} />;
+  }
+  return <Badge variant="muted">{status}</Badge>;
+}
+
+function ActionRunsCard({
+  actionRuns,
+  runId,
+  isAdmin,
+  getLabel,
+}: Readonly<{
+  actionRuns: WorkflowActionRun[];
+  runId: string;
+  isAdmin: boolean;
+  getLabel: (actionType: string) => string;
+}>) {
+  const orderedRuns = sortActionRuns(actionRuns);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Actions</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {orderedRuns.length === 0 ? (
+          <p className="text-muted-foreground text-sm">
+            No pre or post action has run for this run yet.
+          </p>
+        ) : (
+          <div className="overflow-x-auto rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Action</TableHead>
+                  <TableHead>Stage</TableHead>
+                  <TableHead>Event</TableHead>
+                  <TableHead className="text-right">Cycle</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Attempts</TableHead>
+                  <TableHead>Result</TableHead>
+                  {isAdmin ? (
+                    <TableHead>
+                      <span className="sr-only">Actions</span>
+                    </TableHead>
+                  ) : null}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {orderedRuns.map((actionRun) => (
+                  <ActionRunRow
+                    actionRun={actionRun}
+                    isAdmin={isAdmin}
+                    key={actionRun.id}
+                    label={getLabel(actionRun.actionType)}
+                    runId={runId}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ActionRunRow({
+  actionRun,
+  label,
+  runId,
+  isAdmin,
+}: Readonly<{
+  actionRun: WorkflowActionRun;
+  label: string;
+  runId: string;
+  isAdmin: boolean;
+}>) {
+  const retry = useRetryWorkflowActionRun();
+  const canRetry = isAdmin && isRetryableActionRun(actionRun);
+
+  return (
+    <TableRow>
+      <TableCell className="font-medium">
+        {label}
+        {actionRun.actionId ? null : (
+          <span className="ml-2 text-muted-foreground text-xs">(removed)</span>
+        )}
+      </TableCell>
+      <TableCell>
+        <Badge
+          variant={
+            actionRun.stage === WorkflowActionStage.Pre ? "info" : "neutral"
+          }
+        >
+          {WORKFLOW_ACTION_STAGE_LABELS[actionRun.stage] ?? actionRun.stage}
+        </Badge>
+      </TableCell>
+      <TableCell>
+        {WORKFLOW_RUN_EVENT_LABELS[actionRun.event] ?? actionRun.event}
+      </TableCell>
+      <TableCell className="text-right tabular-nums">
+        {actionRun.cycle}
+      </TableCell>
+      <TableCell>
+        <WorkflowActionRunStatusBadge status={actionRun.status} />
+      </TableCell>
+      <TableCell className="text-right tabular-nums">
+        {actionRun.attempts}
+      </TableCell>
+      <TableCell className="max-w-[24rem] text-xs">
+        <ActionRunResult actionRun={actionRun} />
+      </TableCell>
+      {isAdmin ? (
+        <TableCell className="text-right">
+          {canRetry ? (
+            <Button
+              disabled={retry.isPending}
+              onClick={() => retry.mutate({ runId, actionRunId: actionRun.id })}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {retry.isPending ? (
+                <Loader2Icon className="size-3.5 animate-spin" />
+              ) : (
+                <RotateCcwIcon className="size-3.5" />
+              )}
+              Retry
+            </Button>
+          ) : null}
+        </TableCell>
+      ) : null}
+    </TableRow>
+  );
+}
+
+function ActionRunResult({
+  actionRun,
+}: Readonly<{ actionRun: WorkflowActionRun }>) {
+  if (actionRun.lastError) {
+    return (
+      <span className="break-words text-destructive">
+        {actionRun.lastError}
+      </span>
+    );
+  }
+  if (actionRun.externalRef) {
+    return isHttpUrl(actionRun.externalRef) ? (
+      <ExternalOrText href={actionRun.externalRef} text="View" />
+    ) : (
+      <span className="font-mono text-muted-foreground">
+        {actionRun.externalRef}
+      </span>
+    );
+  }
+  if (actionRun.completedAt) {
+    return (
+      <span className="text-muted-foreground">
+        {formatRelativeTime(actionRun.completedAt)}
+      </span>
+    );
+  }
+  return <span className="text-muted-foreground">-</span>;
+}
+
+/**
+ * Pre actions run inline in the run state machine, before the agent team;
+ * only post actions are re-delivered by the outbox. A failed one, and a
+ * skipped one (its connection was disabled, its config no longer parsed, it
+ * had no target) can be put back once the admin fixed the cause.
+ */
+function isRetryableActionRun(actionRun: WorkflowActionRun): boolean {
+  return (
+    actionRun.stage === WorkflowActionStage.Post &&
+    RETRYABLE_ACTION_RUN_STATUSES.includes(actionRun.status)
+  );
+}
+
+function documentRoute(
+  type: DocumentType,
+  document: WorkflowRunDocumentRef | null
+): string | null {
+  if (!document?.slug) {
+    return null;
+  }
+  return getDocumentRoute({ type, slug: document.slug });
+}
+
+/**
+ * Pre action runs first (they ran before the agent team), then post action
+ * runs; within a stage by cycle, then in the order they were created.
+ */
+function sortActionRuns(
+  actionRuns: readonly WorkflowActionRun[]
+): WorkflowActionRun[] {
+  return [...actionRuns].sort(
+    (a, b) =>
+      stageRank(a.stage) - stageRank(b.stage) ||
+      a.cycle - b.cycle ||
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+}
+
+function stageRank(stage: WorkflowActionStage): number {
+  return stage === WorkflowActionStage.Pre ? 0 : 1;
+}
+
+function stepNames(run: WorkflowRunDetail): ReadonlyMap<string, string> {
+  return new Map(run.process?.steps.map((step) => [step.id, step.name]) ?? []);
+}
+
+function getLoopCommandLabel(command: string): string {
+  const parsed = LoopCommandSchema.safeParse(command);
+  return parsed.success ? loopCommandLabels[parsed.data] : command;
+}
+
+function isHttpUrl(value: string): boolean {
+  return httpUrlSchema.safeParse(value).success;
+}
+
+const httpUrlSchema = z.url({ protocol: /^https?$/ });
+
+const RETRYABLE_ACTION_RUN_STATUSES: readonly WorkflowActionRunStatus[] = [
+  WorkflowActionRunStatus.Failed,
+  WorkflowActionRunStatus.Skipped,
+];

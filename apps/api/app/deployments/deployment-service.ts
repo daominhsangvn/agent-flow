@@ -1,0 +1,364 @@
+import { LinkType } from "@repo/api/src/types/artifact";
+import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
+import {
+  type Artifact,
+  ArtifactType,
+  type DeploymentDetail,
+  type Prisma,
+  type TransactionClient,
+  withDb,
+} from "@repo/database";
+import { deploymentWhere } from "@/lib/artifact-adapters";
+
+/**
+ * Deployment artifact service. Owns CRUD on DEPLOYMENT artifacts and their
+ * 1:1 DeploymentDetail rows.
+ *
+ * Deployment state is carried on the parent `Artifact.status` (plain text)
+ * and the vendor-specific metadata lives on DeploymentDetail. Writes go
+ * through nested Prisma writes so the parent and detail rows stay
+ * consistent.
+ */
+
+export type ArtifactWithDeploymentDetail = Artifact & {
+  deployment: DeploymentDetail | null;
+};
+
+export type RecordDeploymentInput = {
+  organizationId: string;
+  projectId: string | null;
+  environment?: string | null;
+  ref?: string | null;
+  sha?: string | null;
+  state: string;
+  externalUrl: string;
+  githubStatusUrl?: string | null;
+  githubDeploymentUrl?: string | null;
+  transient?: boolean | null;
+  production?: boolean | null;
+  branchArtifactId?: string | null;
+  title: string;
+};
+
+export type ListDeploymentsInput = {
+  organizationId: string;
+  projectId?: string;
+  state?: string;
+  limit?: number;
+  cursor?: string;
+};
+
+const deploymentInclude = { deployment: true } as const;
+
+/**
+ * Hard cap on the number of rows a single `list()` page returns. Without it,
+ * an org with a long deployment history would pull every DEPLOYMENT artifact
+ * into memory in one query. Callers page past the cap with `cursor`.
+ */
+const DEPLOYMENT_LIST_MAX_LIMIT = 100;
+
+/**
+ * Transaction bound for `recordDeployment`. The dedup runs under a
+ * `pg_advisory_xact_lock` (see below), so a redelivered/concurrent webhook for
+ * the same preview URL may block on the lock while a sibling transaction
+ * commits. Raise the timeout above Prisma's 5s default so a legitimate lock
+ * wait cannot trip the interactive-transaction limit.
+ */
+const RECORD_DEPLOYMENT_TX_TIMEOUT_MS = 15_000;
+
+export const recordDeploymentTxOptions = {
+  timeout: RECORD_DEPLOYMENT_TX_TIMEOUT_MS,
+} as const;
+
+/**
+ * Advisory-lock key that serializes `recordDeployment` calls sharing the same
+ * `(organizationId, externalUrl)` — the tuple the dedup keys on. Namespaced so
+ * it cannot collide with other advisory locks in the same keyspace.
+ */
+function deploymentLockKey(
+  organizationId: string,
+  externalUrl: string
+): string {
+  return `deployment:${organizationId}:${externalUrl}`;
+}
+
+function buildDeploymentDetailCreate(
+  input: RecordDeploymentInput
+): Prisma.DeploymentDetailCreateWithoutArtifactInput {
+  return {
+    environment: input.environment ?? null,
+    ref: input.ref ?? null,
+    sha: input.sha ?? null,
+    githubStatusUrl: input.githubStatusUrl ?? null,
+    githubDeploymentUrl: input.githubDeploymentUrl ?? null,
+    transient: input.transient ?? null,
+    production: input.production ?? null,
+    ...(input.branchArtifactId
+      ? {
+          branchArtifact: {
+            connect: { id: input.branchArtifactId },
+          },
+        }
+      : {}),
+  };
+}
+
+function buildDeploymentDetailUpdate(
+  input: RecordDeploymentInput
+): Prisma.DeploymentDetailUpdateWithoutArtifactInput {
+  const base: Prisma.DeploymentDetailUpdateWithoutArtifactInput = {
+    environment: input.environment ?? null,
+    ref: input.ref ?? null,
+    sha: input.sha ?? null,
+    githubStatusUrl: input.githubStatusUrl ?? null,
+    githubDeploymentUrl: input.githubDeploymentUrl ?? null,
+    transient: input.transient ?? null,
+    production: input.production ?? null,
+  };
+  if (input.branchArtifactId !== undefined) {
+    base.branchArtifact = input.branchArtifactId
+      ? { connect: { id: input.branchArtifactId } }
+      : { disconnect: true };
+  }
+  return base;
+}
+
+async function updateExistingDeployment(
+  db: TransactionClient,
+  artifactId: string,
+  input: RecordDeploymentInput
+): Promise<ArtifactWithDeploymentDetail> {
+  const data: Prisma.ArtifactUpdateInput = {
+    name: input.title,
+    status: input.state,
+    deployment: { update: buildDeploymentDetailUpdate(input) },
+  };
+  if (input.projectId) {
+    data.project = { connect: { id: input.projectId } };
+  }
+  const updated = await db.artifact.update({
+    where: { id: artifactId },
+    data,
+    include: deploymentInclude,
+  });
+  return updated;
+}
+
+async function createDeployment(
+  db: TransactionClient,
+  input: RecordDeploymentInput
+): Promise<ArtifactWithDeploymentDetail> {
+  const created = await db.artifact.create({
+    data: {
+      type: ArtifactType.DEPLOYMENT,
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      name: input.title,
+      status: input.state,
+      externalUrl: input.externalUrl,
+      deployment: { create: buildDeploymentDetailCreate(input) },
+    },
+    include: deploymentInclude,
+  });
+  return created;
+}
+
+/**
+ * Create (or update, if a deployment artifact already exists for the same
+ * `externalUrl` within the org) a DEPLOYMENT artifact + DeploymentDetail
+ * atomically.
+ *
+ * The "same externalUrl" dedup mirrors the legacy external_links upsert
+ * path: Vercel (et al) reuse the preview URL for subsequent deploys to the
+ * same branch, so we update in place instead of stacking rows.
+ */
+function recordDeployment(
+  input: RecordDeploymentInput
+): Promise<Result<ArtifactWithDeploymentDetail, StatusCode>> {
+  // FEA-1749: a null projectId is legitimate, not a resolution failure — a
+  // deployment of an unparented branch has no project to inherit. `createDeployment`
+  // already accepts `string | null`; the storage layer does not get a vote on
+  // whether an artifact may be unparented.
+  return withDb.tx(async (db) => {
+    // FEA-3466: `artifact.external_url` has no unique constraint and `withDb.tx`
+    // runs at READ COMMITTED, so the findFirst-then-create dedup below is not
+    // concurrency-safe on its own: two overlapping runs (a redelivered
+    // `deployment_status` webhook, or Vercel re-firing `success` for a reused
+    // preview URL) both read "no row" and both insert, stacking duplicate
+    // DEPLOYMENT artifacts. Serialize same-`(organizationId, externalUrl)` runs
+    // on a transaction-scoped advisory lock so the later waiter sees the
+    // committed row and takes the update-in-place branch. The lock is released
+    // automatically on commit/rollback.
+    await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${deploymentLockKey(
+      input.organizationId,
+      input.externalUrl
+    )}))`;
+    const existing = await db.artifact.findFirst({
+      where: {
+        organizationId: input.organizationId,
+        type: ArtifactType.DEPLOYMENT,
+        externalUrl: input.externalUrl,
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      return Result.ok(await updateExistingDeployment(db, existing.id, input));
+    }
+    return Result.ok(await createDeployment(db, input));
+  }, recordDeploymentTxOptions);
+}
+
+/**
+ * Find a single deployment artifact + its detail by id within an
+ * organization. Returns null when no matching row exists.
+ */
+async function findById(
+  id: string,
+  organizationId: string
+): Promise<ArtifactWithDeploymentDetail | null> {
+  const artifact = await withDb((db) =>
+    db.artifact.findFirst({
+      where: { id, organizationId, type: ArtifactType.DEPLOYMENT },
+      include: deploymentInclude,
+    })
+  );
+  return artifact;
+}
+
+/**
+ * List deployment artifacts within an organization, optionally scoped by
+ * project or state.
+ *
+ * Results are capped at `DEPLOYMENT_LIST_MAX_LIMIT` rows per page (bounded
+ * further by an optional `limit`) to keep the query from loading an org's
+ * entire deployment history at once. Pass the last row's `id` as `cursor` to
+ * fetch the next page. The `id` tiebreaker on `orderBy` keeps keyset paging
+ * deterministic when multiple deployments share a `createdAt`.
+ */
+async function list(
+  options: ListDeploymentsInput
+): Promise<ArtifactWithDeploymentDetail[]> {
+  const { organizationId, projectId, state, limit, cursor } = options;
+  const take = Math.min(
+    limit ?? DEPLOYMENT_LIST_MAX_LIMIT,
+    DEPLOYMENT_LIST_MAX_LIMIT
+  );
+  const artifacts = await withDb((db) =>
+    db.artifact.findMany({
+      where: {
+        organizationId,
+        type: ArtifactType.DEPLOYMENT,
+        ...(projectId ? { projectId } : {}),
+        ...(state ? { status: state } : {}),
+      },
+      include: deploymentInclude,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    })
+  );
+  return artifacts;
+}
+
+/**
+ * Hard-delete a deployment artifact. The parent `artifact` row is the
+ * system of record; DeploymentDetail and ArtifactLink rows that reference
+ * it cascade automatically (see schema: `onDelete: Cascade`).
+ *
+ * Returns `Status.NotFound` when no deployment artifact with this id
+ * exists in the caller's organization.
+ */
+async function deleteDeployment(
+  id: string,
+  organizationId: string
+): Promise<Result<void, StatusCode>> {
+  const { count } = await withDb((db) =>
+    db.artifact.deleteMany({
+      where: { id, organizationId, type: ArtifactType.DEPLOYMENT },
+    })
+  );
+  if (count === 0) {
+    return Result.err(Status.NotFound);
+  }
+  return Result.ok(undefined);
+}
+
+/**
+ * Look up a deployment artifact + detail by the preview URL within an
+ * organization.
+ */
+async function findByExternalUrl(
+  externalUrl: string,
+  organizationId: string
+): Promise<ArtifactWithDeploymentDetail | null> {
+  const artifact = await withDb((db) =>
+    db.artifact.findFirst({
+      where: {
+        organizationId,
+        type: ArtifactType.DEPLOYMENT,
+        externalUrl,
+      },
+      include: deploymentInclude,
+    })
+  );
+  return artifact;
+}
+
+/**
+ * Find the most recent preview-deployment artifact linked (via artifact_links
+ * PRODUCES) to any branch artifact descended from `documentId`. PLN-787 dropped
+ * the workstream FK from artifacts, so lineage now travels through PRODUCES
+ * edges: document → branches → deployments.
+ *
+ * Migration-window caveat: branches created before the PRODUCES-link backfill
+ * may not have document→branch (or branch→deployment) links wired up. Such
+ * documents will return `null` here even when a real preview deployment exists
+ * on the `DeploymentDetail.branchArtifactId` row. A backfill that materializes
+ * the missing PRODUCES edges is tracked separately.
+ */
+async function findLatestPreviewForDocument(
+  documentId: string,
+  organizationId: string
+): Promise<ArtifactWithDeploymentDetail | null> {
+  const branchLinks = await withDb((db) =>
+    db.artifactLink.findMany({
+      where: {
+        organizationId,
+        sourceId: documentId,
+        linkType: LinkType.Produces,
+        target: { type: ArtifactType.BRANCH },
+      },
+      select: { targetId: true },
+    })
+  );
+  const branchIds = branchLinks.map((link) => link.targetId);
+  if (branchIds.length === 0) {
+    return null;
+  }
+
+  return await withDb((db) =>
+    db.artifact.findFirst({
+      where: deploymentWhere({
+        organizationId,
+        targetLinks: {
+          some: {
+            organizationId,
+            sourceId: { in: branchIds },
+            linkType: LinkType.Produces,
+          },
+        },
+      }),
+      include: deploymentInclude,
+      orderBy: { createdAt: "desc" },
+    })
+  );
+}
+
+export const deploymentService = {
+  recordDeployment,
+  findById,
+  list,
+  delete: deleteDeployment,
+  findByExternalUrl,
+  findLatestPreviewForDocument,
+};

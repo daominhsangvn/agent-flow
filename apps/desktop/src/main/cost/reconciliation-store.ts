@@ -1,0 +1,263 @@
+/**
+ * @file reconciliation-store.ts
+ * @description Desktop-main (ESM) persistence for nightly cost-reconciliation
+ * rows (FEA-1435/1436). One row per (day × vendor × model): the local
+ * genai-prices estimate, what the vendor actually billed, and the drift between
+ * them — all in integer micro-cents (see cost-math.ts).
+ *
+ * ── Why this lives entirely in desktop-main (not the sidecar) ────────────────
+ * Reconciliation is a privileged, main-only concern: it depends on the vendor
+ * Admin API keys (held in the OS keychain via safeStorage, main-process only)
+ * and on outbound calls to the vendor billing APIs. The sidecar is a sandboxed
+ * localhost process whose web client runs in an iframe; org-level billing data
+ * and anything derived from Admin keys must never transit it. So main computes
+ * the reconciliation (reading token usage from dashboard.db READ-ONLY, exactly
+ * as the sync service already does), persists the results HERE in its own
+ * electron-store, and serves them to the host renderer over IPC. The sidecar is
+ * never involved — no sidecar route, no generated-tree patch, no DB twin.
+ *
+ * This store is dumb storage + query only. It performs NO pricing and NO drift
+ * math — the worker computes rows (via token-cost.ts + cost-math.ts) and hands
+ * them here fully formed. Persisted rows are runtime-validated on load so a
+ * corrupt file degrades to "no data" rather than feeding malformed numbers into
+ * the diagnostics UI.
+ */
+import Store from "electron-store";
+
+/** One reconciled day×vendor×model comparison, all money in integer micro-cents. */
+export type ReconciliationRow = {
+  /** UTC calendar day, ISO `YYYY-MM-DD`. Matches the vendor billing grain. */
+  day: string;
+  /** Vendor id, e.g. "anthropic" or "openai". */
+  vendor: string;
+  /** Model id as stored in the dashboard DB. */
+  model: string;
+  /** Local genai-prices estimate for the day×model, in micro-cents. */
+  localEstimateMicroCents: number;
+  /** Amount the vendor billed for the day×model, in micro-cents. */
+  vendorBilledMicroCents: number;
+  /** local − vendor, in micro-cents (positive ⇒ over-estimate). */
+  driftMicroCents: number;
+  /** Drift as a percent of the vendor amount, or null when the vendor billed $0. */
+  driftPct: number | null;
+  /** ISO 8601 timestamp of when this row was computed. */
+  computedAt: string;
+};
+
+type ReconciliationStoreSchema = {
+  rows: ReconciliationRow[];
+};
+
+export type ReconciliationStoreOptions = {
+  /** electron-store directory override (tests point this at a temp dir). */
+  cwd?: string;
+  /** electron-store file name (without extension). */
+  name?: string;
+  /** Drop rows whose `day` is older than this many days. Default 90. */
+  retentionDays?: number;
+  /** Hard safety cap on stored rows (most-recent kept). Default 5000. */
+  maxEntries?: number;
+  /** Injectable clock for retention pruning (tests pin it). */
+  now?: () => Date;
+};
+
+export type ReconciliationQuery = {
+  /** Inclusive lower bound, ISO `YYYY-MM-DD`. */
+  from?: string;
+  /** Inclusive upper bound, ISO `YYYY-MM-DD`. */
+  to?: string;
+  /** Restrict to a single vendor. */
+  vendor?: string;
+};
+
+const ISO_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Narrow an unknown to a safe-integer `number`, else null. */
+function asSafeInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value)
+    ? value
+    : null;
+}
+
+/** Stable identity for upsert + de-dup: a day×vendor×model is unique. */
+function rowKey(
+  row: Pick<ReconciliationRow, "day" | "vendor" | "model">
+): string {
+  return `${row.day}\u0000${row.vendor}\u0000${row.model}`;
+}
+
+/** UTC `YYYY-MM-DD` for a Date (the day grain we reconcile on). */
+function toUtcDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Validate one persisted/incoming row, returning a clean copy or null. Guards
+ * the money fields as safe integers and the day as an ISO date so corruption or
+ * a malformed IPC payload can never poison aggregation/display.
+ */
+function sanitizeRow(value: unknown): ReconciliationRow | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const r = value as Record<string, unknown>;
+  if (typeof r.day !== "string" || !ISO_DAY_RE.test(r.day)) {
+    return null;
+  }
+  if (typeof r.vendor !== "string" || r.vendor.length === 0) {
+    return null;
+  }
+  if (typeof r.model !== "string" || r.model.length === 0) {
+    return null;
+  }
+  const localEstimateMicroCents = asSafeInt(r.localEstimateMicroCents);
+  const vendorBilledMicroCents = asSafeInt(r.vendorBilledMicroCents);
+  const driftMicroCents = asSafeInt(r.driftMicroCents);
+  if (
+    localEstimateMicroCents === null ||
+    vendorBilledMicroCents === null ||
+    driftMicroCents === null
+  ) {
+    return null;
+  }
+  const driftPct =
+    r.driftPct === null
+      ? null
+      : typeof r.driftPct === "number" && Number.isFinite(r.driftPct)
+        ? r.driftPct
+        : undefined;
+  if (driftPct === undefined) {
+    return null;
+  }
+  if (typeof r.computedAt !== "string" || r.computedAt.length === 0) {
+    return null;
+  }
+  return {
+    day: r.day,
+    vendor: r.vendor,
+    model: r.model,
+    localEstimateMicroCents,
+    vendorBilledMicroCents,
+    driftMicroCents,
+    driftPct,
+    computedAt: r.computedAt,
+  };
+}
+
+/** Sort newest day first, then vendor, then model — stable display order. */
+function compareRows(a: ReconciliationRow, b: ReconciliationRow): number {
+  if (a.day !== b.day) {
+    return a.day < b.day ? 1 : -1;
+  }
+  if (a.vendor !== b.vendor) {
+    return a.vendor < b.vendor ? -1 : 1;
+  }
+  if (a.model !== b.model) {
+    return a.model < b.model ? -1 : 1;
+  }
+  return 0;
+}
+
+export class ReconciliationStore {
+  private readonly store: Store<ReconciliationStoreSchema>;
+  private readonly retentionDays: number;
+  private readonly maxEntries: number;
+  private readonly now: () => Date;
+  private rows: ReconciliationRow[];
+
+  constructor(options?: ReconciliationStoreOptions) {
+    this.retentionDays = options?.retentionDays ?? 90;
+    this.maxEntries = options?.maxEntries ?? 5000;
+    this.now = options?.now ?? (() => new Date());
+    this.store = new Store<ReconciliationStoreSchema>({
+      name: options?.name ?? "desktop-cost-reconciliation",
+      cwd: options?.cwd,
+      defaults: { rows: [] },
+    });
+
+    const persisted = this.store.get("rows", []);
+    const raw = Array.isArray(persisted) ? persisted : [];
+    const sanitized: ReconciliationRow[] = [];
+    for (const candidate of raw) {
+      const clean = sanitizeRow(candidate);
+      if (clean) {
+        sanitized.push(clean);
+      }
+    }
+    const pruned = this.prune(sanitized);
+    this.rows = pruned;
+    // Rewrite the file if load dropped/changed anything (corruption, retention).
+    if (pruned.length !== raw.length) {
+      this.persist();
+    }
+  }
+
+  /**
+   * Insert or replace rows by (day, vendor, model). Incoming rows win over any
+   * stored row with the same key. Invalid rows are silently dropped (the worker
+   * builds rows from validated inputs; this is defense in depth). Returns the
+   * number of rows actually written.
+   */
+  upsert(incoming: readonly ReconciliationRow[]): number {
+    const byKey = new Map<string, ReconciliationRow>();
+    for (const row of this.rows) {
+      byKey.set(rowKey(row), row);
+    }
+    let written = 0;
+    for (const candidate of incoming) {
+      const clean = sanitizeRow(candidate);
+      if (!clean) {
+        continue;
+      }
+      byKey.set(rowKey(clean), clean);
+      written += 1;
+    }
+    this.rows = this.prune([...byKey.values()]);
+    this.persist();
+    return written;
+  }
+
+  /** Return rows matching the query (or all rows), newest day first. */
+  list(query?: ReconciliationQuery): ReconciliationRow[] {
+    const from = query?.from;
+    const to = query?.to;
+    const vendor = query?.vendor;
+    return this.rows
+      .filter((row) => {
+        if (from && row.day < from) {
+          return false;
+        }
+        if (to && row.day > to) {
+          return false;
+        }
+        if (vendor && row.vendor !== vendor) {
+          return false;
+        }
+        return true;
+      })
+      .sort(compareRows);
+  }
+
+  clear(): void {
+    this.rows = [];
+    this.persist();
+  }
+
+  /** Drop rows older than the retention window, then enforce the size cap. */
+  private prune(rows: ReconciliationRow[]): ReconciliationRow[] {
+    const cutoff = toUtcDay(
+      new Date(this.now().getTime() - this.retentionDays * MS_PER_DAY)
+    );
+    const withinRetention = rows.filter((row) => row.day >= cutoff);
+    if (withinRetention.length <= this.maxEntries) {
+      return withinRetention;
+    }
+    // Over the cap: keep the most-recent rows by display order.
+    return [...withinRetention].sort(compareRows).slice(0, this.maxEntries);
+  }
+
+  private persist(): void {
+    this.store.set("rows", this.rows);
+  }
+}

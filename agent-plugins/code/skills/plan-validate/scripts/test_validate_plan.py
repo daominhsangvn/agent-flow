@@ -1,0 +1,215 @@
+"""Tests for validate_plan.py."""
+import pytest
+
+from validate_plan import empty_result, extract_data, validate_schema_fields
+
+
+def _minimal_plan() -> dict:
+    """Return a plan dict with all required fields populated with valid values."""
+    return {
+        "content": "some content",
+        "acceptanceCriteria": [],
+        "pendingTasks": [],
+        "completedTasks": [],
+        "openQuestions": [],
+        "answeredQuestions": [],
+        "gaps": [],
+    }
+
+
+def test_validate_schema_accepts_canonical_repositories() -> None:
+    """validate_schema_fields must accept the canonical multi-repo shape.
+
+    Each 'repositories' entry carries only `path` and `isPrimary` — the two
+    fields the schema defines after the `type` field was removed. A
+    primary+secondary shape exercises both isPrimary branches.
+    """
+    plan = _minimal_plan()
+    plan["repositories"] = {
+        "primary": {"path": "/abs/primary", "isPrimary": True},
+        "frontend": {"path": "/abs/frontend", "isPrimary": False},
+    }
+
+    issues = validate_schema_fields(plan)
+
+    assert issues == [], f"expected no issues but got: {issues}"
+
+
+def test_decision_table_absent_is_valid() -> None:
+    """Plans without a decisionTable field are valid (field is optional)."""
+    plan = _minimal_plan()
+
+    issues = validate_schema_fields(plan)
+
+    assert issues == [], f"expected no issues but got: {issues}"
+
+
+def test_decision_table_valid_shape() -> None:
+    """A well-formed decisionTable with path + status='pending' validates clean."""
+    plan = _minimal_plan()
+    plan["decisionTable"] = {
+        "path": ".agentflow-ai/decision-tables/pln-001.md",
+        "status": "pending",
+    }
+
+    issues = validate_schema_fields(plan)
+
+    assert issues == [], f"expected no issues but got: {issues}"
+
+
+def test_decision_table_invalid_status() -> None:
+    """A decisionTable with a status outside the enum surfaces an issue."""
+    plan = _minimal_plan()
+    plan["decisionTable"] = {
+        "path": ".agentflow-ai/decision-tables/pln-001.md",
+        "status": "unknown",
+    }
+
+    issues = validate_schema_fields(plan)
+
+    assert any("status" in issue for issue in issues), (
+        f"expected an issue mentioning 'status', got: {issues}"
+    )
+
+
+def test_extract_data_surfaces_decision_table() -> None:
+    """extract_data exposes decisionTable.path and .status as flat keys."""
+    plan = _minimal_plan()
+    plan["decisionTable"] = {
+        "path": ".agentflow-ai/decision-tables/pln-001.md",
+        "status": "pending",
+    }
+
+    result = extract_data(plan)
+
+    assert result["decision_table_path"] == ".agentflow-ai/decision-tables/pln-001.md"
+    assert result["decision_table_status"] == "pending"
+
+
+def test_extract_data_decision_table_absent() -> None:
+    """When decisionTable is absent, extract_data returns empty strings for both keys."""
+    plan = _minimal_plan()
+
+    result = extract_data(plan)
+
+    assert result["decision_table_path"] == ""
+    assert result["decision_table_status"] == ""
+
+
+# (input plan overrides, expected simple_mode, expected plan_was_imported)
+# Covers: both true, both false, absent (legacy plans → default False), and
+# non-bool values (int/string) — these must NOT coerce to True; fail-safe is False.
+# extract_data is the recovery channel the fresh execute-implementation session
+# reads to decide whether to skip Phase 5.5.
+_MODE_FLAG_CASES = [
+    ({"simple_mode": True, "plan_was_imported": True}, True, True),
+    ({"simple_mode": False, "plan_was_imported": False}, False, False),
+    ({}, False, False),
+    ({"simple_mode": True}, True, False),
+    ({"plan_was_imported": True}, False, True),
+    # Non-boolean values must NOT coerce to True — int 1 is not JSON true.
+    ({"simple_mode": 1, "plan_was_imported": 0}, False, False),
+]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_simple", "expected_imported"), _MODE_FLAG_CASES
+)
+def test_extract_data_surfaces_mode_flags(
+    overrides: dict, expected_simple: bool, expected_imported: bool
+) -> None:
+    """extract_data surfaces simple_mode/plan_was_imported as booleans (default False)."""
+    plan = _minimal_plan()
+    plan.update(overrides)
+
+    result = extract_data(plan)
+
+    assert result["simple_mode"] is expected_simple
+    assert result["plan_was_imported"] is expected_imported
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("simple_mode", "false"),
+        ("simple_mode", "true"),
+        ("simple_mode", 1),
+        ("simple_mode", 0),
+        ("plan_was_imported", "false"),
+        ("plan_was_imported", 1),
+    ],
+)
+def test_validate_schema_rejects_non_boolean_mode_flags(field: str, bad_value: object) -> None:
+    """validate_schema_fields must reject non-boolean simple_mode / plan_was_imported."""
+    plan = _minimal_plan()
+    plan[field] = bad_value
+    issues = validate_schema_fields(plan)
+    assert any(field in msg and "boolean" in msg for msg in issues), issues
+
+
+def test_validate_schema_accepts_boolean_mode_flags() -> None:
+    """validate_schema_fields must accept boolean true/false for the mode flags."""
+    plan = _minimal_plan()
+    plan["simple_mode"] = True
+    plan["plan_was_imported"] = False
+    assert validate_schema_fields(plan) == []
+
+
+def test_validate_schema_accepts_absent_mode_flags() -> None:
+    """validate_schema_fields must pass when both mode flags are omitted (legacy plans)."""
+    plan = _minimal_plan()
+    assert validate_schema_fields(plan) == []
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [(None, "full"), ("full", "full"), ("fast", "fast"), ("FAST", "full"), ("", "full")],
+)
+def test_plan_review_follows_execute_review_env(
+    monkeypatch: pytest.MonkeyPatch, env_value: str | None, expected: str
+) -> None:
+    """plan_review is fast only for AGENTFLOW_EXECUTE_REVIEW=fast, in both result shapes."""
+    if env_value is None:
+        monkeypatch.delenv("AGENTFLOW_EXECUTE_REVIEW", raising=False)
+    else:
+        monkeypatch.setenv("AGENTFLOW_EXECUTE_REVIEW", env_value)
+
+    assert extract_data(_minimal_plan())["plan_review"] == expected
+    assert empty_result("EMPTY_FILE")["plan_review"] == expected
+
+
+def _applied_plan(all_applied: bool) -> dict:
+    """A re-planned plan: its revision marked what it applied to the tasks."""
+    plan = _minimal_plan()
+    plan["answeredQuestions"] = [
+        {"id": "Q-001", "question": "Halves?", "answer": "Away from zero", "applied": True},
+        {"id": "Q-002", "question": "Decimals?", "answer": "0 to 10", "applied": all_applied},
+    ]
+    plan["gaps"] = [
+        {"id": "GAP-001", "description": "Precision", "addressed": True, "resolution": "IEEE 754", "applied": True},
+        {"id": "GAP-002", "description": "Notation", "addressed": True, "resolution": "No 2e3", "applied": all_applied},
+        {"id": "GAP-003", "description": "Open", "addressed": False, "resolution": None},
+    ]
+    return plan
+
+
+def test_extract_data_leaves_out_applied_answers_and_gaps() -> None:
+    """Only answers and gaps the tasks do not state yet are left to process."""
+    plan = _applied_plan(all_applied=False)
+
+    assert validate_schema_fields(plan) == []
+    result = extract_data(plan)
+    assert result["has_answered_questions"] is True
+    assert [q["id"] for q in result["answered_questions"]] == ["Q-002"]
+    assert result["has_addressed_gaps"] is True
+    assert [g["id"] for g in result["addressed_gaps"]] == ["GAP-002"]
+
+
+def test_extract_data_nothing_to_process_when_all_applied() -> None:
+    """A re-plan that applied every answer and gap leaves phases 1.2/1.2a nothing to do."""
+    result = extract_data(_applied_plan(all_applied=True))
+
+    assert result["has_answered_questions"] is False
+    assert result["answered_questions"] == []
+    assert result["has_addressed_gaps"] is False
+    assert result["addressed_gaps"] == []

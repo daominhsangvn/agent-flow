@@ -1,0 +1,9 @@
+{
+  "name": "judges",
+  "description": "LLM Judges plugin",
+  "version": "1.7.1",
+  "author": {
+    "name": "AgentFlow",
+    "email": "support@agentflow.ai"
+  }
+}

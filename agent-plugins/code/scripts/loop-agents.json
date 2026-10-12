@@ -1,0 +1,55 @@
+{
+  "loop_agents": {
+    "code:plan-draft-writer": {
+      "validation_script": "validate-plan.sh",
+      "max_iterations": 10,
+      "promise": "PLAN_VALIDATED",
+      "state_file_suffix": "plan-draft-writer-loop.local.md",
+      "verification_criteria": "PRD coverage complete, no scope creep (every task traces to a PRD section), all required sections present (AC, Tasks, Open Questions, Gaps), JSON/markdown sync valid, no code snippets in task descriptions, no TODO/TBD placeholders"
+    },
+    "code:plan-writer": {
+      "validation_script": "validate-plan.sh",
+      "max_iterations": 5,
+      "promise": "PLAN_WRITER_COMPLETE",
+      "state_file_suffix": "plan-writer-loop.local.md",
+      "verification_criteria": "JSON/markdown sync valid, task IDs preserved (no renumbering or removal), no scope expansion beyond requested changes, all tasks enriched with code patterns and integration points (finalize mode) or all blocking findings addressed (merge mode), valid JSON with all required fields, decision-table artifact written to .agentflow-ai/decision-tables/ and plan.json decisionTable pointer set with status=pending (finalize mode only, unless plan_was_imported or simple_mode). If the marker DECISION_TABLE_ARTIFACT_COUNT_MISMATCH is present in plan-writer output, plan-writer's exit without PLAN_WRITER_COMPLETE is a legitimate detection state, not a loop-agent failure; the orchestrator handles escalation."
+    },
+    "code:code-reviewer": {
+      "max_iterations": 5,
+      "promise": "CODE_REVIEW_PASSED",
+      "state_file_suffix": "code-reviewer-loop.local.md",
+      "verification_criteria": "No Critical or High findings remain after re-analysis, multi-tenant authorization verified on all new data-access endpoints, no unbounded parallel external API calls, no shared-package code referencing app-specific constructs, all DRY violations across changed files identified"
+    },
+    "code:plan-validator": {
+      "max_iterations": 5,
+      "promise": "PLAN_VALIDATION_COMPLETE",
+      "state_file_suffix": "plan-validator-loop.local.md"
+    },
+    "code:implementation-subagent": {
+      "max_iterations": 4,
+      "promise": "IMPLEMENTATION_VERIFIED",
+      "state_file_suffix": "implementation-subagent-loop.local.md",
+      "verification_criteria": "All referenced types and interfaces verified from source before use, no new utilities or constants that duplicate existing codebase implementations, all integration points connected, static analysis passes on modified files"
+    },
+    "code:behavior-verifier": {
+      "max_iterations": 3,
+      "promise": "BEHAVIOR_VERIFIER_COMPLETE",
+      "state_file_suffix": "behavior-verifier-loop.local.md",
+      "verification_criteria": "Output is ALIGNED (with verified_rows count, no drift_rows block required) or MISALIGNED (with a parseable <drift_rows>...</drift_rows> JSON block containing at least one object with required fields: kind [enum: code_drift|test_drift|plan_ambiguity], area, description, source_file, artifact_row). Promise is always emitted regardless of verdict. Missing artifact must produce MISALIGNED with a drift_rows block, not ALIGNED. Agent is verification-only: it does not modify code or tests. The artifact Verification Findings section is the human audit channel; the <drift_rows> JSON block is the machine routing channel."
+    }
+  },
+  "learning_agents": {
+    "description": "Agents that must acknowledge AND capture learnings before stopping",
+    "max_retries": 2,
+    "agents": [
+      "code:plan-draft-writer",
+      "code:plan-writer",
+      "code:implementation-subagent",
+      "code:cross-repo-coordinator",
+      "code:generic-discovery",
+      "code:code-reviewer",
+      "code:plan-validator",
+      "code:behavior-verifier"
+    ]
+  }
+}
