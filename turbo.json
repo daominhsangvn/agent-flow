@@ -1,0 +1,178 @@
+{
+  "$schema": "https://v2-9-6.turborepo.dev/schema.json",
+  "globalDependencies": ["**/.env.*local"],
+  "ui": "tui",
+  "envMode": "loose",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [
+        ".next/**",
+        "!.next/cache/**",
+        "**/generated/**",
+        "storybook-static/**"
+      ]
+    },
+    "@repo/database#build": {
+      "cache": false,
+      "dependsOn": ["^build"]
+    },
+    "@repo/api#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "mcp#build": {
+      "dependsOn": ["^build", "@agentflow-ai/loops-api#build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "outputs": ["dist/**"]
+    },
+    "@agentflow-ai/loops-api#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "outputs": ["dist/**"]
+    },
+    "@agentflow-ai/design-system#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "outputs": ["dist/**"]
+    },
+    "@agentflow-ai/telemetry-contract#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "outputs": ["dist/**"]
+    },
+    "@agentflow-ai/shared-platform#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md"],
+      "outputs": ["dist/**"]
+    },
+    "desktop#build": {
+      "cache": false,
+      "dependsOn": [
+        "^build",
+        "@agentflow-ai/design-system#build",
+        "@agentflow-ai/loops-api#build"
+      ],
+      "outputs": ["dist/**", "!dist/**/*.d.ts", "!dist/**/*.d.ts.map"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!**/*.mdx"]
+    },
+    "@agentflow-ai/design-system#typecheck": {
+      "dependsOn": ["^typecheck", "@agentflow-ai/loops-api#build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!**/*.mdx"]
+    },
+    "@repo/api#typecheck": {
+      "dependsOn": [
+        "^typecheck",
+        "@agentflow-ai/loops-api#build",
+        "@agentflow-ai/shared-platform#build"
+      ],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!**/*.mdx"]
+    },
+    "api#typecheck": {
+      "dependsOn": ["^typecheck", "@agentflow-ai/loops-api#build"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!**/*.mdx"]
+    },
+    "lint": {
+      "outputs": []
+    },
+    "desktop#lint": {
+      "dependsOn": [],
+      "cache": false,
+      "outputs": []
+    },
+    "desktop#typecheck": {
+      "dependsOn": [
+        "@agentflow-ai/design-system#build",
+        "@agentflow-ai/loops-api#build",
+        "@agentflow-ai/telemetry-contract#build",
+        "@repo/api#build"
+      ],
+      "cache": false,
+      "outputs": []
+    },
+    "@repo/observability#typecheck": {
+      "dependsOn": [
+        "^typecheck",
+        "@agentflow-ai/loops-api#build",
+        "@agentflow-ai/telemetry-contract#build"
+      ],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!**/*.mdx"]
+    },
+    "figma:typecheck": {
+      "dependsOn": ["^figma:typecheck"]
+    },
+    "test": {
+      "dependsOn": ["^test"]
+    },
+    "@repo/observability#test": {
+      "dependsOn": [
+        "^test",
+        "@agentflow-ai/loops-api#build",
+        "@agentflow-ai/telemetry-contract#build"
+      ]
+    },
+    "api#test": {
+      "dependsOn": [
+        "^test",
+        "@agentflow-ai/loops-api#build",
+        "@repo/database#build"
+      ]
+    },
+    "app#test": {
+      "dependsOn": ["^test", "@agentflow-ai/loops-api#build"]
+    },
+    "@repo/app#test": {
+      "dependsOn": ["^test", "@agentflow-ai/loops-api#build"]
+    },
+    "@repo/github#test": {
+      "dependsOn": ["^test", "@agentflow-ai/loops-api#build"]
+    },
+    "@repo/rich-text#test": {
+      "dependsOn": ["^test", "@agentflow-ai/design-system#build"]
+    },
+    "desktop#test": {
+      "dependsOn": [
+        "@agentflow-ai/design-system#build",
+        "@agentflow-ai/loops-api#build",
+        "@agentflow-ai/telemetry-contract#build",
+        "@repo/api#build"
+      ],
+      "outputs": []
+    },
+    "desktop#clean:package": {
+      "dependsOn": [],
+      "cache": false,
+      "outputs": []
+    },
+    "desktop#stage:package": {
+      "dependsOn": ["desktop#build"],
+      "cache": false,
+      "outputs": []
+    },
+    "desktop#package:turbo": {
+      "dependsOn": ["desktop#clean:package", "desktop#stage:package"],
+      "cache": false,
+      "outputs": []
+    },
+    "analyze": {
+      "dependsOn": ["^analyze"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "translate": {
+      "dependsOn": ["^translate"],
+      "cache": false
+    },
+    "clean": {
+      "cache": false
+    },
+    "//#clean": {
+      "cache": false
+    }
+  }
+}

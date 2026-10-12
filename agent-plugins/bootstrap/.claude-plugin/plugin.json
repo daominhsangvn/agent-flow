@@ -1,0 +1,9 @@
+{
+  "name": "bootstrap",
+  "description": "Bootstrap plugin for AgentFlow",
+  "version": "1.2.0",
+  "author": {
+    "name": "AgentFlow",
+    "email": "support@agentflow.ai"
+  }
+}

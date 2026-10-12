@@ -1,0 +1,151 @@
+"use client";
+
+import { Button } from "@agentflow-ai/design-system/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+} from "@agentflow-ai/design-system/components/ui/dropdown-menu";
+import { FilterChip } from "@agentflow-ai/design-system/components/ui/filter-chip";
+import { PlusIcon } from "lucide-react";
+import type { ReactNode } from "react";
+import {
+  FilterMenuContent,
+  AssigneeFilterContent,
+  DateFilterContent,
+  PriorityFilterContent,
+  StatusFilterContent,
+  TagsFilterContent,
+} from "./filter-popover";
+import type {
+  TableFilterCategory,
+  TableFilterLabels,
+  TableFiltersController,
+  TableFiltersViewModel,
+} from "./table-filters";
+
+type ActiveFiltersBarProps<
+  TStatus extends string = string,
+  TPriority extends string = string,
+> = {
+  controller: TableFiltersController<TStatus, TPriority>;
+  viewModel: TableFiltersViewModel<TStatus, TPriority>;
+  /**
+   * Chips a surface owns itself, rendered ahead of the managed facet chips so
+   * the strip reads as one row of filters. For a narrowing that is a server
+   * request parameter rather than a client-side facet — e.g. My Tasks' recency
+   * window — which must still be visible and removable like any other filter.
+   */
+  extraChips?: ReactNode;
+  /**
+   * Whether the trailing add/clear controls render. Defaults to `true`, which is
+   * every existing caller (they mount this bar only when a facet filter is
+   * active). Pass `false` when the bar is on screen solely for {@link extraChips}
+   * so a "Clear all" button never sits there with nothing to clear.
+   */
+  showFilterControls?: boolean;
+};
+
+const DEFAULT_LABELS: Required<Pick<TableFilterLabels, "addFilter" | "clearAll">> =
+  {
+    addFilter: "Add filter",
+    clearAll: "Clear all",
+  };
+
+export function ActiveFiltersBar<
+  TStatus extends string = string,
+  TPriority extends string = string,
+>({
+  controller,
+  viewModel,
+  extraChips,
+  showFilterControls = true,
+}: ActiveFiltersBarProps<TStatus, TPriority>) {
+  const labels = {
+    ...DEFAULT_LABELS,
+    ...viewModel.labels,
+  };
+
+  const visibleChips = controller.activeChips.filter(
+    (chip) =>
+      (!viewModel.hideAssignee || chip.category !== "assignee") &&
+      ((viewModel.showTags ?? true) || chip.category !== "tags")
+  );
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 px-4 pb-2">
+      {extraChips}
+      {visibleChips.map((chip) => (
+        <FilterChip
+          dropdownClassName={chip.category === "assignee" ? "w-64" : undefined}
+          key={chip.category}
+          label={chip.label}
+          onRemove={() => controller.clearCategoryFilter(chip.category)}
+        >
+          {chip.category !== "hideCompleted" && chip.category !== "favorites" && (
+            <ChipDropdownContent
+              category={chip.category}
+              controller={controller}
+              viewModel={viewModel}
+            />
+          )}
+        </FilterChip>
+      ))}
+      {showFilterControls && (
+        <>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                aria-label={labels.addFilter}
+                className="inline-flex items-center self-stretch rounded-md border px-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                type="button"
+              >
+                <PlusIcon className="size-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <FilterMenuContent controller={controller} viewModel={viewModel} />
+          </DropdownMenu>
+          <Button
+            className="h-auto px-2 py-1 text-xs"
+            onClick={controller.clearAllFilters}
+            variant="ghost"
+          >
+            {labels.clearAll}
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ChipDropdownContent<
+  TStatus extends string = string,
+  TPriority extends string = string,
+>({
+  category,
+  controller,
+  viewModel,
+}: {
+  category: Extract<
+    TableFilterCategory,
+    "assignee" | "status" | "priority" | "date" | "tags"
+  >;
+  controller: TableFiltersController<TStatus, TPriority>;
+  viewModel: TableFiltersViewModel<TStatus, TPriority>;
+}) {
+  switch (category) {
+    case "assignee":
+      return <AssigneeFilterContent controller={controller} viewModel={viewModel} />;
+    case "status":
+      return <StatusFilterContent controller={controller} viewModel={viewModel} />;
+    case "priority":
+      return (
+        <PriorityFilterContent controller={controller} viewModel={viewModel} />
+      );
+    case "date":
+      return <DateFilterContent controller={controller} />;
+    case "tags":
+      return <TagsFilterContent controller={controller} viewModel={viewModel} />;
+    default:
+      return null;
+  }
+}

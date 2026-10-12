@@ -1,0 +1,490 @@
+import { generateKeyPairSync } from "node:crypto";
+import { ORG_IDENTITY_HEADER } from "@repo/api/src/types/headers";
+import { ApiKeySource } from "@repo/database";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mockIsFeatureEnabled = vi.hoisted(() => vi.fn());
+const mockWaitUntil = vi.hoisted(() => vi.fn());
+
+vi.mock("@repo/auth/server", () => ({
+  auth: vi.fn(),
+  verifyToken: vi.fn(),
+}));
+
+vi.mock("@repo/analytics/feature-flags", () => ({
+  isFeatureFlagEnabledForDistinctId: mockIsFeatureEnabled,
+}));
+
+vi.mock("@repo/observability/log", () => ({
+  log: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+}));
+
+vi.mock("@/lib/wait-until", () => ({
+  waitUntil: mockWaitUntil,
+}));
+
+vi.mock("@/app/api-keys/service", () => ({
+  apiKeysService: {
+    verifyKey: vi.fn(),
+    verifyKeyWithMetadata: vi.fn(),
+    touchLastUsedAt: vi.fn(),
+  },
+}));
+
+vi.mock("@/app/organizations/service", () => ({
+  organizationsService: {
+    findById: vi.fn(),
+    findByClerkId: vi.fn(),
+  },
+}));
+
+vi.mock("@/app/users/service", () => ({
+  usersService: {
+    findById: vi.fn(),
+    findByClerkIdAndOrg: vi.fn(),
+  },
+}));
+
+vi.mock("@/lib/auth/identity-service", () => ({
+  identityService: {
+    getOrganizationMembershipRole: vi.fn(),
+  },
+}));
+
+vi.mock("@repo/auth/desktop-session-jwt", () => ({
+  isDesktopSessionToken: vi.fn(() => false),
+}));
+
+vi.mock("@/lib/auth/desktop-session-auth", () => ({
+  resolveDesktopSessionContext: vi.fn(),
+}));
+
+import { isDesktopSessionToken } from "@repo/auth/desktop-session-jwt";
+import { auth, verifyToken } from "@repo/auth/server";
+import { apiKeysService } from "@/app/api-keys/service";
+import { organizationsService } from "@/app/organizations/service";
+import { usersService } from "@/app/users/service";
+import {
+  ORG_UNVERIFIABLE,
+  UNAUTHENTICATED,
+} from "@/lib/auth/auth-context-failure";
+import { resolveDesktopSessionContext } from "@/lib/auth/desktop-session-auth";
+import { identityService } from "@/lib/auth/identity-service";
+import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
+
+describe("resolveAnyAuthContext", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsFeatureEnabled.mockResolvedValue(true);
+    vi.mocked(isDesktopSessionToken).mockReturnValue(false);
+    vi.mocked(apiKeysService.touchLastUsedAt).mockResolvedValue(undefined);
+    vi.mocked(auth).mockResolvedValue({
+      userId: null,
+      orgId: null,
+    } as Awaited<ReturnType<typeof auth>>);
+  });
+
+  it("uses the cookie session from auth() when no bearer token is present", async () => {
+    vi.mocked(auth).mockResolvedValue({
+      userId: "user_clerk_123",
+      orgId: "org_clerk_456",
+    } as Awaited<ReturnType<typeof auth>>);
+    vi.mocked(organizationsService.findByClerkId).mockResolvedValue({
+      id: "org_db_1",
+    } as Awaited<ReturnType<typeof organizationsService.findByClerkId>>);
+    vi.mocked(usersService.findByClerkIdAndOrg).mockResolvedValue({
+      id: "user_db_1",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findByClerkIdAndOrg>>);
+
+    const request = new Request("http://localhost/test");
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual({
+      ok: true,
+      context: { organizationId: "org_db_1", userId: "user_db_1" },
+    });
+    expect(verifyToken).not.toHaveBeenCalled();
+    expect(auth).toHaveBeenCalledTimes(1);
+  });
+
+  it("verifies a bearer session token before consulting the cookie session", async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: "user_clerk_123",
+      org_id: "org_clerk_456",
+    } as Awaited<ReturnType<typeof verifyToken>>);
+    vi.mocked(organizationsService.findByClerkId).mockResolvedValue({
+      id: "org_db_1",
+    } as Awaited<ReturnType<typeof organizationsService.findByClerkId>>);
+    vi.mocked(usersService.findByClerkIdAndOrg).mockResolvedValue({
+      id: "user_db_1",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findByClerkIdAndOrg>>);
+
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer clerk-session-token",
+      },
+    });
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual({
+      ok: true,
+      context: { organizationId: "org_db_1", userId: "user_db_1" },
+    });
+    expect(verifyToken).toHaveBeenCalledWith("clerk-session-token");
+    expect(auth).not.toHaveBeenCalled();
+  });
+
+  it("preserves the API key path", async () => {
+    vi.mocked(apiKeysService.verifyKeyWithMetadata).mockResolvedValue({
+      apiKeyId: "api-key-1",
+      userId: "user_db_2",
+      organizationId: "org_db_2",
+      scopes: ["read", "write"],
+      source: ApiKeySource.USER_CREATED,
+      gatewayId: null,
+      boundPublicKey: null,
+    } as Awaited<ReturnType<typeof apiKeysService.verifyKeyWithMetadata>>);
+    vi.mocked(usersService.findById).mockResolvedValue({
+      id: "user_db_2",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findById>>);
+    vi.mocked(organizationsService.findById).mockResolvedValue({
+      id: "org_db_2",
+    } as Awaited<ReturnType<typeof organizationsService.findById>>);
+
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer sk_live_123",
+      },
+    });
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual({
+      ok: true,
+      context: { organizationId: "org_db_2", userId: "user_db_2" },
+    });
+    expect(auth).not.toHaveBeenCalled();
+    expect(verifyToken).not.toHaveBeenCalled();
+  });
+
+  it("rejects enforce-eligible desktop-managed API keys without PoP headers", async () => {
+    const { publicKey } = generateKeyPairSync("ed25519");
+    vi.mocked(apiKeysService.verifyKeyWithMetadata).mockResolvedValue({
+      apiKeyId: "api-key-bound",
+      userId: "user_db_2",
+      organizationId: "org_db_2",
+      scopes: ["read", "write"],
+      source: ApiKeySource.DESKTOP_MANAGED,
+      gatewayId: "gateway-1",
+      boundPublicKey: publicKey
+        .export({ format: "pem", type: "spki" })
+        .toString(),
+    } as Awaited<ReturnType<typeof apiKeysService.verifyKeyWithMetadata>>);
+    vi.mocked(usersService.findById).mockResolvedValue({
+      id: "user_db_2",
+      clerkId: "clerk_user_2",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findById>>);
+
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer sk_live_123",
+      },
+    });
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual(
+      UNAUTHENTICATED
+    );
+    expect(usersService.findById).toHaveBeenCalledWith("user_db_2", "org_db_2");
+    expect(mockWaitUntil).not.toHaveBeenCalled();
+    expect(mockIsFeatureEnabled).toHaveBeenCalledWith(
+      "desktop-managed-pop-enforcement",
+      "clerk_user_2"
+    );
+  });
+
+  it("accepts enforce-eligible desktop-managed API keys bearer-only when the feature flag is disabled", async () => {
+    const { publicKey } = generateKeyPairSync("ed25519");
+    mockIsFeatureEnabled.mockResolvedValue(false);
+    vi.mocked(apiKeysService.verifyKeyWithMetadata).mockResolvedValue({
+      apiKeyId: "api-key-bound",
+      userId: "user_db_2",
+      organizationId: "org_db_2",
+      scopes: ["read", "write"],
+      source: ApiKeySource.DESKTOP_MANAGED,
+      gatewayId: "gateway-1",
+      boundPublicKey: publicKey
+        .export({ format: "pem", type: "spki" })
+        .toString(),
+    } as Awaited<ReturnType<typeof apiKeysService.verifyKeyWithMetadata>>);
+    vi.mocked(usersService.findById).mockResolvedValue({
+      id: "user_db_2",
+      clerkId: "clerk_user_2",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findById>>);
+    vi.mocked(organizationsService.findById).mockResolvedValue({
+      id: "org_db_2",
+    } as Awaited<ReturnType<typeof organizationsService.findById>>);
+
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer sk_live_123",
+      },
+    });
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual({
+      ok: true,
+      context: { organizationId: "org_db_2", userId: "user_db_2" },
+    });
+    expect(mockWaitUntil).toHaveBeenCalledOnce();
+  });
+});
+
+describe("resolveAnyAuthContext — org header behavior", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsFeatureEnabled.mockResolvedValue(true);
+    vi.mocked(isDesktopSessionToken).mockReturnValue(false);
+    vi.mocked(apiKeysService.touchLastUsedAt).mockResolvedValue(undefined);
+    vi.mocked(auth).mockResolvedValue({
+      userId: null,
+      orgId: null,
+    } as Awaited<ReturnType<typeof auth>>);
+  });
+
+  it("ignores the org header when authenticating via API key", async () => {
+    vi.mocked(apiKeysService.verifyKeyWithMetadata).mockResolvedValue({
+      apiKeyId: "api-key-1",
+      userId: "user_db_2",
+      organizationId: "org_db_2",
+      scopes: ["read", "write"],
+      source: ApiKeySource.USER_CREATED,
+      gatewayId: null,
+      boundPublicKey: null,
+    } as Awaited<ReturnType<typeof apiKeysService.verifyKeyWithMetadata>>);
+    vi.mocked(usersService.findById).mockResolvedValue({
+      id: "user_db_2",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findById>>);
+    vi.mocked(organizationsService.findById).mockResolvedValue({
+      id: "org_db_2",
+    } as Awaited<ReturnType<typeof organizationsService.findById>>);
+
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer sk_live_123",
+        [ORG_IDENTITY_HEADER]: "org_different_999",
+      },
+    });
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual({
+      ok: true,
+      context: { organizationId: "org_db_2", userId: "user_db_2" },
+    });
+    expect(
+      identityService.getOrganizationMembershipRole
+    ).not.toHaveBeenCalled();
+  });
+
+  it("uses session org when header matches session org in session path", async () => {
+    const clerkOrgId = "org_clerk_456";
+    vi.mocked(auth).mockResolvedValue({
+      userId: "user_clerk_123",
+      orgId: clerkOrgId,
+    } as Awaited<ReturnType<typeof auth>>);
+    vi.mocked(organizationsService.findByClerkId).mockResolvedValue({
+      id: "org_db_1",
+    } as Awaited<ReturnType<typeof organizationsService.findByClerkId>>);
+    vi.mocked(usersService.findByClerkIdAndOrg).mockResolvedValue({
+      id: "user_db_1",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findByClerkIdAndOrg>>);
+
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer clerk-session-token",
+        [ORG_IDENTITY_HEADER]: clerkOrgId,
+      },
+    });
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual({
+      ok: true,
+      context: { organizationId: "org_db_1", userId: "user_db_1" },
+    });
+    expect(
+      identityService.getOrganizationMembershipRole
+    ).not.toHaveBeenCalled();
+    expect(organizationsService.findByClerkId).toHaveBeenCalledWith(clerkOrgId);
+  });
+
+  it("uses header org when header differs and user is a member in session path", async () => {
+    const sessionOrgId = "org_clerk_456";
+    const headerOrgId = "org_clerk_789";
+    vi.mocked(auth).mockResolvedValue({
+      userId: "user_clerk_123",
+      orgId: sessionOrgId,
+    } as Awaited<ReturnType<typeof auth>>);
+    vi.mocked(identityService.getOrganizationMembershipRole).mockResolvedValue(
+      "org:member"
+    );
+    vi.mocked(organizationsService.findByClerkId).mockResolvedValue({
+      id: "org_db_header",
+    } as Awaited<ReturnType<typeof organizationsService.findByClerkId>>);
+    vi.mocked(usersService.findByClerkIdAndOrg).mockResolvedValue({
+      id: "user_db_1",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findByClerkIdAndOrg>>);
+
+    const request = new Request("http://localhost/test", {
+      headers: {
+        authorization: "Bearer clerk-session-token",
+        [ORG_IDENTITY_HEADER]: headerOrgId,
+      },
+    });
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual({
+      ok: true,
+      context: { organizationId: "org_db_header", userId: "user_db_1" },
+    });
+    expect(identityService.getOrganizationMembershipRole).toHaveBeenCalledWith(
+      headerOrgId,
+      "user_clerk_123"
+    );
+    expect(organizationsService.findByClerkId).toHaveBeenCalledWith(
+      headerOrgId
+    );
+  });
+
+  for (const orgLookup of [
+    {
+      label: "denies membership",
+      expected: UNAUTHENTICATED,
+      arrange: () =>
+        vi
+          .mocked(identityService.getOrganizationMembershipRole)
+          .mockResolvedValue(null),
+    },
+    {
+      label: "throws (provider outage)",
+      expected: ORG_UNVERIFIABLE,
+      arrange: () =>
+        vi
+          .mocked(identityService.getOrganizationMembershipRole)
+          .mockRejectedValue(new Error("Clerk API unavailable")),
+    },
+  ]) {
+    it(`resolves to no context when the org lookup ${orgLookup.label}`, async () => {
+      // Both degrade to "no context" rather than falling through to the session
+      // org — that degradation is the safety property, and a regression here
+      // would silently serve the SESSION org for a request that named another
+      // one. But they REPORT differently since ISS-5118: a denial is a decision
+      // about this caller (401), an outage is not a decision at all (503). The
+      // per-case `expected` is what stops the two collapsing back together.
+      vi.mocked(auth).mockResolvedValue({
+        userId: "user_clerk_123",
+        orgId: "org_clerk_456",
+      } as Awaited<ReturnType<typeof auth>>);
+      // The later `auth()` fallback sees the same live session, so this asserts
+      // the rejection holds all the way down the strategy chain rather than
+      // because a subsequent strategy had nothing to work with.
+      vi.mocked(auth).mockResolvedValue({
+        userId: "user_clerk_123",
+        orgId: "org_clerk_456",
+      } as Awaited<ReturnType<typeof auth>>);
+      orgLookup.arrange();
+
+      const request = new Request("http://localhost/test", {
+        headers: {
+          authorization: "Bearer clerk-session-token",
+          [ORG_IDENTITY_HEADER]: "org_clerk_789",
+        },
+      });
+
+      await expect(resolveAnyAuthContext(request)).resolves.toEqual(
+        orgLookup.expected
+      );
+      expect(organizationsService.findByClerkId).not.toHaveBeenCalled();
+    });
+  }
+});
+
+describe("resolveAnyAuthContext — desktop session", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(isDesktopSessionToken).mockReturnValue(false);
+    vi.mocked(auth).mockResolvedValue({
+      userId: null,
+      orgId: null,
+    } as Awaited<ReturnType<typeof auth>>);
+  });
+
+  it("resolves desktop-classified tokens to internal userId/organizationId without touching the session provider", async () => {
+    vi.mocked(isDesktopSessionToken).mockReturnValue(true);
+    vi.mocked(resolveDesktopSessionContext).mockResolvedValue({
+      user: { id: "user_db_3" },
+      organizationId: "org_db_3",
+      clerkOrgId: "org_clerk_3",
+    } as Awaited<ReturnType<typeof resolveDesktopSessionContext>>);
+
+    const request = new Request("http://localhost/test", {
+      headers: { authorization: "Bearer desktop-access-token" },
+    });
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual({
+      ok: true,
+      context: { organizationId: "org_db_3", userId: "user_db_3" },
+    });
+    expect(isDesktopSessionToken).toHaveBeenCalledWith("desktop-access-token");
+    expect(resolveDesktopSessionContext).toHaveBeenCalledWith(
+      "desktop-access-token"
+    );
+    expect(auth).not.toHaveBeenCalled();
+    expect(verifyToken).not.toHaveBeenCalled();
+    expect(auth).not.toHaveBeenCalled();
+  });
+
+  it("returns null for desktop-classified tokens that fail verification, never falling through to the session provider", async () => {
+    vi.mocked(isDesktopSessionToken).mockReturnValue(true);
+    vi.mocked(resolveDesktopSessionContext).mockResolvedValue(null);
+
+    const request = new Request("http://localhost/test", {
+      headers: { authorization: "Bearer desktop-access-token" },
+    });
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual(
+      UNAUTHENTICATED
+    );
+    expect(auth).not.toHaveBeenCalled();
+    expect(verifyToken).not.toHaveBeenCalled();
+    expect(auth).not.toHaveBeenCalled();
+  });
+
+  it("short-circuits sk_live_ API keys before desktop classification", async () => {
+    vi.mocked(apiKeysService.verifyKeyWithMetadata).mockResolvedValue({
+      apiKeyId: "api-key-1",
+      userId: "user_db_2",
+      organizationId: "org_db_2",
+      scopes: ["read"],
+      source: ApiKeySource.USER_CREATED,
+      gatewayId: null,
+      boundPublicKey: null,
+    } as Awaited<ReturnType<typeof apiKeysService.verifyKeyWithMetadata>>);
+    vi.mocked(usersService.findById).mockResolvedValue({
+      id: "user_db_2",
+      active: true,
+    } as Awaited<ReturnType<typeof usersService.findById>>);
+    vi.mocked(organizationsService.findById).mockResolvedValue({
+      id: "org_db_2",
+    } as Awaited<ReturnType<typeof organizationsService.findById>>);
+
+    const request = new Request("http://localhost/test", {
+      headers: { authorization: "Bearer sk_live_123" },
+    });
+
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual({
+      ok: true,
+      context: { organizationId: "org_db_2", userId: "user_db_2" },
+    });
+    expect(isDesktopSessionToken).not.toHaveBeenCalled();
+    expect(resolveDesktopSessionContext).not.toHaveBeenCalled();
+  });
+});

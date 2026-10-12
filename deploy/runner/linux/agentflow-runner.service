@@ -1,0 +1,31 @@
+[Unit]
+Description=AgentFlow headless runner
+Documentation=https://github.com/daominhsangvn/agentflow-ai/blob/main/docs/runner.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentflow-runner
+Group=agentflow-runner
+# Defaults; anything set in runner.env overrides them.
+Environment=HOME=/var/lib/agentflow-runner
+Environment=SHELL=/bin/bash
+Environment=AGENTFLOW_PLUGINS_DIR=/opt/agentflow-runner/agent-plugins
+Environment=AGENTFLOW_RUNNER_WORKSPACE=/var/lib/agentflow-runner/workspace
+Environment=AGENTFLOW_RUNNER_DATA_DIR=/var/lib/agentflow-runner/data
+Environment=DISABLE_AUTOUPDATER=1
+EnvironmentFile=/etc/agentflow-runner/runner.env
+WorkingDirectory=/var/lib/agentflow-runner/workspace
+ExecStart=/opt/agentflow-runner/entrypoint.sh /usr/bin/node /opt/agentflow-runner/runner.mjs
+Restart=always
+RestartSec=10
+# SIGTERM to the runner first, then the agent processes it started.
+KillMode=mixed
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

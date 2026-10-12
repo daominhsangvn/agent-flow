@@ -1,0 +1,106 @@
+appId: ai.agentflow.desktop
+productName: AgentFlow
+
+# ISS-6109: the OS-level custom URI scheme the web app's "Launch Desktop App"
+# control fires. electron-builder reads this block for exactly two of the
+# platforms we care about — macOS `CFBundleURLTypes` in Info.plist and the Linux
+# .desktop `MimeType` (plus the Windows AppX target, which we do not build).
+# NSIS/Squirrel ignore it, so WINDOWS registration comes solely from the runtime
+# `app.setAsDefaultProtocolClient` call in src/main/lifecycle/deep-link.ts.
+# On macOS that runtime call can only succeed for a bundle whose Info.plist
+# already declares the scheme, so for the target we actually ship (mac dmg+zip)
+# this block is load-bearing and not a duplicate of the runtime call.
+# The scheme name is the shared DESKTOP_DEEP_LINK_SCHEME wire constant
+# (packages/api/src/types/desktop-deep-link.ts) — YAML cannot import it, so a
+# change there must be mirrored here.
+# Only the bare, payload-free `agentflow://` is ever accepted; the handler
+# denies every URL carrying a host, path, query, fragment, or credentials.
+protocols:
+  - name: AgentFlow
+    schemes:
+      - agentflow
+    role: Viewer
+
+files:
+  - app/**/*
+  - package.json
+
+beforeBuild: ./scripts/use-staged-node-modules.mjs
+
+extraResources:
+  - from: resources/icon-1024.png
+    to: icon-1024.png
+  - from: resources/trayIconTemplate.png
+    to: trayIconTemplate.png
+  - from: resources/trayIconTemplate@2x.png
+    to: trayIconTemplate@2x.png
+  # First-party agent-monitor hook handlers (FEA-1503), shipped unpacked outside
+  # the asar so they resolve as real files. agent-monitor-hooks.ts copies them
+  # into userData at install time; the installed hook command runs them via the
+  # Electron binary as Node (ELECTRON_RUN_AS_NODE) against that userData copy.
+  - from: resources/hooks
+    to: hooks
+    filter:
+      - "*.js"
+  # First-party statusline capture script (FEA-3492), shipped unpacked outside
+  # the asar so it resolves as a real file. statusline-capture-install.ts copies
+  # it into userData at opt-in time; the installed statusLine command runs it via
+  # the Electron binary as Node (ELECTRON_RUN_AS_NODE) against that userData copy.
+  - from: resources/statusline
+    to: statusline
+    filter:
+      - "*.js"
+  # AgentFlow Claude Code plugins, vendored at the repo root and loaded per
+  # invocation with `claude --plugin-dir` (src/server/operations/bundled-plugins.ts).
+  # Nothing is installed into the user's ~/.claude/plugins.
+  - from: ../../agent-plugins
+    to: agent-plugins
+    filter:
+      - "**/*"
+      - "!**/tests/**"
+      - "!**/__pycache__/**"
+  - from: resources/command-packs
+    to: command-packs
+    filter:
+      - "**/*"
+  # Bundled coaching packs (overridable best-practice signal sets for Agent
+  # Coaching Tips). agent-coaching-packs.ts seeds these into userData on first
+  # run and the active pack's signals replace the built-in defaults.
+  - from: resources/coaching-packs
+    to: coaching-packs
+    filter:
+      - "**/*"
+  # Bundled audit-bot character prompts (PRD-556 / FEA-3847; full cast FEA-4013).
+  # The on-demand crewd review pass reads `<character>.md` (e.g. docs-darwin.md,
+  # kaitic/desktop-denny.md) from here as the analysis prompt; resolved from
+  # `resourcesPath` in a packaged build. `**/*.md` (not `*.md`) so the author
+  # subfolders — the full discovered cast the picker offers — ship too; a
+  # single-level glob would ship only the 4 top-level prompts and the runner
+  # would then fail "character prompt not found" for every nightly character.
+  - from: resources/audit-characters
+    to: audit-characters
+    filter:
+      - "**/*.md"
+
+mac:
+  icon: resources/icon.icns
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: true
+
+publish:
+  provider: generic
+  # Packaged clients read the public API updater feed. The API authenticates
+  # to GitHub server-side and serves only Desktop updater metadata/assets.
+  url: https://api.agentflow.ai/desktop/updates
+
+directories:
+  output: dist-dmg

@@ -1,0 +1,515 @@
+// ---------------------------------------------------------------------------
+// Structured logger with optional agentless Datadog export.
+//
+// API: same as console — log.info("msg", { key: val }), log.error(...), etc.
+//
+// When DD_API_KEY and DD_SITE are set, logs are batched and shipped to
+// Datadog's HTTP intake API (agentless), unless DD_LOGS_DISABLED=1 forces the
+// sink closed (see resolveExportKey). Console output is always preserved for
+// local dev and container stdout.
+//
+// Serverless callers must wrap log.flush() with waitUntil() to ensure
+// pending logs are delivered before the function freezes.
+// ---------------------------------------------------------------------------
+
+import {
+  DEFAULT_DD_SITE,
+  isAllowedDatadogSite,
+} from "@repo/api/src/types/datadog-sites";
+import { keys } from "./keys";
+import { redactLogValue } from "./redact";
+import { resolveGitSha, resolveServerVersion } from "./telemetry/context";
+import { KNOWN_ORIGINS, ORIGIN, type Origin } from "./telemetry/origin";
+import { getTraceContext, toLogCorrelationFields } from "./trace-context";
+
+// DD_API_KEY has two unrelated consumers: this agentless log sink, and
+// dd-trace's agentless Test Optimization reporter, which CI sets on every
+// instrumented test lane (ISS-4399). Neither knows about the other, so a lane
+// that sets the key to feed the tracer would also open the log sink inside the
+// test workers — shipping the code-under-test's log calls to Datadog as if they
+// were production, and holding a 5s flush interval plus an exit hook in every
+// worker. DD_LOGS_DISABLED lets a caller that needs the key for something else
+// keep the sink closed. Accepted values mirror DD_LOGS_JSON; anything else
+// (including "") leaves the sink enabled.
+function resolveExportKey(apiKey: string | undefined): string | undefined {
+  const flag = process.env.DD_LOGS_DISABLED;
+  if (flag === "1" || flag === "true") {
+    return undefined;
+  }
+  return apiKey;
+}
+
+/**
+ * Closes the sink when `DD_SITE` is not a recognised Datadog host (ISS-5261).
+ *
+ * The flush below interpolates the site into the request AUTHORITY while
+ * attaching `DD-API-KEY`, so `datadoghq.com@attacker.example` resolves to the
+ * attacker and ships the key — along with the contents of every buffered log
+ * line. Withholding the key is the same fail-closed lever `DD_LOGS_DISABLED`
+ * already pulls: console output is unaffected, and nothing egresses.
+ *
+ * Reported with `console.error` rather than through this module's own `log.*`,
+ * which at this point would be queueing for the sink being refused.
+ */
+function resolveExportTarget(apiKey: string | undefined, site: string) {
+  if (apiKey && !isAllowedDatadogSite(site)) {
+    console.error(
+      `[observability] DD_SITE "${site}" is not an allowed Datadog site — log export disabled`
+    );
+    return undefined;
+  }
+  return apiKey;
+}
+
+function loadConfig() {
+  try {
+    const env = keys();
+    const site = env.DD_SITE ?? DEFAULT_DD_SITE;
+    return {
+      apiKey: resolveExportTarget(resolveExportKey(env.DD_API_KEY), site),
+      site,
+      service: env.DD_SERVICE ?? "af-unknown",
+      env: env.DD_ENV ?? process.env.NODE_ENV ?? "development",
+    };
+  } catch {
+    // keys() may throw outside Next.js (e.g., standalone relay).
+    // Fall back to direct process.env reads.
+    // "||" throughout this branch, for the reason spelled out on `service`
+    // below: these are RAW process.env reads (keys() threw), so "" is never
+    // normalized away. An empty DD_SITE fails the `isAllowedDatadogSite`
+    // allowlist in resolveExportTarget, which clears the api key — so the whole
+    // sink closes and NOTHING is exported, where the default site would have
+    // worked. Falling back keeps the sink open instead of losing every log to a
+    // value that was never a site.
+    const site = process.env.DD_SITE || DEFAULT_DD_SITE;
+    return {
+      apiKey: resolveExportTarget(
+        resolveExportKey(process.env.DD_API_KEY),
+        site
+      ),
+      site,
+      // "||", not "??": this branch reads process.env RAW, because it is reached
+      // only when keys() threw — so keys()'s `emptyStringAsUndefined` never ran
+      // and "" survives. The module-load guard below is `!process.env.DD_SERVICE`,
+      // so an empty value already WARNS that logs are tagged `af-unknown`; "??"
+      // would keep "" and make that warning a lie, dropping the logs out of every
+      // service-scoped Datadog query.
+      service: process.env.DD_SERVICE || "af-unknown",
+      env: process.env.DD_ENV || process.env.NODE_ENV || "development",
+    };
+  }
+}
+
+const DD: {
+  apiKey?: string;
+  site: string;
+  service: string;
+  env: string;
+  version: string;
+  gitSha: string;
+} = {
+  ...loadConfig(),
+  version: resolveServerVersion(),
+  gitSha: resolveGitSha(),
+};
+
+const FLUSH_INTERVAL_MS = 5000;
+const MAX_BATCH_SIZE = 100;
+const MAX_RETRY_COUNT = 2;
+
+// ---------------------------------------------------------------------------
+// Structured-JSON console output for deployed runtimes.
+//
+// Locally, `log.info("msg", { … })` writes a human-readable console line. But
+// in deployed runtimes the platform log drain (Vercel → Datadog, container
+// stdout → Datadog) only sees that console line — and util.inspect collapses
+// the structured meta into the message text, so fields like `category` or
+// `diagnostics.*` never become Datadog facets (they're buried in the message
+// blob). Emitting a single JSON line instead lets the drain parse the meta into
+// first-class attributes/facets, with no dependency on the agentless intake
+// path (DD_API_KEY) being configured.
+//
+// Auto-on under Vercel (`process.env.VERCEL` is set on every Vercel
+// deployment); force on/off with `DD_LOGS_JSON=1|0`. Off by default locally so
+// dev logs stay readable.
+function resolveStructuredConsole(): boolean {
+  const flag = process.env.DD_LOGS_JSON;
+  if (flag === "1" || flag === "true") {
+    return true;
+  }
+  if (flag === "0" || flag === "false") {
+    return false;
+  }
+  return Boolean(process.env.VERCEL);
+}
+
+const STRUCTURED_CONSOLE = resolveStructuredConsole();
+
+export const LogLevel = {
+  Debug: "debug",
+  Info: "info",
+  Warn: "warn",
+  Error: "error",
+} as const;
+
+export type LogLevel = (typeof LogLevel)[keyof typeof LogLevel];
+
+// `status` is Datadog's RESERVED severity attribute; `level` is not. Datadog
+// resolves a log's status from the first of `status`, `severity`, `level`,
+// `syslog.severity` that the payload carries — so anything a caller put under
+// `status` (an HTTP code, a domain status) decided the severity instead of the
+// log call did, and a `log.error` carrying `{ status: 403 }` was indexed as
+// info (ISS-6341). Emitting severity under both keys settles it at the source
+// rather than relying on per-service pipeline configuration this repo does not
+// own; `level` stays for existing consumers and queries.
+export type DatadogLogEntry = {
+  message: string;
+  level: LogLevel;
+  status: LogLevel;
+  service: string;
+  ddsource: string;
+  ddtags: string;
+  timestamp: string;
+  origin: Origin;
+  [key: string]: unknown;
+};
+
+// ---------------------------------------------------------------------------
+// Datadog HTTP intake — batched with bounded retries
+// ---------------------------------------------------------------------------
+
+const buffer: DatadogLogEntry[] = [];
+let flushTimer: ReturnType<typeof setInterval> | null = null;
+let flushInProgress: Promise<void> | null = null;
+let retryCount = 0;
+
+function startFlushTimer(): void {
+  if (flushTimer) {
+    return;
+  }
+  flushTimer = setInterval(() => {
+    flushToDatadog();
+  }, FLUSH_INTERVAL_MS);
+  // Don't hold the process open for the flush timer
+  if (typeof flushTimer === "object" && "unref" in flushTimer) {
+    flushTimer.unref();
+  }
+}
+
+function flushToDatadog(): Promise<void> {
+  if (buffer.length === 0 || !DD.apiKey) {
+    return flushInProgress ?? Promise.resolve();
+  }
+
+  // If a flush is already in flight, chain a follow-up after it completes so
+  // entries enqueued during that flush are also delivered. The returned
+  // promise resolves only after the buffer is fully drained — critical for
+  // `waitUntil(log.flush())` callers in serverless, where the runtime can
+  // freeze the function between batches and drop logs that haven't been
+  // chained into the awaited promise.
+  if (flushInProgress) {
+    return flushInProgress.then(() => flushToDatadog());
+  }
+
+  const batch = buffer.splice(0, MAX_BATCH_SIZE);
+
+  flushInProgress = fetch(`https://http-intake.logs.${DD.site}/api/v2/logs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "DD-API-KEY": DD.apiKey,
+    },
+    body: JSON.stringify(batch, jsonReplacer),
+    signal: AbortSignal.timeout(10_000),
+    // Do NOT follow redirects: a 307/308 replays the batch AND the DD-API-KEY
+    // header to the redirect target, carrying both past the site allowlist.
+    redirect: "error",
+  })
+    .then((response) => {
+      if (!response.ok) {
+        if (
+          response.status === 429 ||
+          response.status === 408 ||
+          response.status >= 500
+        ) {
+          throw new Error(`Datadog responded with ${response.status}`);
+        }
+        console.error(
+          `[observability] Dropping ${batch.length} log entries — Datadog returned ${response.status}`
+        );
+        retryCount = 0;
+        return;
+      }
+      retryCount = 0;
+    })
+    .catch((error) => {
+      console.error("[observability] Failed to flush logs to Datadog:", error);
+      // Re-enqueue only if under retry limit; drop the batch otherwise
+      if (retryCount < MAX_RETRY_COUNT) {
+        retryCount++;
+        buffer.unshift(...batch);
+        // Backoff: wait 2^retryCount * 100ms before the next retry so
+        // transient failures (especially 429 rate-limiting) don't hammer
+        // the intake at full speed. This delays the chain re-call in the
+        // `.finally` → `.then()` drain check below.
+        const delayMs = Math.min(100 * 2 ** retryCount, 10_000);
+        return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      }
+      console.error(
+        `[observability] Dropping ${batch.length} log entries after ${MAX_RETRY_COUNT} retries`
+      );
+      retryCount = 0;
+    })
+    .finally(() => {
+      flushInProgress = null;
+    });
+
+  // Chain the drain into the returned promise so it resolves only after the
+  // buffer is empty. Without this, callers awaiting log.flush() would resolve
+  // after the first batch completes and miss entries enqueued during the flush.
+  return flushInProgress!.then(() => {
+    if (buffer.length > 0) {
+      return flushToDatadog();
+    }
+    return undefined;
+  });
+}
+
+function enqueue(entry: DatadogLogEntry): void {
+  buffer.push(entry);
+  startFlushTimer();
+  if (buffer.length >= MAX_BATCH_SIZE) {
+    flushToDatadog();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Structured log builder
+// ---------------------------------------------------------------------------
+
+function buildEntry(
+  level: LogLevel,
+  message: string,
+  meta?: Record<string, unknown>
+): DatadogLogEntry {
+  const metaOrigin =
+    typeof meta?.origin === "string" &&
+    (KNOWN_ORIGINS as readonly string[]).includes(meta.origin)
+      ? (meta.origin as Origin)
+      : undefined;
+  const origin = metaOrigin ?? ORIGIN;
+  return {
+    ...stampSeverity(level, message, meta),
+    service: DD.service,
+    ddsource: "nodejs",
+    ddtags: `env:${DD.env},version:${DD.version},git_sha:${DD.gitSha}`,
+    timestamp: new Date().toISOString(),
+    origin,
+  };
+}
+
+// JSON.stringify replacer for the structured console line and the Datadog
+// intake payload. Two jobs:
+//   1. Preserve Error instances — without it, Errors in meta (e.g.
+//      `log.error("failed", { error })`) serialize to `{}` and the
+//      name/message/stack are lost. The expanded object is re-visited by the
+//      replacer, so its message/stack still pass through redaction below.
+//   2. Redact secrets/PII — apply the shared redactLogValue so any apiKey,
+//      token, password, authorization, cookie, credential, or email a caller
+//      puts in meta is scrubbed before it leaves the process to Datadog.
+function jsonReplacer(key: string, value: unknown): unknown {
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack };
+  }
+  return redactLogValue(key, value);
+}
+
+// If the second arg is a plain object, use it as structured meta.
+// Otherwise, pack extra args into a generic "args" field.
+function extractMeta(args: unknown[]): Record<string, unknown> | undefined {
+  const firstArg = args[0];
+  if (
+    args.length === 1 &&
+    typeof firstArg === "object" &&
+    firstArg !== null &&
+    !Array.isArray(firstArg)
+  ) {
+    return firstArg as Record<string, unknown>;
+  }
+  if (args.length > 0) {
+    return { args };
+  }
+  return undefined;
+}
+
+// Write the console sink. In deployed runtimes emit a single JSON line so the
+// platform log drain parses meta into facets; locally keep the readable form.
+// JSON.stringify can throw on circular/BigInt meta — fall back to the readable
+// form so a logging call never throws.
+function writeConsole(
+  consoleFn: (...args: unknown[]) => void,
+  level: LogLevel,
+  message: string,
+  args: unknown[],
+  meta: Record<string, unknown> | undefined
+): void {
+  if (STRUCTURED_CONSOLE) {
+    try {
+      consoleFn(
+        JSON.stringify(stampSeverity(level, message, meta), jsonReplacer)
+      );
+      return;
+    } catch {
+      // fall through to the human-readable form below
+    }
+  }
+  if (args.length > 0) {
+    consoleFn(message, ...args);
+  } else {
+    consoleFn(message);
+  }
+}
+
+function makeLogFn(
+  level: LogLevel,
+  consoleFn: (...args: unknown[]) => void
+): (message: string, ...args: unknown[]) => void {
+  return (message: string, ...args: unknown[]) => {
+    // ISS-4659: enrich here, not in buildEntry(). buildEntry() only feeds the
+    // agentless intake payload, so trace ids added there would be missing on
+    // the Vercel Log Drain path — the same asymmetry that made `origin` get
+    // stamped at the emit site (see apps/api/instrumentation.ts). Enriching the
+    // shared `meta` puts the ids on BOTH sinks.
+    const meta = withTraceCorrelation(extractMeta(args));
+
+    // Always write to console (local dev + container/platform stdout drain).
+    writeConsole(consoleFn, level, message, args, meta);
+
+    // Ship to Datadog directly when configured (agentless HTTP intake).
+    if (DD.apiKey) {
+      enqueue(buildEntry(level, message, meta));
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Flush on process exit (best-effort for long-running processes).
+//
+// For Vercel serverless, callers must use waitUntil(log.flush()) instead —
+// signal handlers cannot await async work before the runtime freezes.
+// ---------------------------------------------------------------------------
+
+if (typeof process !== "undefined" && DD.apiKey) {
+  process.on("beforeExit", () => {
+    if (buffer.length > 0) {
+      flushToDatadog();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Public API — drop-in replacement for console
+// ---------------------------------------------------------------------------
+
+export const log = {
+  debug: makeLogFn("debug", console.debug),
+  info: makeLogFn("info", console.info),
+  warn: makeLogFn("warn", console.warn),
+  error: makeLogFn("error", console.error),
+  /**
+   * Flush pending log entries to Datadog. Returns a promise that resolves
+   * when the current batch has been sent (or immediately if nothing to flush).
+   *
+   * In Vercel serverless routes, wrap with waitUntil(log.flush()).
+   */
+  flush: (): Promise<void> => flushToDatadog(),
+};
+
+// Server-only diagnostics: these warnings signal a misconfigured deploy to
+// ops. In client bundles (the logger is imported by client components), the
+// env vars are never defined, so emitting the warnings in browsers would
+// pollute every end-user's DevTools console on page load.
+if (typeof window === "undefined") {
+  // console.warn (not log.warn) — mirrors origin.ts; guarantees synchronous stdout delivery
+  if (!process.env.DD_SERVICE) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        status: "warn",
+        event: "telemetry.dd_service_fallback",
+        message:
+          "observability: DD_SERVICE is not set; logs will be tagged service:af-unknown. Set DD_SERVICE in your environment.",
+      })
+    );
+  }
+
+  if (DD.version === "unknown") {
+    log.warn("telemetry.version_fallback");
+  }
+
+  if (DD.gitSha === "unknown") {
+    log.warn("telemetry.git_sha_fallback");
+  }
+}
+
+/**
+ * Merge the active trace's correlation ids into a log call's metadata.
+ *
+ * Returns `meta` unchanged when nothing is traced, so an untraced call (every
+ * browser bundle, and any runtime with tracing disabled) allocates nothing new
+ * and the emitted shape is byte-for-byte what it was before ISS-4659.
+ *
+ * The correlation fields are spread AFTER the caller's meta so a caller cannot
+ * spoof `dd.trace_id`/`dd.span_id` — the same reserved-key precedence the
+ * `origin` footgun in `buildEntry()` exists to enforce.
+ */
+function withTraceCorrelation(
+  meta: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  const traceContext = getTraceContext();
+  if (!traceContext) {
+    return meta;
+  }
+  return { ...meta, ...toLogCorrelationFields(traceContext) };
+}
+
+/**
+ * Key a caller's own `status` is moved to when it collides with the reserved one.
+ *
+ * `status` is Datadog's reserved severity attribute, so the value a call site
+ * puts there (an HTTP code, a domain status) is read as the log's severity and
+ * mis-classifies it. Relocating rather than dropping keeps the attribute
+ * queryable — 45 call sites pass one today.
+ */
+const CALLER_STATUS_KEY = "callerStatus";
+
+/**
+ * Stamp the fields both sinks must agree on: the message, and the severity
+ * under Datadog's reserved `status` as well as the legacy `level`.
+ *
+ * Shared by `buildEntry()` (agentless HTTP intake) and `writeConsole()` (the
+ * JSON line the platform drain parses) so the two cannot drift — the same
+ * two-sink asymmetry the ISS-4659 comment in `makeLogFn()` documents.
+ *
+ * Spread AFTER the caller's meta, so a caller cannot downgrade the severity
+ * Datadog indexes. Unlike `origin`, which `buildEntry()` deliberately lets a
+ * caller override with a known origin, severity is never caller-supplied.
+ */
+function stampSeverity(
+  level: LogLevel,
+  message: string,
+  meta: Record<string, unknown> | undefined
+): StampedSeverity {
+  const stamped: StampedSeverity = { ...meta, message, level, status: level };
+  if (meta && Object.hasOwn(meta, "status")) {
+    stamped[CALLER_STATUS_KEY] = meta.status;
+  }
+  return stamped;
+}
+
+/** What both sinks receive: the caller's meta plus the fields they must agree on. */
+type StampedSeverity = Record<string, unknown> & {
+  message: string;
+  level: LogLevel;
+  status: LogLevel;
+};

@@ -1,0 +1,109 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { DESKTOP_POP_HEADER_NAMES } from "@repo/api/src/types/api-key";
+import { failure } from "@repo/api/src/types/common";
+import { API_KEY_SCOPES_UNRESOLVABLE_CODE } from "@repo/api/src/utils/api-key-scope-resolution";
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { apiKeysService } from "@/app/api-keys/service";
+import { usersService } from "@/app/users/service";
+import { env } from "@/env";
+import { ApiKeyVerificationStatus } from "@/lib/auth/api-key-verification";
+import { getDesktopManagedPopRequestFailure } from "@/lib/auth/desktop-managed-pop";
+import {
+  errorResponse,
+  parseBody,
+  successResponse,
+  unauthorizedResponse,
+} from "@/lib/route-utils";
+import { waitUntil } from "@/lib/wait-until";
+
+const verifyApiKeyValidator = z.object({
+  key: z.string().min(1, "Key is required"),
+  desktopPopRequired: z.boolean().optional(),
+});
+
+export async function POST(request: Request) {
+  // Reject requests when INTERNAL_API_SECRET is not configured or header does not match
+  const internalSecret = env.INTERNAL_API_SECRET;
+  const headerSecret = request.headers.get("X-Internal-Secret");
+  if (!(internalSecret && headerSecret)) {
+    return unauthorizedResponse();
+  }
+  const digestKey = "api-constant-time-compare";
+  const expectedDigest = createHmac("sha256", digestKey)
+    .update(internalSecret, "utf8")
+    .digest();
+  const actualDigest = createHmac("sha256", digestKey)
+    .update(headerSecret, "utf8")
+    .digest();
+  if (!timingSafeEqual(expectedDigest, actualDigest)) {
+    return unauthorizedResponse();
+  }
+
+  const { body, errorResponse: parseError } = await parseBody(
+    request,
+    verifyApiKeyValidator
+  );
+  if (parseError) {
+    return parseError;
+  }
+
+  try {
+    const outcome = await apiKeysService.verifyKeyOutcome(body.key, {
+      updateLastUsedAt: false,
+    });
+    if (outcome.status !== ApiKeyVerificationStatus.Ok) {
+      // ISS-4905: keep the refusal reason machine-readable. Both branches are
+      // a 401, but "the stored scope set is unresolvable" tells the caller to
+      // reissue the key, where a bare 401 sends it to revoke credentials that
+      // are not the problem. The `code` is additive — a client that ignores it
+      // still sees the same 401 it saw before.
+      return unauthorizedResponse(
+        outcome.status === ApiKeyVerificationStatus.UnresolvableScopes
+          ? { code: API_KEY_SCOPES_UNRESOLVABLE_CODE }
+          : undefined
+      );
+    }
+    const { context } = outcome;
+
+    const user = await usersService.findById(
+      context.userId,
+      context.organizationId
+    );
+
+    if (shouldApplyDesktopManagedPop(body.desktopPopRequired, request)) {
+      const popFailure = await getDesktopManagedPopRequestFailure({
+        keyContext: { ...context, clerkUserId: user?.clerkId },
+        request,
+      });
+      if (popFailure) {
+        return NextResponse.json(failure(popFailure.message), {
+          status: popFailure.status,
+        });
+      }
+    }
+
+    waitUntil(apiKeysService.touchLastUsedAt(context.apiKeyId));
+
+    return successResponse({
+      userId: context.userId,
+      organizationId: context.organizationId,
+      clerkUserId: user?.clerkId ?? null,
+      scopes: context.scopes,
+    });
+  } catch (error) {
+    return errorResponse("Failed to verify API key", error, 503);
+  }
+}
+
+function shouldApplyDesktopManagedPop(
+  desktopPopRequired: boolean | undefined,
+  request: Request
+): boolean {
+  return (
+    desktopPopRequired === true ||
+    DESKTOP_POP_HEADER_NAMES.some((headerName) =>
+      request.headers.has(headerName)
+    )
+  );
+}

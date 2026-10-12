@@ -1,0 +1,114 @@
+---
+title: Install the desktop client
+description: Install, launch, and authenticate the AgentFlow desktop client and its localhost gateway.
+---
+
+The desktop client is the execution surface for AgentFlow. It runs a localhost HTTP gateway on port `19432` that brokers local git, filesystem, code review, and AI coding session operations, and maintains an outbound Socket.IO connection to the cloud relay so the control plane can drive work safely.
+
+## Download
+
+- **macOS:** [download the latest signed, notarized universal DMG](https://github.com/daominhsangvn/agentflow/releases/download/desktop-latest/AgentFlow-universal.dmg) — no GitHub account required. Drag the `AgentFlow.app` bundle into `/Applications`.
+- **Linux:** run the app from source (see below). Linux is supported for development but not yet packaged.
+- **Windows:** not supported.
+
+The installer is built and signed by AgentFlow's release pipeline and published to the public `quan2nhsangvn/agentflow` repository so you can download it without a GitHub account. It is not built from that repository's source at the release tag — the tag names the version, so identify the build you are running by its version number rather than by the tagged commit.
+
+### Verify the signature
+
+The signature and notarization are on the app, not the `.dmg` — the disk image itself is not code-signed, so verify the installed app. After dragging `AgentFlow.app` into `/Applications`, confirm it was signed by AgentFlow's Developer ID (Developer ID Application: **AgentFlow, Inc.**, Apple Team ID `S3789XCTMA`):
+
+```bash
+# Signature intact AND signed by AgentFlow's Team ID. Exit 0 with
+# "explicit requirement satisfied" passes; a build signed by anyone
+# else — even another notarized Developer ID — fails this check.
+codesign --verify --strict --verbose=2 \
+  -R '=anchor apple generic and identifier "ai.agentflow.desktop" and certificate leaf[subject.OU] = "S3789XCTMA"' \
+  /Applications/AgentFlow.app
+
+# Gatekeeper's own verdict and the signer it resolved
+spctl --assess --type exec --verbose=4 /Applications/AgentFlow.app
+```
+
+`spctl` prints `accepted`, `source=Notarized Developer ID`, and `origin=Developer ID Application: AgentFlow, Inc. (S3789XCTMA)`.
+
+Packaged macOS builds auto-update through the AgentFlow update service. The client checks on boot and every five minutes after that, downloading updates in the background and installing them on the next quit.
+
+Older builds installed from `agentflow-ai/agentflow-electron` do not auto-upgrade across repositories. Install the latest Desktop DMG manually once using the download link above; subsequent updates follow the current update service.
+
+## First launch
+
+When you launch the app for the first time, the tray icon appears in your menu bar. The tray cycles through four states:
+
+| State | Meaning |
+|---|---|
+| `starting` | The gateway is booting and the cloud socket is connecting. |
+| `ready` | The gateway is bound, capabilities detected, and the cloud socket has received a hello-ack. |
+| `degraded` | The cloud socket is disconnected or has not yet received a hello-ack. Local work still succeeds. |
+| `error` | Startup failed. Open the app to read the error. |
+
+Clicking the tray icon opens the main window. The tray also badges with the number of pending approvals so you notice high-risk operations even with the window closed.
+
+## Authenticate
+
+1. Open the main window.
+2. Paste your AgentFlow API key into **Settings → API key**. The key is encrypted with the operating system's keychain via Electron `safeStorage` and stored in `desktop-secrets`.
+3. Confirm the status indicator flips to `ready`. If it does not, see [Troubleshooting](../resources/troubleshooting).
+
+Alternatively, export `AGENTFLOW_API_KEY` in your shell before launching. Environment values take precedence over stored values. The `SYMPHONY_API_KEY` variable is accepted as a legacy fallback.
+
+## Complete onboarding
+
+The built-in onboarding overlay walks you through:
+
+- confirming the API key works against the AgentFlow API
+- registering this machine as a compute target via `POST /compute-targets/register`
+- choosing a sandbox base directory (the only path the gateway will let operations touch)
+- selecting a default approval tier (`low`, `medium`, or `high`, default `high`)
+
+Onboarding completion is persisted in `desktop-settings` so the overlay does not return.
+
+## Verify the gateway
+
+With the desktop client running, you can probe the public health route from any loopback process:
+
+```bash
+curl http://127.0.0.1:19432/health
+```
+
+A ready gateway responds with:
+
+```json
+{
+  "status": "ok",
+  "machineName": "<your-host>",
+  "capabilities": {
+    "tools": { "claude": true, "codex": true, "gh": true, "git": true, "python3": true },
+    "versions": {}
+  },
+  "version": "<package version>",
+  "port": 19432
+}
+```
+
+The active port is also written in plaintext to `~/.agentflow-ai/electron-port` so other tools can discover it.
+
+If the default port is in use, the client will fall back through `19433 → 19434 → 19435`. The discovery file always reflects the active port.
+
+## Run from source (Linux or contributors)
+
+The desktop source is published in the public community-edition repository, [`quan2nhsangvn/agentflow`](https://github.com/daominhsangvn/agentflow):
+
+```bash
+git clone https://github.com/daominhsangvn/agentflow.git
+cd agentflow
+pnpm install
+pnpm -C apps/desktop dev
+```
+
+Prerequisites, environment setup, and the pull request workflow live in that repository's [`CONTRIBUTING.md`](https://github.com/daominhsangvn/agentflow/blob/main/CONTRIBUTING.md), which is the authoritative contributor guide.
+
+That tree is re-synced from our internal repository periodically rather than continuously, so it lags the packaged build offered above. As with the release tags described earlier, identify the build you are running by its version number rather than by this source.
+
+## Next step
+
+With the desktop client running and authenticated, continue to [Prepare your repo and targets](./prepare-your-repo-and-targets).

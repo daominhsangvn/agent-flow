@@ -1,0 +1,21 @@
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "new-york",
+  "rsc": true,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "styles/globals.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "aliases": {
+    "components": "@agentflow-ai/design-system/components",
+    "utils": "@agentflow-ai/design-system/lib/utils",
+    "hooks": "@agentflow-ai/design-system/hooks",
+    "lib": "@agentflow-ai/design-system/lib",
+    "ui": "@agentflow-ai/design-system/components/ui"
+  },
+  "iconLibrary": "lucide"
+}

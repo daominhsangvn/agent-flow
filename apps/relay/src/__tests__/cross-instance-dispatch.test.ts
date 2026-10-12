@@ -1,0 +1,394 @@
+import { request } from "node:http";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { reserveTestPort } from "./helpers/reserve-test-port.js";
+
+const TEST_PORT = await reserveTestPort(29_000, 1500);
+const TEST_SECRET = "test-internal-secret";
+const TEST_API_URL = "http://127.0.0.1:19877";
+const ORIGINAL_ENV = { ...process.env };
+
+const REMOTE_TARGET_ID = "remote-target";
+const REMOTE_INSTANCE_ID = "other-instance";
+const REMOTE_PRIVATE_IP = "10.0.0.5";
+// Every relay task listens on the same port; the egress allowlist requires the
+// peer port to equal this instance's RELAY_PORT, so mirror the test port here.
+const REMOTE_PORT = TEST_PORT;
+
+// A target registered to an instance that has no instance-info in the registry
+// (simulates a SCAN/lookup race where the instance record expired).
+const DANGLING_TARGET_ID = "dangling-target";
+const DANGLING_INSTANCE_ID = "dangling-instance";
+
+// A target whose registry-supplied instance info carries a public (non-VPC) IP,
+// which the SSRF guard should reject.
+const SSRF_TARGET_ID = "ssrf-target";
+const SSRF_INSTANCE_ID = "ssrf-instance";
+const SSRF_PRIVATE_IP = "1.2.3.4"; // public IP → isRoutablePrivateIpv4 = false
+
+let baseUrl: string;
+let stopRelay: (() => Promise<void>) | null = null;
+
+vi.mock("socket.io", () => {
+  const mockNamespace = { use: vi.fn(), on: vi.fn() };
+  return {
+    Server: class MockServer {
+      of() {
+        return mockNamespace;
+      }
+      close() {
+        return Promise.resolve();
+      }
+    },
+  };
+});
+
+// Inject a registry that resolves the target to a different relay instance,
+// forcing handleDispatch down the cross-instance proxy path.
+vi.mock("../target-registry.js", () => {
+  const remoteTarget = {
+    instanceId: REMOTE_INSTANCE_ID,
+    socketId: "sock-remote",
+    ownerToken: "owner-token-remote",
+    organizationId: "org-1",
+    userId: "user-1",
+    connectedAt: 0,
+  };
+  const remoteInstance = {
+    privateIp: REMOTE_PRIVATE_IP,
+    port: REMOTE_PORT,
+    startedAt: 0,
+  };
+  const danglingTarget = {
+    instanceId: DANGLING_INSTANCE_ID,
+    socketId: "sock-dangling",
+    ownerToken: "owner-token-dangling",
+    organizationId: "org-1",
+    userId: "user-1",
+    connectedAt: 0,
+  };
+
+  const ssrfTarget = {
+    instanceId: SSRF_INSTANCE_ID,
+    socketId: "sock-ssrf",
+    ownerToken: "owner-token-ssrf",
+    organizationId: "org-1",
+    userId: "user-1",
+    connectedAt: 0,
+  };
+
+  const ssrfInstance = {
+    privateIp: SSRF_PRIVATE_IP,
+    port: REMOTE_PORT,
+    startedAt: 0,
+  };
+
+  class MockTargetRegistry {
+    register() {
+      return Promise.resolve();
+    }
+    lookup(targetId: string) {
+      if (targetId === REMOTE_TARGET_ID) {
+        return Promise.resolve(remoteTarget);
+      }
+      if (targetId === DANGLING_TARGET_ID) {
+        return Promise.resolve(danglingTarget);
+      }
+      if (targetId === SSRF_TARGET_ID) {
+        return Promise.resolve(ssrfTarget);
+      }
+      return Promise.resolve(null);
+    }
+    deregister() {
+      return Promise.resolve(true);
+    }
+    refreshTtl() {
+      return Promise.resolve(true);
+    }
+    deregisterAllByInstance() {
+      return Promise.resolve(0);
+    }
+    registerInstance() {
+      return Promise.resolve();
+    }
+    lookupInstance(instanceId: string) {
+      if (instanceId === REMOTE_INSTANCE_ID) {
+        return Promise.resolve(remoteInstance);
+      }
+      if (instanceId === SSRF_INSTANCE_ID) {
+        return Promise.resolve(ssrfInstance);
+      }
+      // DANGLING_INSTANCE_ID intentionally has no instance record.
+      return Promise.resolve(null);
+    }
+    deregisterInstance() {
+      return Promise.resolve();
+    }
+  }
+  return {
+    InMemoryTargetRegistry: MockTargetRegistry,
+    RedisTargetRegistry: MockTargetRegistry,
+  };
+});
+
+const fetchMock = vi.fn();
+
+beforeAll(async () => {
+  process.env.INTERNAL_API_SECRET = TEST_SECRET;
+  process.env.RELAY_PORT = String(TEST_PORT);
+  process.env.AGENTFLOW_API_URL = TEST_API_URL;
+  vi.stubGlobal("fetch", fetchMock);
+
+  const relayModule = await import("../index");
+  await relayModule.startRelayServer("127.0.0.1");
+  stopRelay = relayModule.stopRelayServer;
+
+  baseUrl = `http://127.0.0.1:${TEST_PORT}`;
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+}, 30_000);
+
+beforeEach(() => {
+  fetchMock.mockReset();
+});
+
+afterAll(async () => {
+  if (stopRelay) {
+    await stopRelay();
+  }
+  vi.unstubAllGlobals();
+  process.env = { ...ORIGINAL_ENV };
+});
+
+function dispatch(targetId: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      `${baseUrl}/dispatch`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-secret": TEST_SECRET,
+        },
+        timeout: 2000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString("utf8"),
+          })
+        );
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("Request timed out")));
+    req.on("error", reject);
+    req.write(JSON.stringify({ targetId, operation: { commandId: "cmd-1" } }));
+    req.end();
+  });
+}
+
+describe("cross-instance dispatch proxying", () => {
+  it("proxies to the owning instance and returns its result", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ delivered: true }),
+    });
+
+    const response = await dispatch(REMOTE_TARGET_ID);
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ delivered: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0] as [
+      string,
+      { headers: Record<string, string>; body: string },
+    ];
+    expect(calledUrl).toBe(
+      `http://${REMOTE_PRIVATE_IP}:${REMOTE_PORT}/internal/dispatch`
+    );
+    expect(calledInit.headers["x-internal-secret"]).toBe(TEST_SECRET);
+    expect(JSON.parse(calledInit.body).targetId).toBe(REMOTE_TARGET_ID);
+  });
+
+  it("falls back to target_not_connected when the peer is unreachable", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+    const response = await dispatch(REMOTE_TARGET_ID);
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      delivered: false,
+      reason: "target_not_connected",
+    });
+  });
+
+  it("falls back to target_not_connected on a non-JSON peer response", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new Error("Unexpected token < in JSON")),
+    });
+
+    const response = await dispatch(REMOTE_TARGET_ID);
+
+    expect(response.status).toBe(200);
+    expect((JSON.parse(response.body) as { reason: string }).reason).toBe(
+      "target_not_connected"
+    );
+  });
+
+  it("reports not-delivered on a non-2xx peer response with a JSON error body", async () => {
+    // A peer 500/401/403 must not be forwarded verbatim with a 200; the API
+    // caller only treats delivered === false as failure.
+    const jsonSpy = vi.fn(() => Promise.resolve({ error: "internal" }));
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: jsonSpy,
+    });
+
+    const response = await dispatch(REMOTE_TARGET_ID);
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      delivered: false,
+      reason: "target_not_connected",
+    });
+  });
+
+  it("reports not-delivered on a malformed 2xx peer response", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ unexpected: "shape" }),
+    });
+
+    const response = await dispatch(REMOTE_TARGET_ID);
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      delivered: false,
+      reason: "target_not_connected",
+    });
+  });
+
+  it("attaches an abort signal that times out before the API caller budget", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ delivered: true }),
+    });
+
+    await dispatch(REMOTE_TARGET_ID);
+
+    const [, calledInit] = fetchMock.mock.calls[0] as [
+      string,
+      { signal?: AbortSignal },
+    ];
+    expect(calledInit.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("reports target_not_connected when no instance owns the target", async () => {
+    const response = await dispatch("unknown-target");
+
+    expect(response.status).toBe(200);
+    expect((JSON.parse(response.body) as { reason: string }).reason).toBe(
+      "target_not_connected"
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reports target_not_connected when instance info is absent for a registered target (L1764)", async () => {
+    // The dangling-target has a registry entry that points to an instance whose
+    // info record no longer exists (expired). tryProxyDispatch hits the
+    // !instanceInfo guard (L1764 arm0) → returns null → target_not_connected.
+    const response = await dispatch(DANGLING_TARGET_ID);
+
+    expect(response.status).toBe(200);
+    expect((JSON.parse(response.body) as { reason: string }).reason).toBe(
+      "target_not_connected"
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to proxy to a public IP and issues no fetch (SSRF guard, L1773)", async () => {
+    // The ssrf-target's instance record has a public (non-VPC) IP. isAllowedPeerInstance
+    // returns false → tryProxyDispatch hits the SSRF guard (L1773 arm0) → null → no fetch.
+    const response = await dispatch(SSRF_TARGET_ID);
+
+    expect(response.status).toBe(200);
+    expect((JSON.parse(response.body) as { reason: string }).reason).toBe(
+      "target_not_connected"
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("passes through a peer's not-delivered result with a non-standard reason (L1826 arm1)", async () => {
+    // Peer returns { delivered: false, reason: "some_other_reason" }.
+    // !proxyResult.delivered is true but reason !== "target_not_connected"
+    // (L1826 arm1), so deregister is skipped and the payload is forwarded verbatim.
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({ delivered: false, reason: "some_other_reason" }),
+    });
+
+    const response = await dispatch(REMOTE_TARGET_ID);
+
+    expect(response.status).toBe(200);
+    const body = JSON.parse(response.body) as {
+      delivered: boolean;
+      reason: string;
+    };
+    expect(body.delivered).toBe(false);
+    expect(body.reason).toBe("some_other_reason");
+  });
+
+  it("deregisters the stale target when the peer explicitly reports target_not_connected (L1825 arm0)", async () => {
+    // Peer returns { delivered: false, reason: "target_not_connected" } with a 2xx.
+    // Both conditions in the guard are true (L1825 arm0): the target is deregistered
+    // and the payload is forwarded verbatim to the caller.
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({ delivered: false, reason: "target_not_connected" }),
+    });
+
+    const response = await dispatch(REMOTE_TARGET_ID);
+
+    expect(response.status).toBe(200);
+    const body = JSON.parse(response.body) as {
+      delivered: boolean;
+      reason: string;
+    };
+    expect(body.delivered).toBe(false);
+    expect(body.reason).toBe("target_not_connected");
+  });
+
+  it("falls back to target_not_connected when the peer raises a non-Error exception (L1847)", async () => {
+    // fetchMock rejects with a plain string (not an Error instance).
+    // The catch branch at L1847 uses String(error) instead of error.message
+    // (the non-Error arm), and tryProxyDispatch returns null → target_not_connected.
+    fetchMock.mockRejectedValueOnce("ECONNRESET: non-error string failure");
+
+    const response = await dispatch(REMOTE_TARGET_ID);
+
+    expect(response.status).toBe(200);
+    expect((JSON.parse(response.body) as { reason: string }).reason).toBe(
+      "target_not_connected"
+    );
+  });
+});

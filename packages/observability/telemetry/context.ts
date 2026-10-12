@@ -1,0 +1,110 @@
+import { z } from "zod";
+
+import type { TelemetryTraceContext } from "./schema";
+
+// ---------------------------------------------------------------------------
+// Server version validation — semver or max-40-char safe alphanumeric string.
+// No path separators or whitespace allowed.
+// ---------------------------------------------------------------------------
+
+const BUILD_IDENTITY_MAX_LENGTH = 40;
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?$/;
+const SAFE_VERSION_RE = /^[a-zA-Z0-9.-]{1,40}$/;
+
+const serverVersionSchema = z
+  .string()
+  .refine(
+    (v: string) =>
+      v.length <= BUILD_IDENTITY_MAX_LENGTH &&
+      (SEMVER_RE.test(v) || SAFE_VERSION_RE.test(v)),
+    "serverVersion must be semver or a max-40-char alphanumeric/dot/dash string with no path separators or whitespace"
+  );
+
+// ---------------------------------------------------------------------------
+// Environment resolution
+// ---------------------------------------------------------------------------
+
+function resolveEnvironment(): string {
+  return (
+    process.env.NODE_ENV ??
+    process.env.RELAY_ENV ??
+    process.env.AGENTFLOW_ENVIRONMENT ??
+    "unknown"
+  );
+}
+
+export function resolveServerVersion(): string {
+  // VERCEL_GIT_COMMIT_SHA is the deployed commit on every Vercel surface
+  // (api/app/web) and is a valid `version` per SAFE_VERSION_RE (40-char hex).
+  // Before this fell back to "unknown" in the Vercel runtime — neither
+  // RELEASE_VERSION nor npm_package_version is set there — so every prod log
+  // shipped `version:unknown` (FEA-3331 I-9), which is both a Unified Service
+  // Tagging gap and what made the incident harder to slice by build. The SHA is
+  // the correct deployed-version identifier, so use it before giving up.
+  // Non-Vercel surfaces (desktop/relay) have no VERCEL_GIT_COMMIT_SHA and still
+  // resolve to "unknown" unchanged. FEA-3565.
+  return resolveBuildIdentityValue(
+    process.env.RELEASE_VERSION,
+    process.env.npm_package_version,
+    process.env.VERCEL_GIT_COMMIT_SHA
+  );
+}
+
+export function resolveGitSha(): string {
+  return resolveBuildIdentityValue(
+    process.env.VERCEL_GIT_COMMIT_SHA,
+    process.env.GIT_SHA
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export const ZERO_GATEWAY_SESSION_ID = "00000000-0000-0000-0000-000000000000";
+
+export function buildTelemetryTraceContext(
+  overrides: Partial<TelemetryTraceContext>
+): TelemetryTraceContext {
+  const rawVersion = overrides.serverVersion ?? resolveServerVersion();
+
+  const parseResult = serverVersionSchema.safeParse(rawVersion);
+  const serverVersion = parseResult.success ? rawVersion : "unknown";
+
+  return {
+    commandId: overrides.commandId ?? "",
+    operationId: overrides.operationId ?? "",
+    computeTargetId: overrides.computeTargetId ?? "",
+    gatewaySessionId: overrides.gatewaySessionId ?? ZERO_GATEWAY_SESSION_ID,
+    schemaVersion: overrides.schemaVersion ?? "1",
+    environment: overrides.environment ?? resolveEnvironment(),
+    serverVersion,
+    ...(overrides.loopSessionId !== undefined && {
+      loopSessionId: overrides.loopSessionId,
+    }),
+    ...(overrides.loopId !== undefined && { loopId: overrides.loopId }),
+    ...(overrides.jobId !== undefined && { jobId: overrides.jobId }),
+    ...(overrides.requestId !== undefined && {
+      requestId: overrides.requestId,
+    }),
+    ...(overrides.pluginVersion !== undefined && {
+      pluginVersion: overrides.pluginVersion,
+    }),
+    ...(overrides.desktopClientVersion !== undefined && {
+      desktopClientVersion: overrides.desktopClientVersion,
+    }),
+    ...(overrides.gatewayProtocolVersion !== undefined && {
+      gatewayProtocolVersion: overrides.gatewayProtocolVersion,
+    }),
+  };
+}
+
+function resolveBuildIdentityValue(...values: (string | undefined)[]): string {
+  for (const value of values) {
+    const parseResult = serverVersionSchema.safeParse(value);
+    if (parseResult.success) {
+      return parseResult.data;
+    }
+  }
+  return "unknown";
+}
