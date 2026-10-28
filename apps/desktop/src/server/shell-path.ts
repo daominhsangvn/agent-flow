@@ -7,6 +7,14 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { BinaryResolveSource } from "../shared/cli-binary-tools.js";
 import { pluginDirsEnv } from "./operations/bundled-plugins.js";
+import {
+  applyWindowsLoopEnv,
+  executableFileNames,
+  isWindows,
+  readEnv,
+  setEnvValue,
+  WINDOWS_SHIMS_DIR_ENV,
+} from "./platform-shell.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -19,11 +27,11 @@ const execFileAsync = promisify(execFile);
 export function expandTildes(rawPath: string): string {
   const home = os.homedir();
   return rawPath
-    .split(":")
+    .split(path.delimiter)
     .map((seg) =>
       seg === "~" ? home : seg.startsWith("~/") ? home + seg.slice(1) : seg
     )
-    .join(":");
+    .join(path.delimiter);
 }
 
 /**
@@ -78,7 +86,21 @@ function configuredShell(env: NodeJS.ProcessEnv): string {
 }
 
 function shellPathFallback(env: NodeJS.ProcessEnv): string {
+  if (isWindows()) {
+    return windowsSearchPath(env);
+  }
   return expandTildes(`${env.PATH ?? ""}:/opt/homebrew/bin:/usr/local/bin`);
+}
+
+/**
+ * Windows has no login shell to ask: programs get their PATH from the
+ * environment (the user and system PATH). The runner's shims directory, when
+ * set, comes first (platform-shell.ts WINDOWS_SHIMS_DIR_ENV).
+ */
+function windowsSearchPath(env: NodeJS.ProcessEnv): string {
+  return [readEnv(env, WINDOWS_SHIMS_DIR_ENV), readEnv(env, "PATH")]
+    .filter(Boolean)
+    .join(path.delimiter);
 }
 
 function shellPathCommand(): string {
@@ -100,6 +122,9 @@ const SHELL_ARG_VARIANTS: readonly string[][] = [["-ilc"], ["-lc"]];
 async function resolveShellPathFromShell(
   env: NodeJS.ProcessEnv
 ): Promise<string> {
+  if (isWindows()) {
+    return windowsSearchPath(env);
+  }
   const shell = configuredShell(env);
   const command = shellPathCommand();
   for (const args of SHELL_ARG_VARIANTS) {
@@ -120,6 +145,9 @@ async function resolveShellPathFromShell(
 }
 
 function resolveShellPathFromShellSync(env: NodeJS.ProcessEnv): string {
+  if (isWindows()) {
+    return windowsSearchPath(env);
+  }
   const shell = configuredShell(env);
   const command = shellPathCommand();
   for (const args of SHELL_ARG_VARIANTS) {
@@ -219,13 +247,16 @@ export async function getShellEnv(
 ): Promise<Record<string, string>> {
   const shellPath = await getShellPath();
   const env = shellPathEnv();
-  return {
+  const shellEnv: Record<string, string> = {
     ...(sanitizeSpawnEnv(env) as Record<string, string>),
-    PATH: shellPath,
     // Lets shell runners (run-loop.sh) pass the bundled plugins to claude.
     ...pluginDirsEnv(),
     ...extra,
   };
+  // Not a plain `PATH:` entry: on Windows the inherited key is `Path`, and a
+  // child given both sees only one of them.
+  setEnvValue(shellEnv, "PATH", extra?.PATH ?? shellPath);
+  return applyWindowsLoopEnv(shellEnv);
 }
 
 function clearShellPathSlot(slot: ShellPathCacheSlot): void {
@@ -325,16 +356,18 @@ export async function resolveExecutablesOnPath(
   const seen = new Set<string>();
   const hits: string[] = [];
   for (const segment of segments) {
-    const candidate = path.join(segment, binary);
-    if (seen.has(candidate)) {
-      continue;
-    }
-    seen.add(candidate);
-    try {
-      await access(candidate, constants.X_OK);
-      hits.push(candidate);
-    } catch {
-      // not found or not executable
+    for (const fileName of executableFileNames(binary)) {
+      const candidate = path.join(segment, fileName);
+      if (seen.has(candidate)) {
+        continue;
+      }
+      seen.add(candidate);
+      try {
+        await access(candidate, constants.X_OK);
+        hits.push(candidate);
+      } catch {
+        // not found or not executable
+      }
     }
   }
   return hits;
@@ -355,16 +388,18 @@ export function resolveExecutablesOnPathSync(
   const seen = new Set<string>();
   const hits: string[] = [];
   for (const segment of segments) {
-    const candidate = path.join(segment, binary);
-    if (seen.has(candidate)) {
-      continue;
-    }
-    seen.add(candidate);
-    try {
-      accessSync(candidate, constants.X_OK);
-      hits.push(candidate);
-    } catch {
-      // not found or not executable
+    for (const fileName of executableFileNames(binary)) {
+      const candidate = path.join(segment, fileName);
+      if (seen.has(candidate)) {
+        continue;
+      }
+      seen.add(candidate);
+      try {
+        accessSync(candidate, constants.X_OK);
+        hits.push(candidate);
+      } catch {
+        // not found or not executable
+      }
     }
   }
   return hits;
@@ -422,7 +457,12 @@ export const KNOWN_BINARY_LOCATIONS: Partial<Record<BinaryName, string[]>> = {
     "~/.local/bin/claude",
     "/snap/bin/claude", // Linux snap
   ],
-  git: ["/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git"],
+  git: [
+    "/usr/bin/git",
+    "/usr/local/bin/git",
+    "/opt/homebrew/bin/git",
+    String.raw`C:\Program Files\Git\cmd\git`, // Git for Windows
+  ],
   gh: ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "~/.local/bin/gh"],
   codex: [
     "~/.volta/bin/codex",
@@ -463,6 +503,16 @@ function knownLocationsFor(logicalName: BinaryName): string[] {
   return source[logicalName] ?? [];
 }
 
+/** Known locations with tildes expanded, as on-disk executable names. */
+function knownLocationCandidates(logicalName: BinaryName): string[] {
+  return knownLocationsFor(logicalName).flatMap((loc) => {
+    const expanded = expandTildes(loc);
+    return executableFileNames(path.basename(expanded)).map((fileName) =>
+      path.join(path.dirname(expanded), fileName)
+    );
+  });
+}
+
 /**
  * Probe the known install locations for `logicalName` and return the first
  * path that exists and is executable (`X_OK`), or null. Tildes are expanded
@@ -471,8 +521,7 @@ function knownLocationsFor(logicalName: BinaryName): string[] {
 async function resolveFromKnownLocations(
   logicalName: BinaryName
 ): Promise<string | null> {
-  for (const loc of knownLocationsFor(logicalName)) {
-    const candidate = expandTildes(loc);
+  for (const candidate of knownLocationCandidates(logicalName)) {
     try {
       await access(candidate, constants.X_OK);
       return candidate;
@@ -484,8 +533,7 @@ async function resolveFromKnownLocations(
 }
 
 function resolveFromKnownLocationsSync(logicalName: BinaryName): string | null {
-  for (const loc of knownLocationsFor(logicalName)) {
-    const candidate = expandTildes(loc);
+  for (const candidate of knownLocationCandidates(logicalName)) {
     try {
       accessSync(candidate, constants.X_OK);
       return candidate;

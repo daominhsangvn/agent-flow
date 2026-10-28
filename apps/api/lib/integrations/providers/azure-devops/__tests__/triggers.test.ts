@@ -12,9 +12,12 @@ import {
 import {
   workItemAssignedConfigSchema,
   workItemAssignedTrigger,
+  workItemConditionsConfigSchema,
+  workItemConditionsTrigger,
   workItemTaggedConfigSchema,
   workItemTaggedTrigger,
 } from "@/lib/integrations/providers/azure-devops/triggers";
+import { TriggerConditionMatch } from "@/lib/integrations/trigger-conditions";
 import type {
   InboundEvent,
   InboundEventAttributeValue,
@@ -155,5 +158,114 @@ describe("azure_devops.work_item_tagged", () => {
     expect(workItemTaggedConfigSchema.safeParse({ tag: " " }).success).toBe(
       false
     );
+  });
+});
+
+describe("azure_devops.work_item_conditions", () => {
+  function conditionsMatch(
+    config: JsonObject,
+    attributes: Record<string, InboundEventAttributeValue>
+  ): boolean {
+    return workItemConditionsTrigger.matches(
+      event(AzureDevOpsTriggerType.WorkItemConditions, {
+        [AdoEventAttribute.AssignedToBot]: false,
+        [AdoEventAttribute.BecameAssigned]: false,
+        [AdoEventAttribute.AddedTags]: [],
+        [AdoEventAttribute.Mentioned]: false,
+        ...attributes,
+      }),
+      workItemConditionsConfigSchema.parse(config),
+      connection
+    );
+  }
+
+  const assignedUntagged = {
+    [AdoEventAttribute.AssignedToBot]: true,
+    [AdoEventAttribute.BecameAssigned]: true,
+    [AdoEventAttribute.Tags]: ["Checkout"],
+  };
+  const taggedWhileAssigned = {
+    [AdoEventAttribute.AssignedToBot]: true,
+    [AdoEventAttribute.Tags]: ["Checkout", "AgentFlow"],
+    [AdoEventAttribute.AddedTags]: ["AgentFlow"],
+  };
+  const taggedUnassigned = {
+    [AdoEventAttribute.Tags]: ["Checkout", "AgentFlow"],
+    [AdoEventAttribute.AddedTags]: ["AgentFlow"],
+  };
+
+  it("requires at least one condition", () => {
+    expect(workItemConditionsConfigSchema.safeParse({}).success).toBe(false);
+    expect(
+      workItemConditionsConfigSchema.safeParse({ states: ["New"] }).success
+    ).toBe(false);
+    expect(workItemConditionsConfigSchema.parse({ mentioned: true })).toEqual({
+      match: TriggerConditionMatch.All,
+      assigned: false,
+      tags: [],
+      mentioned: true,
+      projects: [],
+      workItemTypes: [],
+      areaPathPrefix: "",
+      states: [],
+    });
+  });
+
+  it("starts on the second of assigned + tagged, in either order (all)", () => {
+    const config = { assigned: true, tags: ["agentflow"] };
+    expect(conditionsMatch(config, assignedUntagged)).toBe(false);
+    expect(conditionsMatch(config, taggedUnassigned)).toBe(false);
+    expect(conditionsMatch(config, taggedWhileAssigned)).toBe(true);
+    expect(
+      conditionsMatch(config, {
+        ...assignedUntagged,
+        [AdoEventAttribute.Tags]: ["AgentFlow"],
+      })
+    ).toBe(true);
+  });
+
+  it("starts on any condition with any", () => {
+    const config = {
+      match: TriggerConditionMatch.Any,
+      assigned: true,
+      tags: ["agentflow"],
+    };
+    expect(conditionsMatch(config, assignedUntagged)).toBe(true);
+    expect(conditionsMatch(config, taggedUnassigned)).toBe(true);
+    expect(conditionsMatch(config, {})).toBe(false);
+  });
+
+  it("combines a mention with the work item's state", () => {
+    const config = { mentioned: true, tags: ["agentflow"] };
+    const mention = { [AdoEventAttribute.Mentioned]: true };
+    expect(
+      conditionsMatch(config, {
+        ...mention,
+        [AdoEventAttribute.Tags]: ["AgentFlow"],
+      })
+    ).toBe(true);
+    expect(conditionsMatch(config, mention)).toBe(false);
+  });
+
+  it("applies the project, type, area path and state filters", () => {
+    const config = { assigned: true };
+    expect(
+      conditionsMatch({ ...config, states: ["new"] }, assignedUntagged)
+    ).toBe(true);
+    expect(
+      conditionsMatch({ ...config, states: ["Active"] }, assignedUntagged)
+    ).toBe(false);
+    expect(
+      conditionsMatch(
+        { ...config, areaPathPrefix: "Fabrikam Web\\Checkout" },
+        assignedUntagged
+      )
+    ).toBe(true);
+    expect(
+      conditionsMatch({ ...config, projects: ["Other"] }, assignedUntagged)
+    ).toBe(false);
+    expect(
+      conditionsMatch({ ...config, workItemTypes: ["Bug"] }, assignedUntagged)
+    ).toBe(false);
   });
 });

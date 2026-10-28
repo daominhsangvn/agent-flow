@@ -1,6 +1,8 @@
+import { IntegrationToolCallStatus } from "@repo/api/src/types/integration-tools";
 import {
   WorkflowActionRunStatus,
   WorkflowActionStage,
+  WorkflowInstructionOperationStatus,
   WorkflowRunEvent,
   WorkflowRunStatus,
 } from "@repo/api/src/types/workflow";
@@ -17,7 +19,7 @@ export type WorkflowBadgeTone =
 
 export const WORKFLOW_RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
   [WorkflowRunStatus.Received]: "Received",
-  [WorkflowRunStatus.PreActions]: "Running pre actions",
+  [WorkflowRunStatus.PreActions]: "Running triggered actions",
   [WorkflowRunStatus.Ingesting]: "Importing",
   [WorkflowRunStatus.Planning]: "Planning",
   [WorkflowRunStatus.Executing]: "Implementing",
@@ -47,10 +49,13 @@ export const WORKFLOW_RUN_STATUS_TONES: Record<
 };
 
 export const WORKFLOW_RUN_EVENT_LABELS: Record<WorkflowRunEvent, string> = {
-  [WorkflowRunEvent.Triggered]: "Trigger received (pre actions)",
+  [WorkflowRunEvent.Triggered]: "Trigger received",
   [WorkflowRunEvent.Started]: "Run started",
+  [WorkflowRunEvent.PlanStarted]: "Planning started",
   [WorkflowRunEvent.PlanReady]: "Plan ready",
   [WorkflowRunEvent.NeedsInput]: "Needs input",
+  [WorkflowRunEvent.ExecuteStarted]: "Implementation started",
+  [WorkflowRunEvent.ExecuteCompleted]: "Implementation done",
   [WorkflowRunEvent.Succeeded]: "Run succeeded",
   [WorkflowRunEvent.Failed]: "Run failed",
 };
@@ -58,25 +63,35 @@ export const WORKFLOW_RUN_EVENT_LABELS: Record<WorkflowRunEvent, string> = {
 export const WORKFLOW_RUN_EVENT_DESCRIPTIONS: Record<WorkflowRunEvent, string> =
   {
     [WorkflowRunEvent.Triggered]:
-      "A trigger fired. Pre actions run on it, before the agent team starts.",
-    [WorkflowRunEvent.Started]: "The agent team picked up the item.",
+      "A trigger fired and the item was imported. Its actions run in order before the agent team starts; a failure stops the run unless continueOnError is true.",
+    [WorkflowRunEvent.Started]:
+      "The agent team picked up the item (once per run, when its first step starts).",
+    [WorkflowRunEvent.PlanStarted]:
+      "PLAN started writing the implementation plan; again on every re-plan.",
     [WorkflowRunEvent.PlanReady]: "The implementation plan was written.",
     [WorkflowRunEvent.NeedsInput]:
-      "The plan has open questions and the run waits for a person.",
+      "The plan or a process step has open questions, or a step waits for an approval: the run waits for a person.",
+    [WorkflowRunEvent.ExecuteStarted]:
+      "EXECUTE (or a process step that pushes) started implementing the plan.",
+    [WorkflowRunEvent.ExecuteCompleted]:
+      "The implementation finished (EXECUTE, or a process step that pushes): the changes are on the run's branch.",
     [WorkflowRunEvent.Succeeded]:
-      "Plan mode: the plan is ready. Plan and implement: the pull request is open.",
+      "The run finished: the plan is ready (plan mode) or the changes are pushed (plan and implement). A create pull request action on this event opens the pull requests.",
     [WorkflowRunEvent.Failed]: "The run could not be completed.",
   };
 
 /**
- * Every run event in lifecycle order. Post action checkbox lists use
- * `WORKFLOW_POST_ACTION_EVENTS` (the same order without run.triggered).
+ * Every run event in lifecycle order. Post action lists use
+ * `WORKFLOW_POST_ACTION_EVENTS` (the same order without workflow.triggered).
  */
 export const WORKFLOW_RUN_EVENT_ORDER: readonly WorkflowRunEvent[] = [
   WorkflowRunEvent.Triggered,
   WorkflowRunEvent.Started,
+  WorkflowRunEvent.PlanStarted,
   WorkflowRunEvent.PlanReady,
   WorkflowRunEvent.NeedsInput,
+  WorkflowRunEvent.ExecuteStarted,
+  WorkflowRunEvent.ExecuteCompleted,
   WorkflowRunEvent.Succeeded,
   WorkflowRunEvent.Failed,
 ];
@@ -87,6 +102,7 @@ export const WORKFLOW_ACTION_RUN_STATUS_LABELS: Record<
 > = {
   [WorkflowActionRunStatus.Pending]: "Pending",
   [WorkflowActionRunStatus.Running]: "Running",
+  [WorkflowActionRunStatus.Waiting]: "Agent at work",
   [WorkflowActionRunStatus.Succeeded]: "Succeeded",
   [WorkflowActionRunStatus.Failed]: "Failed",
   [WorkflowActionRunStatus.Skipped]: "Skipped",
@@ -98,6 +114,7 @@ export const WORKFLOW_ACTION_RUN_STATUS_TONES: Record<
 > = {
   [WorkflowActionRunStatus.Pending]: "muted",
   [WorkflowActionRunStatus.Running]: "info",
+  [WorkflowActionRunStatus.Waiting]: "ai",
   [WorkflowActionRunStatus.Succeeded]: "success",
   [WorkflowActionRunStatus.Failed]: "error",
   [WorkflowActionRunStatus.Skipped]: "muted",
@@ -106,6 +123,7 @@ export const WORKFLOW_ACTION_RUN_STATUS_TONES: Record<
 export const WORKFLOW_AGENT_MODE_LABELS: Record<WorkflowAgentMode, string> = {
   [WorkflowAgentMode.Plan]: "Plan only",
   [WorkflowAgentMode.PlanAndExecute]: "Plan and implement",
+  [WorkflowAgentMode.Orchestrated]: "Orchestrator",
 };
 
 export const WORKFLOW_AGENT_MODE_DESCRIPTIONS: Record<
@@ -116,6 +134,8 @@ export const WORKFLOW_AGENT_MODE_DESCRIPTIONS: Record<
     "The agent team writes an implementation plan for the item and stops. A person reviews the plan and starts the implementation.",
   [WorkflowAgentMode.PlanAndExecute]:
     "The agent team writes the plan, approves it automatically and implements it, opening a pull request.",
+  [WorkflowAgentMode.Orchestrated]:
+    "No run starts: each request goes to this workflow's orchestrator, which follows its rules (instructions), chooses the runners' commands and answers.",
 };
 
 /**
@@ -127,8 +147,8 @@ export const WORKFLOW_SOURCE_SYSTEMS_NOTICE =
 
 export const WORKFLOW_ACTION_STAGE_LABELS: Record<WorkflowActionStage, string> =
   {
-    [WorkflowActionStage.Pre]: "Pre",
-    [WorkflowActionStage.Post]: "Post",
+    [WorkflowActionStage.Pre]: "Before agents",
+    [WorkflowActionStage.Post]: "After",
   };
 
 /** Titles of the failed workflow and run operations (toast and inline). */
@@ -139,9 +159,40 @@ export const WorkflowMutationErrorTitle = {
   Delete: "Couldn't delete the workflow",
   StartRun: "Couldn't start the run",
   CancelRun: "Couldn't cancel the run",
+  RetryRun: "Couldn't retry the run",
   RetryActionRun: "Couldn't retry the action",
   AnswerQuestions: "Couldn't send the answers",
   DecideApproval: "Couldn't record the decision",
+  DecideReview: "Couldn't record the review decision",
+  DecideToolCall: "Couldn't decide the tool call",
 } as const;
 export type WorkflowMutationErrorTitle =
   (typeof WorkflowMutationErrorTitle)[keyof typeof WorkflowMutationErrorTitle];
+
+/** How an integration tool call of an instruction's agent went (run page). */
+export const WORKFLOW_INSTRUCTION_OPERATION_STATUS_LABELS: Record<
+  WorkflowInstructionOperationStatus,
+  string
+> = {
+  [WorkflowInstructionOperationStatus.Succeeded]: "done",
+  [WorkflowInstructionOperationStatus.Failed]: "failed",
+  [WorkflowInstructionOperationStatus.Skipped]: "skipped",
+  [WorkflowInstructionOperationStatus.NotRun]: "not run",
+  [WorkflowInstructionOperationStatus.PendingApproval]: "waiting for approval",
+};
+
+/** How an agent's integration tool call went (run page). */
+export const WORKFLOW_TOOL_CALL_STATUS_LABELS: Record<
+  IntegrationToolCallStatus,
+  string
+> = {
+  [IntegrationToolCallStatus.Running]: "Running",
+  [IntegrationToolCallStatus.Succeeded]: "Done",
+  [IntegrationToolCallStatus.Failed]: "Failed",
+  [IntegrationToolCallStatus.Refused]: "Refused",
+  [IntegrationToolCallStatus.PendingApproval]: "Waiting for approval",
+  [IntegrationToolCallStatus.Rejected]: "Rejected",
+};
+
+/** The action label of an instruction (it is no provider's action type). */
+export const WORKFLOW_INSTRUCTION_LABEL = "Instruction";

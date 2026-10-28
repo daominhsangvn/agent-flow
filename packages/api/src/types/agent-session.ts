@@ -28,6 +28,7 @@ import type {
   SyncedArtifactRef,
   SyncedSessionPrRef,
 } from "./session-artifact-link.js";
+import type { SessionPR } from "./session-pull-request.js";
 import type { SyncedComponentVariantsEnvelope } from "./synced-component-content.js";
 import type { TokenEventProvenanceFields } from "./token-cost-provenance.js";
 import type { TranscriptDisposition } from "./transcript-disposition-constants.js";
@@ -900,11 +901,7 @@ export const SessionPrLifecycleStatus = {
 export type SessionPrLifecycleStatus =
   (typeof SessionPrLifecycleStatus)[keyof typeof SessionPrLifecycleStatus];
 
-export type SessionPR = {
-  num: number | string;
-  title: string;
-  status: string;
-};
+export type { SessionPR } from "./session-pull-request.js";
 
 export type SessionTimelineEvent = {
   t: string;
@@ -1923,7 +1920,6 @@ export type AgentSessionAnalytics = {
 export const AgentSessionViewerScope = {
   Organization: "organization",
   Self: "self",
-  Team: "team",
 } as const;
 export type AgentSessionViewerScope =
   (typeof AgentSessionViewerScope)[keyof typeof AgentSessionViewerScope];
@@ -1931,7 +1927,6 @@ export type AgentSessionViewerScope =
 export const AGENT_SESSION_VIEWER_SCOPE_OPTIONS = [
   AgentSessionViewerScope.Self,
   AgentSessionViewerScope.Organization,
-  AgentSessionViewerScope.Team,
 ] as const;
 
 /**

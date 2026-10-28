@@ -240,7 +240,7 @@ describeIfDb("routinesService CRUD (FEA-4365)", () => {
     });
   });
 
-  it("refuses to create a routine attached to another org's team or owner", async () => {
+  it("refuses to create a routine attached to another org's owner", async () => {
     await autoRollbackTransaction(async () => {
       const orgA = await createTestOrganization();
       const orgB = await createTestOrganization();

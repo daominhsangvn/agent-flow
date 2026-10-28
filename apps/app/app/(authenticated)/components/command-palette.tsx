@@ -52,7 +52,6 @@ type PaletteCommand = {
 // the registry can no longer split cmd+k from the sidebar.
 const PALETTE_KEYWORDS_BY_PATH: Record<string, string[]> = {
   "/dashboard": ["home", "overview"],
-  "/inbox": ["notifications"],
   "/my-tasks": ["tasks", "assigned"],
   "/sessions": ["agent", "runs"],
   "/documents": ["docs"],

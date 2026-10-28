@@ -1,9 +1,14 @@
-import type { LoopStepCollectedFile } from "@agentflow-ai/loops-api/loop-step";
+import {
+  LOOP_STEP_WORK_DIR,
+  type LoopStepCollectedFile,
+  LoopStepFile,
+} from "@agentflow-ai/loops-api/loop-step";
 import { LinkType } from "@repo/api/src/types/artifact";
 import { DocumentStatus } from "@repo/api/src/types/document";
 import {
   type AgentProcessStep,
   ProcessDocumentType,
+  type ProcessStep,
   type ProcessStepDocument,
 } from "@repo/api/src/types/project-process";
 import { Result } from "@repo/api/src/types/result";
@@ -70,56 +75,10 @@ export async function publishStepDocument(
   input: PublishStepDocumentInput
 ): Promise<Result<WorkflowRunPublishedDocument | null, WorkflowRunError>> {
   const target = input.step.document;
-  const file = target
-    ? input.files.find((candidate) => candidate.path === target.path)
-    : undefined;
-  if (!(target && file?.content.trim())) {
+  if (!target) {
     return Result.ok(null);
   }
-  const { run } = input;
-  if (!(run.featureDocumentId && run.runAsUserId && input.projectId)) {
-    return Result.err(
-      publishError(input.step, "the run has no Issue or project to add it to")
-    );
-  }
-  if (file.truncated) {
-    log.warn("[workflows/step-documents] Publishing a truncated step file", {
-      organizationId: run.organizationId,
-      runId: run.id,
-      stepId: input.step.id,
-      path: file.path,
-    });
-  }
-  const context: PublishContext = {
-    organizationId: run.organizationId,
-    runId: run.id,
-    issueId: run.featureDocumentId,
-    userId: run.runAsUserId,
-    projectId: input.projectId,
-    stepId: input.step.id,
-    target,
-    content: file.content,
-  };
-  try {
-    const title = await resolveTitle(context, input.variables);
-    const existing = await findStepDocument(context);
-    const published = existing
-      ? await updateStepDocument(context, existing, title)
-      : await createStepDocument(context, title);
-    return published
-      ? Result.ok(published)
-      : Result.err(
-          publishError(input.step, "the document could not be created")
-        );
-  } catch (error) {
-    log.warn("[workflows/step-documents] Could not publish a step document", {
-      organizationId: run.organizationId,
-      runId: run.id,
-      stepId: input.step.id,
-      error,
-    });
-    return Result.err(publishError(input.step, parseError(error)));
-  }
+  return await publishDocumentFile(input, target, input.step.id);
 }
 
 /** The documents the run's steps published, oldest first. */
@@ -318,12 +277,167 @@ async function updateStepDocument(
   };
 }
 
-function publishError(
-  step: AgentProcessStep,
-  reason: string
-): WorkflowRunError {
+function publishError(step: PublishingStep, reason: string): WorkflowRunError {
   return runError(
     WorkflowRunErrorCode.DocumentCreateFailed,
     `The document of the "${step.name}" step could not be published: ${reason}`
   );
 }
+
+/** Where an implement step writes its release notes (docs/workflows.md "Step roles"). */
+export const STEP_RELEASE_NOTES_FILE = `${LOOP_STEP_WORK_DIR}/${LoopStepFile.ReleaseNotes}`;
+
+/**
+ * Release notes are linked under the step id plus this suffix, so they never
+ * collide with the step's own document (step ids have no dots).
+ */
+const RELEASE_NOTES_LINK_SUFFIX = ".release-notes";
+
+const RELEASE_NOTES_TARGET: ProcessStepDocument = {
+  type: ProcessDocumentType.Doc,
+  path: STEP_RELEASE_NOTES_FILE,
+  title: "Release notes: {{issue.key}} {{issue.title}}",
+};
+
+function releaseNotesLinkStepId(stepId: string): string {
+  return `${stepId}${RELEASE_NOTES_LINK_SUFFIX}`;
+}
+
+/**
+ * The release notes of an implement step as a general document of the
+ * project: created on the first round, a new version on every later one.
+ * Ok(null) when the step did not write them.
+ */
+export async function publishReleaseNotes(
+  input: PublishReleaseNotesInput
+): Promise<Result<WorkflowRunPublishedDocument | null, WorkflowRunError>> {
+  return await publishDocumentFile(
+    input,
+    RELEASE_NOTES_TARGET,
+    releaseNotesLinkStepId(input.step.id)
+  );
+}
+
+/** True for the link step id of release notes (releaseNotesLinkStepId). */
+export function isReleaseNotesLinkStepId(stepId: string): boolean {
+  return stepId.endsWith(RELEASE_NOTES_LINK_SUFFIX);
+}
+
+/**
+ * A plan step's plan as a new version of the run's plan document (when it
+ * changed), so the plan is the same document an AgentFlow plan step writes.
+ */
+export async function publishRunPlanVersion(input: {
+  run: {
+    id: string;
+    organizationId: string;
+    planDocumentId: string;
+    runAsUserId: string;
+  };
+  step: AgentProcessStep;
+  file: LoopStepCollectedFile;
+}): Promise<Result<null, WorkflowRunError>> {
+  const { run, file } = input;
+  if (file.truncated) {
+    log.warn("[workflows/step-documents] Keeping a truncated plan", {
+      organizationId: run.organizationId,
+      runId: run.id,
+      stepId: input.step.id,
+    });
+  }
+  try {
+    const latest = await documentVersionService.getLatest(run.planDocumentId);
+    if (latest?.content !== file.content) {
+      const detail = await documentVersionService.createNewVersion(
+        run.planDocumentId,
+        run.organizationId,
+        run.runAsUserId,
+        file.content
+      );
+      if (detail) {
+        // Clear the collaborative room so editors re-seed from the new version.
+        waitUntil(resetDocumentRoom(detail, run.runAsUserId));
+      }
+    }
+    return Result.ok(null);
+  } catch (error) {
+    log.warn("[workflows/step-documents] Could not keep the step's plan", {
+      organizationId: run.organizationId,
+      runId: run.id,
+      stepId: input.step.id,
+      error,
+    });
+    return Result.err(
+      runError(
+        WorkflowRunErrorCode.DocumentCreateFailed,
+        `The plan of the "${input.step.name}" step could not be kept: ${parseError(error)}`
+      )
+    );
+  }
+}
+
+/** Creates or versions the document of one of the step's files. */
+async function publishDocumentFile(
+  input: PublishReleaseNotesInput,
+  target: ProcessStepDocument,
+  linkStepId: string
+): Promise<Result<WorkflowRunPublishedDocument | null, WorkflowRunError>> {
+  const file = input.files.find((candidate) => candidate.path === target.path);
+  if (!file?.content.trim()) {
+    return Result.ok(null);
+  }
+  const { run } = input;
+  if (!(run.featureDocumentId && run.runAsUserId && input.projectId)) {
+    return Result.err(
+      publishError(input.step, "the run has no Issue or project to add it to")
+    );
+  }
+  if (file.truncated) {
+    log.warn("[workflows/step-documents] Publishing a truncated step file", {
+      organizationId: run.organizationId,
+      runId: run.id,
+      stepId: input.step.id,
+      path: file.path,
+    });
+  }
+  const context: PublishContext = {
+    organizationId: run.organizationId,
+    runId: run.id,
+    issueId: run.featureDocumentId,
+    userId: run.runAsUserId,
+    projectId: input.projectId,
+    stepId: linkStepId,
+    target,
+    content: file.content,
+  };
+  try {
+    const title = await resolveTitle(context, input.variables);
+    const existing = await findStepDocument(context);
+    const published = existing
+      ? await updateStepDocument(context, existing, title)
+      : await createStepDocument(context, title);
+    return published
+      ? Result.ok(published)
+      : Result.err(
+          publishError(input.step, "the document could not be created")
+        );
+  } catch (error) {
+    log.warn("[workflows/step-documents] Could not publish a step document", {
+      organizationId: run.organizationId,
+      runId: run.id,
+      stepId: input.step.id,
+      error,
+    });
+    return Result.err(publishError(input.step, parseError(error)));
+  }
+}
+
+/** The step a document is published for: an agent step or AgentFlow's implement step. */
+type PublishingStep = Pick<ProcessStep, "id" | "name">;
+
+export type PublishReleaseNotesInput = Omit<
+  PublishStepDocumentInput,
+  "step"
+> & {
+  step: PublishingStep;
+};

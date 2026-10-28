@@ -52,7 +52,7 @@ function setupScenario({ isLoading = false }: { isLoading?: boolean } = {}) {
     primary: {
       id: "repo-primary",
       fullName: "org/primary-repo",
-      source: RepoSource.ProjectOverride,
+      source: RepoSource.ProjectDefault,
       inPool: true,
     },
     additional: [],

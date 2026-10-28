@@ -40,21 +40,14 @@ export function BranchViewHeader({
   const orgSlug = useOrgSlug();
 
   const breadcrumbs: BreadcrumbEntry[] = [
-    ...(data.teamId && data.teamName
+    ...(data.projectId && data.projectName
       ? [
-          {
-            label: data.teamName,
-            href: `/${orgSlug}/teams/${data.teamId}/projects`,
-          },
-        ]
-      : []),
-    ...(data.teamId && data.projectId && data.projectName
-      ? [
+          { label: "Projects", href: `/${orgSlug}/projects` },
           {
             label: data.projectName,
             // FEA-4137: the project's Issues tab is `?tab=issues` now (legacy
             // `?tab=features` still resolves via the project page's tab alias).
-            href: `/${orgSlug}/teams/${data.teamId}/projects/${data.projectId}?tab=issues`,
+            href: `/${orgSlug}/projects/${data.projectId}?tab=issues`,
           },
         ]
       : []),

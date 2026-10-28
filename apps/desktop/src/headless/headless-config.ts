@@ -4,17 +4,20 @@
  * variables (see headless-env.ts and docs/runner.md).
  */
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { normalizeAndValidateOrigin } from "../main/settings/origin-policy.js";
-import { HeadlessRunnerEnv, resolveRunnerDataDir } from "./headless-env.js";
+import {
+  HeadlessRunnerEnv,
+  normalizeProjectKey,
+  RunnerMode,
+  resolveRunnerDataDir,
+} from "./headless-env.js";
 
 export const DEFAULT_RUNNER_WORKSPACE = "/workspace";
 export const DEFAULT_MAX_CONCURRENT_COMMANDS = 2;
-export const DEFAULT_GATEWAY_PORT = 47_821;
-/** Ports tried after the configured one is taken (loopback only). */
-export const GATEWAY_FALLBACK_PORT_COUNT = 10;
 
 const API_KEY_PREFIX = "sk_live_";
 const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
@@ -29,9 +32,21 @@ export type HeadlessRunnerConfig = {
   workspaceDir: string;
   dataDir: string;
   maxConcurrentCommands: number;
-  gatewayPort: number;
+  /** Local gateway port (loopback only); null: any free port. */
+  gatewayPort: number | null;
   rewriteCallbackUrl: boolean;
   reportSessions: boolean;
+  /** Set in personal mode; the workspace is then the project folder. */
+  personal: PersonalRunnerSettings | null;
+};
+
+export type PersonalRunnerSettings = {
+  projectKey: string;
+  projectDir: string;
+  /** The project's commands can run several loops in the folder at once. */
+  parallel: boolean;
+  /** The agent uses any tool without a permission prompt. */
+  skipPermissions: boolean;
 };
 
 export type HeadlessConfigResult =
@@ -42,9 +57,14 @@ const originSchema = z
   .string()
   .trim()
   .url()
-  .refine((value) => HTTP_PROTOCOL_RE.test(new URL(value).protocol), {
-    message: "must be an http(s) URL",
-  })
+  // Runs after a failed .url() check too: an unparsable value must not throw.
+  .refine(
+    (value) =>
+      URL.canParse(value) && HTTP_PROTOCOL_RE.test(new URL(value).protocol),
+    {
+      message: "must be an http(s) URL",
+    }
+  )
   .transform((value) => new URL(value).origin);
 
 const booleanFlagSchema = z
@@ -82,7 +102,32 @@ const envSchema = z.object({
     .optional(),
   [HeadlessRunnerEnv.RewriteCallbackUrl]: booleanFlagSchema.optional(),
   [HeadlessRunnerEnv.ReportSessions]: booleanFlagSchema.optional(),
+  [HeadlessRunnerEnv.Mode]: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .pipe(z.enum(RunnerMode))
+    .optional(),
+  [HeadlessRunnerEnv.ProjectKey]: z
+    .string()
+    .transform((value, context) => {
+      const key = normalizeProjectKey(value);
+      if (!key) {
+        context.addIssue({
+          code: "custom",
+          message: "must be an AgentFlow project key such as PRO-1",
+        });
+        return z.NEVER;
+      }
+      return key;
+    })
+    .optional(),
+  [HeadlessRunnerEnv.ProjectDir]: z.string().trim().min(1).optional(),
+  [HeadlessRunnerEnv.Parallel]: booleanFlagSchema.optional(),
+  [HeadlessRunnerEnv.SkipPermissions]: booleanFlagSchema.optional(),
 });
+
+type EnvValues = z.infer<typeof envSchema>;
 
 /** Reads the runner configuration; empty variables count as unset. */
 export function loadHeadlessConfig(
@@ -98,6 +143,10 @@ export function loadHeadlessConfig(
     };
   }
   const values = parsed.data;
+  const personal = readPersonalSettings(values);
+  if (!personal.ok) {
+    return { ok: false, errors: personal.errors };
+  }
   const apiUrl = values[HeadlessRunnerEnv.ApiUrl];
   // The API key travels over this connection: same origin policy as the desktop.
   const originError = validateTransportOrigin(apiUrl);
@@ -114,19 +163,93 @@ export function loadHeadlessConfig(
       apiKey: values[HeadlessRunnerEnv.ApiKey],
       webAppUrl: values[HeadlessRunnerEnv.WebAppUrl] ?? apiUrl,
       runnerName: values[HeadlessRunnerEnv.RunnerName] ?? os.hostname(),
-      workspaceDir: path.resolve(
-        values[HeadlessRunnerEnv.Workspace] ?? DEFAULT_RUNNER_WORKSPACE
-      ),
+      // A personal runner works in the project folder only.
+      workspaceDir:
+        personal.value?.projectDir ??
+        path.resolve(
+          values[HeadlessRunnerEnv.Workspace] ?? DEFAULT_RUNNER_WORKSPACE
+        ),
       dataDir: resolveRunnerDataDir(env),
       maxConcurrentCommands:
         values[HeadlessRunnerEnv.MaxConcurrent] ??
         DEFAULT_MAX_CONCURRENT_COMMANDS,
-      gatewayPort:
-        values[HeadlessRunnerEnv.GatewayPort] ?? DEFAULT_GATEWAY_PORT,
+      gatewayPort: values[HeadlessRunnerEnv.GatewayPort] ?? null,
       rewriteCallbackUrl: values[HeadlessRunnerEnv.RewriteCallbackUrl] ?? true,
       reportSessions: values[HeadlessRunnerEnv.ReportSessions] ?? true,
+      personal: personal.value,
     },
   };
+}
+
+export type SettingCheck =
+  | { ok: true; value: string }
+  | { ok: false; error: string };
+
+/** Validates an API URL the way the runner will: an http(s) origin it may use. */
+export function checkApiUrlSetting(value: string): SettingCheck {
+  const parsed = originSchema.safeParse(value);
+  if (!parsed.success) {
+    return { ok: false, error: "must be an http(s) URL" };
+  }
+  const originError = validateTransportOrigin(parsed.data);
+  return originError
+    ? { ok: false, error: originError }
+    : { ok: true, value: parsed.data };
+}
+
+/** Validates a AgentFlow API key (`sk_live_...`). */
+export function checkApiKeySetting(value: string): SettingCheck {
+  const trimmed = value.trim();
+  return trimmed.startsWith(API_KEY_PREFIX)
+    ? { ok: true, value: trimmed }
+    : {
+        ok: false,
+        error: `must be a AgentFlow API key (${API_KEY_PREFIX}...)`,
+      };
+}
+
+/** Personal mode needs a project key and an existing project folder. */
+function readPersonalSettings(
+  values: EnvValues
+):
+  | { ok: true; value: PersonalRunnerSettings | null }
+  | { ok: false; errors: string[] } {
+  if (values[HeadlessRunnerEnv.Mode] !== RunnerMode.Personal) {
+    return { ok: true, value: null };
+  }
+  const projectKey = values[HeadlessRunnerEnv.ProjectKey];
+  const projectDir = values[HeadlessRunnerEnv.ProjectDir];
+  const errors: string[] = [];
+  if (!projectKey) {
+    errors.push(`${HeadlessRunnerEnv.ProjectKey}: required in personal mode`);
+  }
+  if (!projectDir) {
+    errors.push(`${HeadlessRunnerEnv.ProjectDir}: required in personal mode`);
+  } else if (!isDirectory(projectDir)) {
+    errors.push(
+      `${HeadlessRunnerEnv.ProjectDir}: ${projectDir} is not a directory`
+    );
+  }
+  if (!(projectKey && projectDir) || errors.length > 0) {
+    return { ok: false, errors };
+  }
+  return {
+    ok: true,
+    value: {
+      projectKey,
+      projectDir: path.resolve(projectDir),
+      parallel: values[HeadlessRunnerEnv.Parallel] ?? false,
+      skipPermissions: values[HeadlessRunnerEnv.SkipPermissions] ?? false,
+    },
+  };
+}
+
+function isDirectory(dir: string): boolean {
+  try {
+    return fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function withoutEmptyValues(env: NodeJS.ProcessEnv): Record<string, string> {

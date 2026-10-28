@@ -7,6 +7,7 @@ import {
   WorkflowRunErrorCode,
   WorkflowRunEvent,
   type WorkflowRunLoopRef,
+  type WorkflowRunPullRequest,
   WorkflowRunStatus,
 } from "@repo/api/src/types/workflow";
 import { describe, expect, it } from "vitest";
@@ -41,6 +42,7 @@ function preActionRun(status: WorkflowActionRunStatus): WorkflowActionRun {
     attempts: 1,
     lastError: null,
     externalRef: null,
+    instruction: null,
     completedAt: null,
     createdAt: new Date("2026-10-01T09:00:00.000Z"),
   };
@@ -48,7 +50,7 @@ function preActionRun(status: WorkflowActionRunStatus): WorkflowActionRun {
 
 type TimelineOptions = {
   loops?: WorkflowRunLoopRef[];
-  prUrl?: string | null;
+  pullRequests?: WorkflowRunPullRequest[];
   actionRuns?: WorkflowActionRun[];
   error?: WorkflowRunError | null;
 };
@@ -57,7 +59,7 @@ function states(status: WorkflowRunStatus, options: TimelineOptions = {}) {
   return buildRunTimeline({
     status,
     loops: options.loops ?? [],
-    prUrl: options.prUrl ?? null,
+    pullRequests: options.pullRequests ?? [],
     actionRuns: options.actionRuns ?? [],
     error: options.error ?? null,
   }).map((step) => [step.label, step.state]);
@@ -71,41 +73,58 @@ describe("buildRunTimeline", () => {
   it("marks earlier phases done and the current one in progress", () => {
     expect(states(WorkflowRunStatus.Planning, RAN_PRE_ACTIONS)).toEqual([
       ["Received", RunTimelineStepState.Done],
-      ["Pre actions", RunTimelineStepState.Done],
       ["Importing", RunTimelineStepState.Done],
+      ["Triggered actions", RunTimelineStepState.Done],
       ["Planning", RunTimelineStepState.Current],
       ["Implementing", RunTimelineStepState.Upcoming],
       ["Done", RunTimelineStepState.Upcoming],
     ]);
   });
 
-  it("shows the pre actions phase between received and importing while it runs", () => {
+  it("runs the triggered actions after importing the item", () => {
     expect(
       states(WorkflowRunStatus.PreActions, {
         actionRuns: [preActionRun(WorkflowActionRunStatus.Pending)],
       })
     ).toEqual([
       ["Received", RunTimelineStepState.Done],
-      ["Pre actions", RunTimelineStepState.Current],
-      ["Importing", RunTimelineStepState.Upcoming],
+      ["Importing", RunTimelineStepState.Done],
+      ["Triggered actions", RunTimelineStepState.Current],
       ["Planning", RunTimelineStepState.Upcoming],
       ["Implementing", RunTimelineStepState.Upcoming],
       ["Done", RunTimelineStepState.Upcoming],
     ]);
   });
 
-  it("shows pre actions as upcoming for a run that was just received", () => {
-    expect(states(WorkflowRunStatus.Received)[1]).toEqual([
-      "Pre actions",
+  it("shows the triggered actions as upcoming for a run that was just received", () => {
+    expect(states(WorkflowRunStatus.Received)[2]).toEqual([
+      "Triggered actions",
       RunTimelineStepState.Upcoming,
     ]);
   });
 
-  it("skips the pre actions phase of a workflow without pre actions", () => {
+  it("imports before the triggered actions run", () => {
     expect(states(WorkflowRunStatus.Ingesting).slice(0, 3)).toEqual([
       ["Received", RunTimelineStepState.Done],
-      ["Pre actions", RunTimelineStepState.Skipped],
       ["Importing", RunTimelineStepState.Current],
+      ["Triggered actions", RunTimelineStepState.Upcoming],
+    ]);
+  });
+
+  it("stays on the triggered actions while the run starts the agent team", () => {
+    expect(
+      states(WorkflowRunStatus.Ingesting, RAN_PRE_ACTIONS).slice(1, 4)
+    ).toEqual([
+      ["Importing", RunTimelineStepState.Done],
+      ["Triggered actions", RunTimelineStepState.Current],
+      ["Planning", RunTimelineStepState.Upcoming],
+    ]);
+  });
+
+  it("skips the triggered actions of a workflow without them", () => {
+    expect(states(WorkflowRunStatus.Planning).slice(1, 3)).toEqual([
+      ["Importing", RunTimelineStepState.Done],
+      ["Triggered actions", RunTimelineStepState.Skipped],
     ]);
   });
 
@@ -124,8 +143,8 @@ describe("buildRunTimeline", () => {
       })
     ).toEqual([
       ["Received", RunTimelineStepState.Done],
-      ["Pre actions", RunTimelineStepState.Done],
       ["Importing", RunTimelineStepState.Done],
+      ["Triggered actions", RunTimelineStepState.Done],
       ["Planning", RunTimelineStepState.Done],
       ["Implementing", RunTimelineStepState.Skipped],
       ["Succeeded", RunTimelineStepState.Succeeded],
@@ -136,7 +155,14 @@ describe("buildRunTimeline", () => {
     const steps = states(WorkflowRunStatus.Succeeded, {
       ...RAN_PRE_ACTIONS,
       loops: [loop(LoopCommand.Plan), loop(LoopCommand.Execute)],
-      prUrl: "https://github.com/acme/web/pull/1",
+      pullRequests: [
+        {
+          url: "https://github.com/acme/web/pull/1",
+          number: 1,
+          repository: "acme/web",
+          branch: "feat/proj-7",
+        },
+      ],
     });
     expect(
       steps
@@ -148,15 +174,15 @@ describe("buildRunTimeline", () => {
   it("shows a run that failed before planning as never planned", () => {
     expect(states(WorkflowRunStatus.Failed)).toEqual([
       ["Received", RunTimelineStepState.Done],
-      ["Pre actions", RunTimelineStepState.Skipped],
       ["Importing", RunTimelineStepState.Done],
+      ["Triggered actions", RunTimelineStepState.Skipped],
       ["Planning", RunTimelineStepState.Skipped],
       ["Implementing", RunTimelineStepState.Skipped],
       ["Failed", RunTimelineStepState.Failed],
     ]);
   });
 
-  it("stops a run whose pre action failed before the agent team", () => {
+  it("stops a run whose triggered action failed before the agent team", () => {
     expect(
       states(WorkflowRunStatus.Failed, {
         actionRuns: [preActionRun(WorkflowActionRunStatus.Failed)],
@@ -167,8 +193,8 @@ describe("buildRunTimeline", () => {
       })
     ).toEqual([
       ["Received", RunTimelineStepState.Done],
-      ["Pre actions", RunTimelineStepState.Failed],
-      ["Importing", RunTimelineStepState.Skipped],
+      ["Importing", RunTimelineStepState.Done],
+      ["Triggered actions", RunTimelineStepState.Failed],
       ["Planning", RunTimelineStepState.Skipped],
       ["Implementing", RunTimelineStepState.Skipped],
       ["Failed", RunTimelineStepState.Failed],

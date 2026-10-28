@@ -48,6 +48,7 @@ export function buildIssueBody(context: IssueDocumentContext): string {
       .map((entry) => section(entry.title, entry.markdown.trim())),
     commentsSection(item),
     attachmentsSection(item),
+    linksSection(item),
     instructionsSection(context.instructions),
   ].filter((part) => part !== "");
   return truncateText(parts.join("\n\n"), ISSUE_BODY_MAX_LENGTH);
@@ -155,7 +156,24 @@ export function buildPrdBody(context: IssueDocumentContext): string {
       .map((entry) => section(entry.title, entry.markdown.trim())),
     commentsSection(item),
     attachmentsSection(item),
+    linksSection(item),
     instructionsSection(context.instructions),
   ].filter((part) => part !== "");
   return truncateText(parts.join("\n\n"), ISSUE_BODY_MAX_LENGTH);
+}
+
+/** The item's web links (e.g. the page its plan is reviewed on). */
+function linksSection(item: SourceItem): string {
+  const links = item.links ?? [];
+  if (links.length === 0) {
+    return "";
+  }
+  const lines = links.map((link) => {
+    const title = (link.title?.trim() || link.url).replaceAll(
+      MARKDOWN_LINK_TEXT_RE,
+      ""
+    );
+    return `- [${title}](${safeLinkTarget(link.url)})`;
+  });
+  return section("Links", lines.join("\n"));
 }

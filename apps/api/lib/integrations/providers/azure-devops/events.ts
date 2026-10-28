@@ -28,6 +28,9 @@ import { readWorkItemFields } from "./schemas";
  *   tags added           -> "{id}:tags:{rev}"
  *   bot mentioned        -> "{id}:mention:{rev}" (a comment, or the
  *                           description of a new work item, mentions it)
+ *   any of the three     -> "{id}:conditions:{rev}" (one
+ *                           work_item_conditions event carrying all three
+ *                           facts and the work item state after the change)
  */
 
 export type WorkItemOccurrence = {
@@ -57,6 +60,13 @@ export type UpdateEventsInput = {
   account: IntegrationAccount;
   /** Used when the update carries no System.ChangedDate. */
   occurredAtFallback: Date;
+  /**
+   * Assignee and tags right after the update. Defaults to the update's new
+   * values, else `fields` (a service hook's revision snapshot); polling,
+   * whose `fields` are the current ones, passes the state replayed from the
+   * updates.
+   */
+  state?: AdoWorkItemState;
 };
 
 export type CreatedEventsInput = {
@@ -94,7 +104,10 @@ export function eventsFromWorkItemUpdate(
   };
   const events: InboundEvent[] = [];
   const assignedTo = update.fields?.[AdoField.AssignedTo];
-  if (assignedTo && isAdoBotIdentity(assignedTo.newValue, account)) {
+  const assigned = Boolean(
+    assignedTo && isAdoBotIdentity(assignedTo.newValue, account)
+  );
+  if (assigned) {
     events.push(workItemAssignedEvent(occurrence));
   }
   const tags = update.fields?.[AdoField.Tags];
@@ -102,10 +115,20 @@ export function eventsFromWorkItemUpdate(
   if (addedTags.length > 0) {
     events.push(workItemTaggedEvent(occurrence, addedTags));
   }
-  if (mentionsAdoBot(update.fields?.[AdoField.History]?.newValue, account)) {
+  const mentioned = mentionsAdoBot(
+    update.fields?.[AdoField.History]?.newValue,
+    account
+  );
+  if (mentioned) {
     events.push(workItemMentionedEvent(occurrence));
   }
-  return withIgnoredReason(events);
+  return withIgnoredReason(
+    withConditionsEvent(events, {
+      occurrence,
+      facts: { becameAssigned: assigned, addedTags, mentioned },
+      state: input.state ?? stateAfterUpdate(update, input.fields, account),
+    })
+  );
 }
 
 /** Events for a `workitem.created` resource (the full work item). */
@@ -129,20 +152,27 @@ export function eventsFromCreatedWorkItem(
       parseAdoDate(fields[AdoField.CreatedDate]) ?? input.occurredAtFallback,
   };
   const events: InboundEvent[] = [];
-  if (isAdoBotIdentity(fields[AdoField.AssignedTo], account)) {
+  const assigned = isAdoBotIdentity(fields[AdoField.AssignedTo], account);
+  if (assigned) {
     events.push(workItemAssignedEvent(occurrence));
   }
   const tags = splitAdoTags(fields[AdoField.Tags]);
   if (tags.length > 0) {
     events.push(workItemTaggedEvent(occurrence, tags));
   }
-  if (
+  const mentioned =
     mentionsAdoBot(fields[AdoField.Description], account) ||
-    mentionsAdoBot(fields[AdoField.History], account)
-  ) {
+    mentionsAdoBot(fields[AdoField.History], account);
+  if (mentioned) {
     events.push(workItemMentionedEvent(occurrence));
   }
-  return withIgnoredReason(events);
+  return withIgnoredReason(
+    withConditionsEvent(events, {
+      occurrence,
+      facts: { becameAssigned: assigned, addedTags: tags, mentioned },
+      state: { assignedToBot: assigned, tags },
+    })
+  );
 }
 
 /**
@@ -161,18 +191,23 @@ export function eventsFromCommentedWorkItem(
   if (!mentionsAdoBot(fields[AdoField.History], account)) {
     return { events: [], ignoredReason: AdoIgnoredReason.NoRelevantChange };
   }
-  return withIgnoredReason([
-    workItemMentionedEvent({
-      organizationUrl: input.organizationUrl,
-      workItemId: workItem.id,
-      rev: workItem.rev ?? 1,
-      fields,
-      projectFallback: input.projectFallback,
-      actor: adoIdentityActor(changedBy),
-      occurredAt:
-        parseAdoDate(fields[AdoField.ChangedDate]) ?? input.occurredAtFallback,
-    }),
-  ]);
+  const occurrence: WorkItemOccurrence = {
+    organizationUrl: input.organizationUrl,
+    workItemId: workItem.id,
+    rev: workItem.rev ?? 1,
+    fields,
+    projectFallback: input.projectFallback,
+    actor: adoIdentityActor(changedBy),
+    occurredAt:
+      parseAdoDate(fields[AdoField.ChangedDate]) ?? input.occurredAtFallback,
+  };
+  return withIgnoredReason(
+    withConditionsEvent([workItemMentionedEvent(occurrence)], {
+      occurrence,
+      facts: { becameAssigned: false, addedTags: [], mentioned: true },
+      state: adoWorkItemState(fields, account),
+    })
+  );
 }
 
 /**
@@ -344,5 +379,81 @@ function withIgnoredReason(events: InboundEvent[]): OccurrenceEvents {
   return {
     events,
     ignoredReason: events.length > 0 ? null : AdoIgnoredReason.NoRelevantChange,
+  };
+}
+
+/** What a change did, as work_item_conditions triggers see it. */
+export type AdoConditionFacts = {
+  /** The change assigned the work item to the bot (or created it assigned). */
+  becameAssigned: boolean;
+  /** Tags the change added (all tags for a creation). */
+  addedTags: string[];
+  /** The change is a mention of the bot. */
+  mentioned: boolean;
+};
+
+/** The condition-relevant state of a work item right after a change. */
+export type AdoWorkItemState = {
+  assignedToBot: boolean;
+  tags: string[];
+};
+
+/** The work_item_conditions event of a change ("{id}:conditions:{rev}"). */
+export function workItemConditionsEvent(input: {
+  occurrence: WorkItemOccurrence;
+  facts: AdoConditionFacts;
+  state: AdoWorkItemState;
+}): InboundEvent {
+  const { occurrence, facts, state } = input;
+  return buildEvent(
+    occurrence,
+    AzureDevOpsTriggerType.WorkItemConditions,
+    `${occurrence.workItemId}:conditions:${occurrence.rev}`,
+    {
+      [AdoEventAttribute.Tags]: state.tags,
+      [AdoEventAttribute.AssignedToBot]: state.assignedToBot,
+      [AdoEventAttribute.BecameAssigned]: facts.becameAssigned,
+      [AdoEventAttribute.AddedTags]: facts.addedTags,
+      [AdoEventAttribute.Mentioned]: facts.mentioned,
+    }
+  );
+}
+
+/** Assignee (the bot or not) and tags of a work item's fields. */
+export function adoWorkItemState(
+  fields: AdoWorkItemFields,
+  account: IntegrationAccount
+): AdoWorkItemState {
+  return {
+    assignedToBot: isAdoBotIdentity(fields[AdoField.AssignedTo], account),
+    tags: splitAdoTags(fields[AdoField.Tags]),
+  };
+}
+
+/** `events` plus the change's work_item_conditions event, when it did something a condition reacts to. */
+function withConditionsEvent(
+  events: InboundEvent[],
+  input: Parameters<typeof workItemConditionsEvent>[0]
+): InboundEvent[] {
+  const { facts } = input;
+  const relevant =
+    facts.becameAssigned || facts.addedTags.length > 0 || facts.mentioned;
+  return relevant ? [...events, workItemConditionsEvent(input)] : events;
+}
+
+/** The update's new assignee and tags, else the snapshot's (unchanged fields). */
+function stateAfterUpdate(
+  update: AdoWorkItemUpdate,
+  fields: AdoWorkItemFields,
+  account: IntegrationAccount
+): AdoWorkItemState {
+  const snapshot = adoWorkItemState(fields, account);
+  const assignedTo = update.fields?.[AdoField.AssignedTo];
+  const tags = update.fields?.[AdoField.Tags];
+  return {
+    assignedToBot: assignedTo
+      ? isAdoBotIdentity(assignedTo.newValue, account)
+      : snapshot.assignedToBot,
+    tags: tags ? splitAdoTags(tags.newValue) : snapshot.tags,
   };
 }

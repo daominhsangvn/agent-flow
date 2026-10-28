@@ -1,4 +1,5 @@
 import { AgentComponentInvocationAnchorKind } from "@repo/api/src/types/agent-component-invocation";
+import { DISPLAYED_SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { createAgentSessionDetailFixture } from "@repo/app/agents/components/detail/agent-session-detail-fixtures";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -73,6 +74,27 @@ describe("org session detail wrapper", () => {
     sharedDetailViewMock.mockReturnValue(<div data-testid="shared-detail" />);
   });
 
+  it("reads a running session again every 10s until it ends or the read fails", () => {
+    render(<SessionDetailPage />);
+
+    const [, options] = useAgentSessionDetailMock.mock.calls[0] as [
+      string,
+      { refetchInterval: (query: unknown) => number | false },
+    ];
+    const interval = (status: string, queryStatus = "success") =>
+      options.refetchInterval({
+        state: {
+          status: queryStatus,
+          data: createAgentSessionDetailFixture({ status }),
+        },
+      });
+    expect(interval(DISPLAYED_SESSION_STATUS.ACTIVE)).toBe(10_000);
+    expect(interval(DISPLAYED_SESSION_STATUS.WAITING)).toBe(10_000);
+    expect(interval(DISPLAYED_SESSION_STATUS.INACTIVE)).toBe(false);
+    expect(interval(DISPLAYED_SESSION_STATUS.STALE)).toBe(false);
+    expect(interval(DISPLAYED_SESSION_STATUS.ACTIVE, "error")).toBe(false);
+  });
+
   it("threads a validated invocation anchor from the URL", () => {
     searchParamsMock.mockReturnValue(
       new URLSearchParams({
@@ -109,7 +131,10 @@ describe("org session detail wrapper", () => {
     expect(
       screen.getByTestId("shared-detail").closest("[data-feature-flag]")
     ).toBeNull();
-    expect(useAgentSessionDetailMock).toHaveBeenCalledWith("session-detail-1");
+    expect(useAgentSessionDetailMock).toHaveBeenCalledWith(
+      "session-detail-1",
+      expect.objectContaining({ refetchInterval: expect.any(Function) })
+    );
     // FEA-4260: the non-functional favorite star (`afterBreadcrumbs`) was cut
     // until the favorites API lands, so the header now carries only the
     // breadcrumb, the left overflow kebab (`moreMenu`), and the right-slot
@@ -147,7 +172,10 @@ describe("org session detail wrapper", () => {
 
     render(<SessionDetailPage />);
 
-    expect(useAgentSessionDetailMock).toHaveBeenCalledWith("");
+    expect(useAgentSessionDetailMock).toHaveBeenCalledWith(
+      "",
+      expect.objectContaining({ refetchInterval: expect.any(Function) })
+    );
   });
 
   // FEA-4262 (producer side): the session's Branch cross-link must TAG its href

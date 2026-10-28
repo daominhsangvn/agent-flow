@@ -12,7 +12,7 @@ You verify that final code aligns with the intended behavior captured in the dec
 
 ## Inputs
 
-The agent receives `WORKDIR`, `DECISION_TABLE_PATH`, and `START_SHA` from the orchestrator prompt.
+The agent receives `WORKDIR`, `DECISION_TABLE_PATH`, `START_SHA`, and `START_SHAS` from the orchestrator prompt. `START_SHA` is the git baseline of the repository you run in; `START_SHAS` holds the baselines of the run's other repositories as `<repository root>=<sha>` entries joined by `|`. Either may be empty: on a workspace run (the current directory is a project workspace, not a repository) `START_SHA` is empty and `START_SHAS` lists every repository.
 
 ## Step 1 — Guard
 
@@ -31,15 +31,13 @@ Then emit `<promise>BEHAVIOR_VERIFIER_COMPLETE</promise>`. Do not treat a missin
 
 ## Step 2 — Build changed-file set
 
-Build the union of git diffs since `$START_SHA`:
+Build the union of the changes since the baselines, across every repository of the run:
 
 ```bash
-{ git diff --name-only "$START_SHA" HEAD 2>/dev/null; \
-  git diff --name-only 2>/dev/null; \
-  git diff --name-only --cached 2>/dev/null; } | sort -u
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/repo-baselines.sh" changed --start-sha "$START_SHA" --start-shas "$START_SHAS"
 ```
 
-Mirrors run-loop.sh's union form, but live so it captures unstaged and staged changes during the current Claude session.
+For each repository it lists the files committed since its baseline plus the unstaged and staged ones. Mirrors run-loop.sh's union form, but live so it captures unstaged and staged changes during the current Claude session. Files of the current repository are relative to its root; files of a `START_SHAS` repository are prefixed with that repository's root — read them by that path.
 
 ## Step 3 — Activate code:decision-table in verification-only mode
 

@@ -4,6 +4,7 @@ import {
   ProcessQuestionsPolicy,
   type ProcessStep,
   ProcessStepType,
+  processHasPlanStep,
 } from "@repo/api/src/types/project-process";
 import { Result } from "@repo/api/src/types/result";
 import {
@@ -11,20 +12,17 @@ import {
   type WorkflowRunError,
   WorkflowRunErrorCode,
   WorkflowRunEvent,
+  type WorkflowRunSourceDocumentType,
   WorkflowRunStatus,
 } from "@repo/api/src/types/workflow";
 import { withDb } from "@repo/database";
 import { parseError } from "@repo/observability/error";
 import { loopsService } from "@/app/loops/service";
-import {
-  createProviderContext,
-  loadConnectionRuntime,
-} from "@/lib/integrations/connection-service";
+import { createProviderContext } from "@/lib/integrations/connection-service";
 import {
   RetryableSourceError,
   type SourceItem,
 } from "@/lib/integrations/types";
-import { hasEnabledPreActions } from "./actions";
 import {
   readRunStepState,
   settleAgentStep,
@@ -32,7 +30,9 @@ import {
 } from "./agent-step";
 import {
   answersPrompt,
-  repairStepQuestions,
+  autoRetryStep,
+  readRunCommentIds,
+  repairStep,
   resumeAgentStep,
   ticketAnswersPrompt,
 } from "./agent-step-resume";
@@ -48,7 +48,11 @@ import {
 } from "./documents";
 import { runError, scrubProviderError } from "./errors";
 import { launchWorkflowLoop } from "./launch";
-import { PreActionsOutcomeKind, runPreActions } from "./pre-actions";
+import {
+  enterPreActions,
+  PreActionsOutcomeKind,
+  runPreActions,
+} from "./pre-actions";
 import {
   findStep,
   type RunProcess,
@@ -59,6 +63,8 @@ import {
   stepTransitionData,
   unsupportedStepError,
 } from "./process";
+import { publishExecuteReleaseNotes } from "./release-notes";
+import { advanceReview } from "./review-round";
 import { readAgentConfig, readRunSource } from "./run-data";
 import {
   findAdoptableLoop,
@@ -70,6 +76,13 @@ import {
   recordRunLoop,
 } from "./run-loops";
 import { recordRunRepositoryBranches } from "./run-repository";
+import { applyRunnerRules } from "./runner-rules";
+import {
+  readSourceClassification,
+  requestSourceClassification,
+  SourceClassificationKind,
+} from "./source-classification";
+import { loadSourceConnection } from "./source-connection";
 import {
   type EngineRun,
   failRun,
@@ -100,11 +113,11 @@ export async function runPhaseStep(
   const now = context.now;
   switch (run.status) {
     case WorkflowRunStatus.Received:
-      return await stepReceived(run);
+      return stepReceived();
     case WorkflowRunStatus.PreActions:
       return await stepPreActions(run, context);
     case WorkflowRunStatus.Ingesting:
-      return await stepIngesting(run);
+      return await stepIngesting(run, now);
     case WorkflowRunStatus.Planning:
       return await stepPlanning(run, now);
     case WorkflowRunStatus.Executing:
@@ -120,7 +133,7 @@ export async function runPhaseStep(
   }
 }
 
-type RunContext = {
+export type RunContext = {
   agent: WorkflowAgentConfig;
   projectId: string;
   runAsUser: { id: string; clerkId: string };
@@ -130,20 +143,18 @@ type RunContext = {
 type SourceItemFailure = { error: WorkflowRunError; retryable: boolean };
 
 /**
- * received: run the workflow's pre actions first (their run.triggered rows are
- * enqueued with the status write), else go straight to the agent team. A
- * disabled workflow writes nothing anywhere: ingesting fails the run.
+ * received: import the item first; ingesting runs the workflow.triggered
+ * actions once the run's documents exist. A disabled workflow writes nothing
+ * anywhere: ingesting fails the run.
  */
-async function stepReceived(run: EngineRun): Promise<StepOutcome> {
-  if (run.workflow.enabled && (await hasEnabledPreActions(run))) {
-    return transition(WorkflowRunStatus.PreActions, [
-      WorkflowRunEvent.Triggered,
-    ]);
-  }
+function stepReceived(): StepOutcome {
   return transition(WorkflowRunStatus.Ingesting);
 }
 
-/** pre_actions: execute the cycle's pre action runs in order (pre-actions.ts). */
+/**
+ * pre_actions: execute the cycle's pre action runs in order (pre-actions.ts),
+ * then back to ingesting, which starts the agent team.
+ */
 async function stepPreActions(
   run: EngineRun,
   context: StepContext
@@ -168,26 +179,29 @@ async function stepPreActions(
 }
 
 /**
- * ingesting: validate, fetch the item, create documents, start the first
- * step of the run's process (PLAN on the built-in flow). A temporary source
- * failure (RetryableSourceError) is retried with backoff.
+ * ingesting: validate, fetch the item, classify it (PRD or Issue, waiting for
+ * the run's computer when the workflow has a PRD instruction), create
+ * documents, run the cycle's workflow.triggered actions (pre_actions, then
+ * back here), start the first step of the run's process (PLAN on the
+ * built-in flow). A temporary source failure (RetryableSourceError) is
+ * retried with backoff.
  */
-async function stepIngesting(run: EngineRun): Promise<StepOutcome> {
+async function stepIngesting(run: EngineRun, now: Date): Promise<StepOutcome> {
   const context = await loadRunContext(run);
   if (!context.ok) {
     return failRun(context.error);
   }
-  const item = await resolveSourceItem(run);
-  if (!item.ok) {
-    return item.error.retryable
-      ? retrySourceFetch(run, item.error.error)
-      : failRun(item.error.error);
+  const source = await importSourceItem(run, context.value, now);
+  if (!source.ok) {
+    return source.error;
   }
+  // The runner its runner rules chose for the item, from here on.
+  const { agent } = source.value;
   const process = await resolveIngestProcess({
     organizationId: run.organizationId,
     projectId: context.value.projectId,
     stored: run.process,
-    agent: context.value.agent,
+    agent,
   });
   if (!process.ok) {
     return failRun(process.error);
@@ -201,14 +215,17 @@ async function stepIngesting(run: EngineRun): Promise<StepOutcome> {
     workflowName: run.workflow.name,
     projectId: context.value.projectId,
     runAsUserId: context.value.runAsUser.id,
-    agent: context.value.agent,
-    item: item.value,
-    withPlanDocument: process.value.process.steps.some(
-      (step) => step.type === ProcessStepType.AgentFlowPlan
-    ),
+    agent,
+    item: source.value.item,
+    sourceType: source.value.type,
+    withPlanDocument: processHasPlanStep(process.value.process),
   });
   if (!documents.ok) {
     return failRun(documents.error);
+  }
+  const preActions = await enterPreActions(run);
+  if (preActions) {
+    return preActions;
   }
   const firstStepData = stepTransitionData(
     process.value,
@@ -225,18 +242,22 @@ async function stepIngesting(run: EngineRun): Promise<StepOutcome> {
   if (waiting) {
     return await resumeAgentStep({
       run: { ...run, ...documents.value },
-      agent: context.value.agent,
+      agent,
       projectId: context.value.projectId,
       runAsUser: context.value.runAsUser,
       waiting,
-      prompt: ticketAnswersPrompt(waiting, item.value),
+      prompt: ticketAnswersPrompt(
+        waiting,
+        source.value.item,
+        await readRunCommentIds(run)
+      ),
       events: startedEvents,
     });
   }
   if (firstStep.type === ProcessStepType.Agent) {
     return await startAgentStep({
       run,
-      agent: context.value.agent,
+      agent,
       runProcess: process.value,
       step: firstStep,
       projectId: context.value.projectId,
@@ -259,8 +280,9 @@ async function stepIngesting(run: EngineRun): Promise<StepOutcome> {
     LoopCommand.Plan,
     run.phaseStartedAt
   );
+  const planStarted = [...startedEvents, WorkflowRunEvent.PlanStarted];
   if (launched) {
-    return transition(WorkflowRunStatus.Planning, startedEvents, planStepData);
+    return transition(WorkflowRunStatus.Planning, planStarted, planStepData);
   }
   const launch = await launchWorkflowLoop({
     runId: run.id,
@@ -268,13 +290,13 @@ async function stepIngesting(run: EngineRun): Promise<StepOutcome> {
     runAsUser: context.value.runAsUser,
     planDocumentId,
     command: LoopCommand.Plan,
-    agent: context.value.agent,
+    agent,
     agentPolicy: stepAgentPolicy(firstStep),
   });
   if (!launch.ok) {
     return failRun(launch.error);
   }
-  return transition(WorkflowRunStatus.Planning, startedEvents, planStepData);
+  return transition(WorkflowRunStatus.Planning, planStarted, planStepData);
 }
 
 /**
@@ -375,6 +397,7 @@ async function stepExecuting(run: EngineRun, now: Date): Promise<StepOutcome> {
     run.organizationId,
     readRepoExecutionResults(loop.uploadedArtifacts)
   );
+  await publishExecuteReleaseNotes(run, loop);
   const pullRequest = await resolvePullRequest(run.organizationId, loop);
   if (run.featureDocumentId) {
     await markIssueInReview(run.featureDocumentId, run.organizationId);
@@ -383,11 +406,11 @@ async function stepExecuting(run: EngineRun, now: Date): Promise<StepOutcome> {
   if (next) {
     return await enterStepAfterExecute(run, next, pullRequest, now);
   }
-  return transition(WorkflowRunStatus.Succeeded, [WorkflowRunEvent.Succeeded], {
-    error: null,
-    prUrl: pullRequest.url,
-    branchName: pullRequest.branch,
-  });
+  return transition(
+    WorkflowRunStatus.Succeeded,
+    [WorkflowRunEvent.ExecuteCompleted, WorkflowRunEvent.Succeeded],
+    { error: null, prUrl: pullRequest.url, branchName: pullRequest.branch }
+  );
 }
 
 /** running: an agent step of the process (agent-step.ts), then the next step. */
@@ -396,39 +419,43 @@ async function stepRunning(run: EngineRun, now: Date): Promise<StepOutcome> {
   if (settled.kind === "outcome") {
     return settled.outcome;
   }
-  if (settled.kind === "repairQuestions") {
+  if (settled.kind !== "next") {
     const context = await loadRunContext(run);
     if (!context.ok) {
       return failRun(context.error);
     }
-    return await repairStepQuestions({
-      run,
-      agent: context.value.agent,
-      projectId: context.value.projectId,
-      runAsUser: context.value.runAsUser,
-      step: settled.step,
-      loopId: settled.loopId,
-      error: settled.error,
-      attempts: settled.attempts,
-      data: settled.data,
-    });
+    return settled.kind === "autoRetry"
+      ? await autoRetryStep(run, context.value, settled)
+      : await repairStep(run, context.value, settled);
   }
+
   return await enterStep({
     run,
     agent: settled.agent,
     runProcess: settled.runProcess,
     step: settled.next,
-    events: [],
+    events: settled.events,
     data: settled.data,
     now,
   });
 }
 
-/** needs_approval: the next step once approved, a failed run once rejected. */
+/**
+ * needs_approval: a reviewed step (review-round.ts), else an approval step:
+ * the next step once approved, a failed run once rejected.
+ */
 async function stepNeedsApproval(
   run: EngineRun,
   now: Date
 ): Promise<StepOutcome> {
+  const reviewed = await advanceReview({
+    run,
+    loadContext: () => loadRunContext(run),
+    enterNext: (next, data) => enterAfterWait(run, next, data, now),
+  });
+  if (reviewed) {
+    return reviewed;
+  }
   const settled = settleApproval(run);
   switch (settled.kind) {
     case ApprovalSettlementKind.Rejected:
@@ -441,29 +468,39 @@ async function stepNeedsApproval(
           { error: null, stepState: null }
         );
       }
-      const agent = readAgentConfig(run.agentConfig);
-      if (!agent) {
-        return failRun(agentConfigError());
-      }
-      return await enterStep({
-        run,
-        agent,
-        runProcess: resolveRunProcess(run.process, agent),
-        step: settled.next,
-        events: [],
-        data: { stepState: null, cycle: nextWaitCycle(run) },
-        now,
-      });
+      return await enterAfterWait(run, settled.next, { stepState: null }, now);
     }
     default:
       return WAIT;
   }
 }
 
+/** The step after a decided wait (approval, review), in a new cycle. */
+async function enterAfterWait(
+  run: EngineRun,
+  next: ProcessStep,
+  data: RunTransitionData,
+  now: Date
+): Promise<StepOutcome> {
+  const agent = readAgentConfig(run.agentConfig);
+  if (!agent) {
+    return failRun(agentConfigError());
+  }
+  return await enterStep({
+    run,
+    agent,
+    runProcess: resolveRunProcess(run.process, agent),
+    step: next,
+    events: [],
+    data: { ...data, cycle: nextWaitCycle(run) },
+    now,
+  });
+}
+
 /**
  * A person answered or approved a waiting process step in AgentFlow: the run
  * goes on in a new cycle, so the post actions of its next wait
- * (`run.needs_input`, once per cycle) fire again, as when a person adopts a
+ * (`input.needed`, once per cycle) fire again, as when a person adopts a
  * plan or the source item re-triggers the run.
  */
 function nextWaitCycle(run: EngineRun): number {
@@ -505,19 +542,24 @@ async function stepNeedsInput(run: EngineRun): Promise<StepOutcome> {
       : null;
     return transition(
       WorkflowRunStatus.Executing,
-      [],
+      [WorkflowRunEvent.ExecuteStarted],
       execute ? { stepId: execute.id } : undefined
     );
   }
   const plan = snapshot
     ? findStep(snapshot.definition, ProcessStepType.AgentFlowPlan, null)
     : null;
-  // A new plan: a new cycle, so plan_ready / needs_input post actions fire
-  // again. Pre actions only run when the source item triggers again.
-  return transition(WorkflowRunStatus.Planning, [], {
-    cycle: run.cycle + 1,
-    ...(plan ? { stepId: plan.id } : {}),
-  });
+  // A new plan: a new cycle, so the plan.started / plan.completed /
+  // input.needed post actions fire again. Pre actions only run when the
+  // source item triggers again.
+  return transition(
+    WorkflowRunStatus.Planning,
+    [WorkflowRunEvent.PlanStarted],
+    {
+      cycle: run.cycle + 1,
+      ...(plan ? { stepId: plan.id } : {}),
+    }
+  );
 }
 
 async function answerWaitingStep(
@@ -554,8 +596,9 @@ async function startExecution(
     LoopCommand.Execute,
     run.phaseStartedAt
   );
+  const executeStarted = [...planReady, WorkflowRunEvent.ExecuteStarted];
   if (launched) {
-    return transition(WorkflowRunStatus.Executing, planReady, stepData);
+    return transition(WorkflowRunStatus.Executing, executeStarted, stepData);
   }
   if (!run.planDocumentId) {
     return failRun(
@@ -591,10 +634,13 @@ async function startExecution(
   if (!launch.ok) {
     return failRun(launch.error, planReady);
   }
-  return transition(WorkflowRunStatus.Executing, planReady, stepData);
+  return transition(WorkflowRunStatus.Executing, executeStarted, stepData);
 }
 
-/** Steps after the implement step keep its pull request and branch on the run. */
+/**
+ * Steps after the implement step keep its pull request and branch on the run;
+ * entering one reports execute.completed.
+ */
 async function enterStepAfterExecute(
   run: EngineRun,
   next: ProcessStep,
@@ -610,7 +656,7 @@ async function enterStepAfterExecute(
     agent,
     runProcess: resolveRunProcess(run.process, agent),
     step: next,
-    events: [],
+    events: [WorkflowRunEvent.ExecuteCompleted],
     data: { prUrl: pullRequest.url, branchName: pullRequest.branch },
     now,
   });
@@ -620,7 +666,7 @@ async function enterStepAfterExecute(
  * Moves a process run into `step` after the step that just finished: its
  * loop is launched and the run takes the step's status.
  */
-async function enterStep(input: {
+export async function enterStep(input: {
   run: EngineRun;
   agent: WorkflowAgentConfig;
   runProcess: RunProcess;
@@ -644,7 +690,13 @@ async function enterStep(input: {
     case ProcessStepType.Agent:
       return await enterAgentStep({ ...input, step }, data);
     case ProcessStepType.Approval:
-      return enterApprovalStep({ step, events, data, now: input.now });
+      return enterApprovalStep({
+        step,
+        events,
+        data,
+        now: input.now,
+        pending: readRunStepState(run.stepState)?.pendingSignals,
+      });
     default:
       return failRun(unsupportedStepError(step), events);
   }
@@ -665,7 +717,7 @@ async function enterAgentStep(
   if (!runAsUser) {
     return failRun(runAsUserError(), events);
   }
-  const projectId = run.workflow.projectId;
+  const projectId = run.projectId;
   if (!(projectId && run.featureDocumentId)) {
     return failRun(
       runError(
@@ -703,8 +755,9 @@ async function startPlanning(
     LoopCommand.Plan,
     run.phaseStartedAt
   );
+  const planStarted = [...events, WorkflowRunEvent.PlanStarted];
   if (launched) {
-    return transition(WorkflowRunStatus.Planning, events, stepData);
+    return transition(WorkflowRunStatus.Planning, planStarted, stepData);
   }
   if (!run.planDocumentId) {
     return failRun(
@@ -736,7 +789,7 @@ async function startPlanning(
   if (!launch.ok) {
     return failRun(launch.error, events);
   }
-  return transition(WorkflowRunStatus.Planning, events, stepData);
+  return transition(WorkflowRunStatus.Planning, planStarted, stepData);
 }
 
 /** The step after the implement step of a process run; none on the built-in flow. */
@@ -753,13 +806,13 @@ function stepAfterExecute(run: EngineRun) {
   return execute ? nextProcessStep(snapshot.definition, execute.id) : null;
 }
 
-async function loadRunContext(
+export async function loadRunContext(
   run: EngineRun
 ): Promise<Result<RunContext, WorkflowRunError>> {
   if (!run.workflow.enabled) {
     return Result.err(workflowDisabledError());
   }
-  const projectId = run.workflow.projectId;
+  const projectId = run.projectId;
   const project = projectId
     ? await withDb((db) =>
         db.project.findFirst({
@@ -801,9 +854,7 @@ async function resolveSourceItem(
   if (source.inlineItem) {
     return Result.ok(source.inlineItem);
   }
-  const loaded = run.connectionId
-    ? await loadConnectionRuntime(run.organizationId, run.connectionId)
-    : null;
+  const loaded = await loadSourceConnection(run);
   if (!loaded) {
     return sourceError(
       "The integration connection of the trigger is no longer available."
@@ -946,4 +997,57 @@ function runStepAgentPolicy(
 ) {
   const { process } = resolveRunProcess(run.process, agent);
   return stepAgentPolicy(findStep(process, type, stepId ?? run.stepId));
+}
+
+/**
+ * The source item, the type its document has or gets (an Issue, or the
+ * decision of the workflow's PRD instruction, source-classification.ts), and
+ * the agent config with the runner its runner rules chose for the item.
+ * While the run's computer decides, the step waits without fetching the item
+ * again; the error side is the outcome to return (wait, retry or fail).
+ */
+async function importSourceItem(
+  run: EngineRun,
+  context: RunContext,
+  now: Date
+): Promise<
+  Result<
+    {
+      item: SourceItem;
+      type: WorkflowRunSourceDocumentType;
+      agent: WorkflowAgentConfig;
+    },
+    StepOutcome
+  >
+> {
+  const classification = await readSourceClassification({
+    run,
+    instruction: context.agent.prd.instruction,
+    now,
+  });
+  if (classification.kind === SourceClassificationKind.Waiting) {
+    return Result.err(WAIT);
+  }
+  const item = await resolveSourceItem(run);
+  if (!item.ok) {
+    return Result.err(
+      item.error.retryable
+        ? retrySourceFetch(run, item.error.error)
+        : failRun(item.error.error)
+    );
+  }
+  const agent = await applyRunnerRules(run, context.agent, item.value);
+  const type =
+    classification.kind === SourceClassificationKind.Decided
+      ? classification.type
+      : await requestSourceClassification({
+          run,
+          workflowName: run.workflow.name,
+          instruction: classification.instruction,
+          item: item.value,
+          runAsUserId: context.runAsUser.id,
+          computeTargetId: agent.computeTargetId,
+          now,
+        });
+  return type ? Result.ok({ item: item.value, type, agent }) : Result.err(WAIT);
 }

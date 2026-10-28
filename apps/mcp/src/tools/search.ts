@@ -74,8 +74,6 @@ function shapeSearchProject(value: unknown) {
     slug: readString(row.slug),
     status: readString(row.status),
     priority: readString(row.priority),
-    teamName: readString(row.teamName),
-    teamId: readString(row.teamId),
     assignee: shapeAssignee(row.assignee),
     updatedAt: readString(row.updatedAt),
   };
@@ -107,7 +105,7 @@ function shapeSearchHit(value: unknown, urls: McpUrlBuilder) {
 
 /**
  * Resolve a unified hit's org-relative route from the untrusted wire row.
- * Prefers the Phase-2 route built from `slug`/`entitySubtype`/`teamId` (via the
+ * Prefers the Phase-2 route built from `slug`/`entitySubtype` (via the
  * shared {@link searchHitRoute}); falls back to the server-provided legacy
  * `deepLink`, then to the UUID-only {@link searchHitDeepLink} for a known type.
  */
@@ -127,7 +125,6 @@ function resolveHitRoute(
       deepLink: readString(row.deepLink) ?? "",
       slug: readString(row.slug) ?? undefined,
       entitySubtype: readString(row.entitySubtype) ?? undefined,
-      teamId: readString(row.teamId) ?? undefined,
       // Pull-request and comment hits route through their anchor (branch /
       // session artifact id); without carrying `anchorEntityId` here,
       // `searchHitRoute` can never build their Phase-2 route and every such hit

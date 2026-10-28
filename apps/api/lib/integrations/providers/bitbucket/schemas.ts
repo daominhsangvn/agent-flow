@@ -126,3 +126,43 @@ export function normalizeApiUrl(raw: string): string | null {
 const CLOUD_API_HOST = "api.bitbucket.org";
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const TRAILING_SLASHES_RE = /\/+$/;
+
+/** GET …/pullrequests/{id}. */
+export const bitbucketPullRequestDetailSchema = z.looseObject({
+  id: z.number().int().positive(),
+  title: z.string().nullish(),
+  /** OPEN, MERGED, DECLINED or SUPERSEDED. */
+  state: z.string(),
+  links: z.looseObject({ html: hrefSchema }),
+});
+
+/** A comment of GET …/pullrequests/{id}/comments. */
+export const bitbucketCommentSchema = z.looseObject({
+  id: z.number().int(),
+  content: z.looseObject({ raw: z.string().nullish() }).nullish(),
+  user: z
+    .looseObject({
+      uuid: z.string().nullish(),
+      display_name: z.string().nullish(),
+    })
+    .nullish(),
+  created_on: z.string().nullish(),
+  deleted: z.boolean().nullish(),
+  /** A reply's parent comment. */
+  parent: z.looseObject({ id: z.number().int() }).nullish(),
+  /** A comment on a line of a file. */
+  inline: z
+    .looseObject({
+      path: z.string(),
+      to: z.number().int().nullish(),
+      from: z.number().int().nullish(),
+    })
+    .nullish(),
+  /** Set once the thread of this (root) comment is resolved. */
+  resolution: z.looseObject({}).nullish(),
+});
+export type BitbucketComment = z.infer<typeof bitbucketCommentSchema>;
+
+export const bitbucketCreatedCommentSchema = z.looseObject({
+  id: z.number().int(),
+});

@@ -250,7 +250,10 @@ const WORKFLOW_INCLUDE = {
   runAsUser: {
     select: { id: true, firstName: true, lastName: true, email: true },
   },
-  triggers: { orderBy: { position: "asc" } },
+  triggers: {
+    orderBy: { position: "asc" },
+    include: { projectConnection: { select: { key: true } } },
+  },
   actions: { orderBy: { position: "asc" } },
   managedConnection: { select: { id: true } },
 } as const satisfies Prisma.WorkflowInclude;
@@ -438,7 +441,8 @@ function toStoredSaveInput(record: WorkflowRecord) {
   const actions = record.actions
     .map((action) => ({
       id: action.id,
-      connectionId: action.connectionId,
+      connectionKey: action.connectionKey,
+      automaticConnection: isAutomaticAction(action),
       type: action.type,
       config: toJsonObject(action.config),
       stage: readActionStage(action.stage),
@@ -454,7 +458,8 @@ function toStoredSaveInput(record: WorkflowRecord) {
     enabled: true,
     triggers: record.triggers.map((trigger) => ({
       id: trigger.id,
-      connectionId: trigger.connectionId,
+      projectId: trigger.projectId,
+      connectionKey: trigger.projectConnection?.key ?? null,
       type: trigger.type,
       config: toJsonObject(trigger.config),
       enabled: trigger.enabled,
@@ -533,6 +538,9 @@ function toWorkflowDto(
     triggers: record.triggers.map(
       (trigger): WorkflowTrigger => ({
         id: trigger.id,
+        projectId: trigger.projectId,
+        connectionKey: trigger.projectConnection?.key ?? null,
+        projectConnectionId: trigger.projectConnectionId,
         connectionId: trigger.connectionId,
         builtInHttp: trigger.connectionId === record.managedConnection?.id,
         type: trigger.type,
@@ -549,8 +557,12 @@ function toWorkflowDto(
       .map(
         (action): WorkflowAction => ({
           id: action.id,
+          connectionKey: action.connectionKey,
           connectionId: action.connectionId,
-          builtInHttp: action.connectionId === record.managedConnection?.id,
+          automaticConnection: isAutomaticAction(action),
+          builtInHttp:
+            action.connectionId !== null &&
+            action.connectionId === record.managedConnection?.id,
           type: action.type,
           config: redactUrlFields(
             toJsonObject(action.config),
@@ -594,7 +606,10 @@ function findActionFields(type: string): IntegrationFieldDescriptor[] | null {
   return null;
 }
 
-/** Pre actions first (they run first), then post; each stage by position. */
+/**
+ * Pre actions first (they run first), then post; each by position (the
+ * order of the workflow's action list).
+ */
 function compareActions(
   left: Pick<WorkflowAction, "stage" | "position">,
   right: Pick<WorkflowAction, "stage" | "position">
@@ -611,4 +626,12 @@ function badRequest<T>(message: string): Result<T, WorkflowServiceError> {
 
 function notFound<T>(): Result<T, WorkflowServiceError> {
   return Result.err({ status: Status.NotFound, message: "Workflow not found" });
+}
+
+/** No key and no built-in connection: the run picks the connection. */
+function isAutomaticAction(action: {
+  connectionKey: string | null;
+  connectionId: string | null;
+}): boolean {
+  return action.connectionKey === null && action.connectionId === null;
 }

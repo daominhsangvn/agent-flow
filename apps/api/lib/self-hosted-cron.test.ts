@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  RUNNER_CAPABILITIES_INTERVAL_MS,
   resolveCronHost,
   resolveSelfHostedCronJobs,
   SELF_HOSTED_CRON_INITIAL_DELAY_MS,
@@ -48,12 +49,13 @@ describe("startSelfHostedCronRunner", () => {
 
     await vi.advanceTimersByTimeAsync(1);
 
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
     const urls = fetchImpl.mock.calls.map((call) => call[0]);
     expect(urls).toEqual([
       "http://127.0.0.1:3002/cron/workflows",
       "http://127.0.0.1:3002/cron/timeout-loops",
       "http://127.0.0.1:3002/cron/reconcile-stale-sessions",
+      "http://127.0.0.1:3002/cron/refresh-runner-capabilities",
     ]);
     const init = fetchImpl.mock.calls[0][1] ?? {};
     expect(init.headers).toEqual({ authorization: "Bearer configured-secret" });
@@ -238,6 +240,10 @@ describe("resolveSelfHostedCronJobs", () => {
       {
         path: "/cron/reconcile-stale-sessions",
         intervalMs: STALE_SESSIONS_INTERVAL_MS,
+      },
+      {
+        path: "/cron/refresh-runner-capabilities",
+        intervalMs: RUNNER_CAPABILITIES_INTERVAL_MS,
       },
     ]);
     expect(

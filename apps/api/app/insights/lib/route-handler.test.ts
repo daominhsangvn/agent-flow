@@ -8,18 +8,8 @@ import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  findById: vi.fn(),
   logError: vi.fn(),
   isInsightsEnabledForUser: vi.fn(),
-  isMember: vi.fn(),
-  isOrgAdmin: vi.fn(),
-}));
-
-vi.mock("@/app/teams/service", () => ({
-  teamsService: {
-    findById: mocks.findById,
-    isMember: mocks.isMember,
-  },
 }));
 
 vi.mock("@repo/observability/log", () => ({
@@ -36,10 +26,6 @@ vi.mock("@/lib/wait-until", () => ({
 
 vi.mock("@/lib/insights-feature", () => ({
   isInsightsEnabledForUser: mocks.isInsightsEnabledForUser,
-}));
-
-vi.mock("@/lib/auth/org-admin", () => ({
-  isOrgAdmin: mocks.isOrgAdmin,
 }));
 
 import { createInsightsHandler } from "./route-handler";
@@ -62,237 +48,61 @@ const USER = {
   updatedAt: new Date("2026-01-01T00:00:00.000Z"),
 };
 
+// `team` was removed from InsightsScope; the enum now rejects it.
+const REMOVED_TEAM_SCOPE = "team";
 const TEAM_ID = "019f0fcb-8336-7c4d-9f64-528fb9520c32";
-const INVALID_TEAM_ID = "not-a-uuid";
 
-describe("createInsightsHandler team scope", () => {
+const AUTH = {
+  user: USER,
+  clerkOrgId: "org_clerk_1",
+  clerkUserId: "user_clerk_1",
+};
+
+function buildHandler(
+  section: InsightsSection,
+  fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} })
+) {
+  return {
+    fetch,
+    handler: createInsightsHandler({
+      fetch,
+      section,
+      errorMessage: "Failed to load insights",
+    }),
+  };
+}
+
+describe("createInsightsHandler removed team scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.findById.mockResolvedValue({ id: TEAM_ID });
     mocks.isInsightsEnabledForUser.mockResolvedValue(true);
-    mocks.isMember.mockResolvedValue(true);
-    mocks.isOrgAdmin.mockResolvedValue(false);
   });
 
-  it("rejects team scope without teamId before auth or service calls", async () => {
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
+  it("rejects scope=team before any service call", async () => {
+    const { handler, fetch } = buildHandler(InsightsSection.Delivery);
 
     const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
+      AUTH,
       request(
-        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}`
+        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${REMOVED_TEAM_SCOPE}`
       )
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.findById).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("rejects invalid teamId before auth or service calls", async () => {
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
+  it("rejects the removed teamId param as an unsupported filter", async () => {
+    const { handler, fetch } = buildHandler(InsightsSection.Delivery);
 
     const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
-      request(
-        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${INVALID_TEAM_ID}`
-      )
-    );
-
-    expect(response.status).toBe(400);
-    expect(mocks.findById).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("passes team context to the section service for team members", async () => {
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
-
-    const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
-      request(
-        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${TEAM_ID}`
-      )
-    );
-
-    expect(response.status).toBe(200);
-    expect(mocks.findById).toHaveBeenCalledWith(TEAM_ID, USER.organizationId);
-    expect(mocks.isMember).toHaveBeenCalledWith(TEAM_ID, USER.id);
-    expect(mocks.isOrgAdmin).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledWith(
-      {
-        organizationId: USER.organizationId,
-        scope: InsightsScope.Team,
-        teamId: TEAM_ID,
-        userId: USER.id,
-      },
-      InsightsPeriod.Quarter
-    );
-  });
-
-  it("passes team context to the section service for org admins", async () => {
-    mocks.isMember.mockResolvedValueOnce(false);
-    mocks.isOrgAdmin.mockResolvedValueOnce(true);
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
-
-    const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
-      request(
-        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${TEAM_ID}`
-      )
-    );
-
-    expect(response.status).toBe(200);
-    expect(mocks.isOrgAdmin).toHaveBeenCalledWith(
-      "org_clerk_1",
-      "user_clerk_1"
-    );
-    expect(fetch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        scope: InsightsScope.Team,
-        teamId: TEAM_ID,
-      }),
-      InsightsPeriod.Quarter
-    );
-  });
-
-  it("denies unauthorized team scope before section service access", async () => {
-    mocks.findById.mockResolvedValueOnce(null);
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
-
-    const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
-      request(
-        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${TEAM_ID}`
-      )
-    );
-
-    expect(response.status).toBe(403);
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("denies non-member team scope before section service access", async () => {
-    mocks.isMember.mockResolvedValueOnce(false);
-    mocks.isOrgAdmin.mockResolvedValueOnce(false);
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
-
-    const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
-      request(
-        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${TEAM_ID}`
-      )
-    );
-
-    expect(response.status).toBe(403);
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("applies team policy to legacy bare teamId requests", async () => {
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
-
-    const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
+      AUTH,
       request(
         `/insights/delivery?period=${InsightsPeriod.Quarter}&teamId=${TEAM_ID}`
       )
     );
 
-    expect(response.status).toBe(200);
-    expect(mocks.findById).toHaveBeenCalledWith(TEAM_ID, USER.organizationId);
-    expect(fetch).toHaveBeenCalledWith(
-      {
-        organizationId: USER.organizationId,
-        scope: InsightsScope.Team,
-        teamId: TEAM_ID,
-        userId: USER.id,
-      },
-      InsightsPeriod.Quarter
-    );
-  });
-
-  it("rejects mixed non-team scope and teamId before auth or service calls", async () => {
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
-
-    const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
-      request(
-        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Me}&teamId=${TEAM_ID}`
-      )
-    );
-
     expect(response.status).toBe(400);
-    expect(mocks.findById).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -300,26 +110,14 @@ describe("createInsightsHandler team scope", () => {
 describe("createInsightsHandler insights feature flag", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.findById.mockResolvedValue({ id: TEAM_ID });
     mocks.isInsightsEnabledForUser.mockResolvedValue(true);
-    mocks.isMember.mockResolvedValue(true);
-    mocks.isOrgAdmin.mockResolvedValue(false);
   });
 
   it("evaluates the flag against the request principal for the default scope", async () => {
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
+    const { handler } = buildHandler(InsightsSection.Delivery);
 
     const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
+      AUTH,
       request(`/insights/delivery?period=${InsightsPeriod.Quarter}`)
     );
 
@@ -330,28 +128,18 @@ describe("createInsightsHandler insights feature flag", () => {
     });
   });
 
-  it("denies the disabled flag before params, auth, or service access", async () => {
+  it("denies the disabled flag before params or service access", async () => {
     mocks.isInsightsEnabledForUser.mockResolvedValueOnce(false);
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
+    const { handler, fetch } = buildHandler(InsightsSection.Delivery);
 
     const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
+      AUTH,
       request(
-        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${TEAM_ID}`
+        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Org}`
       )
     );
 
     expect(response.status).toBe(403);
-    expect(mocks.findById).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -365,91 +153,18 @@ describe("createInsightsHandler insights feature flag", () => {
 describe("createInsightsHandler failure logging", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.findById.mockResolvedValue({ id: TEAM_ID });
     mocks.isInsightsEnabledForUser.mockResolvedValue(true);
-    mocks.isMember.mockResolvedValue(true);
-    mocks.isOrgAdmin.mockResolvedValue(false);
   });
 
-  it("logs a section failure with the team-scope correlation", async () => {
+  it("logs a section failure with the org/user/scope correlation", async () => {
     const error = new Error("insights service unavailable");
-    const fetch = vi.fn().mockRejectedValue(error);
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Utilization,
-      errorMessage: "Failed to load insights",
-    });
-
-    const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
-      request(
-        `/insights/utilization?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${TEAM_ID}`
-      )
+    const { handler } = buildHandler(
+      InsightsSection.Delivery,
+      vi.fn().mockRejectedValue(error)
     );
 
-    expect(response.status).toBe(500);
-    expect(mocks.logError).toHaveBeenCalledWith("insights.utilization_failed", {
-      error,
-      organizationId: USER.organizationId,
-      userId: USER.id,
-      scope: InsightsScope.Team,
-      teamId: TEAM_ID,
-    });
-  });
-
-  it("correlates a failure raised by team-scope authorization, before the service call", async () => {
-    const error = new Error("team scope authorization exploded");
-    // Non-member falls through to the org-admin check, which is what throws.
-    mocks.isMember.mockResolvedValue(false);
-    mocks.isOrgAdmin.mockRejectedValue(error);
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Agents,
-      errorMessage: "Failed to load insights",
-    });
-
     const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
-      request(
-        `/insights/agents?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${TEAM_ID}`
-      )
-    );
-
-    expect(response.status).toBe(500);
-    expect(fetch).not.toHaveBeenCalled();
-    expect(mocks.logError).toHaveBeenCalledWith("insights.agents_failed", {
-      error,
-      organizationId: USER.organizationId,
-      userId: USER.id,
-      scope: InsightsScope.Team,
-      teamId: TEAM_ID,
-    });
-  });
-
-  it("omits teamId from the correlation outside team scope", async () => {
-    const error = new Error("insights service unavailable");
-    const fetch = vi.fn().mockRejectedValue(error);
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
-
-    const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
+      AUTH,
       request(
         `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Org}`
       )
@@ -461,7 +176,6 @@ describe("createInsightsHandler failure logging", () => {
       organizationId: USER.organizationId,
       userId: USER.id,
       scope: InsightsScope.Org,
-      teamId: undefined,
     });
   });
 });
@@ -470,47 +184,14 @@ describe("createInsightsHandler unsupported query params (ISS-4505)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isInsightsEnabledForUser.mockResolvedValue(true);
-    mocks.isMember.mockResolvedValue(true);
-    mocks.isOrgAdmin.mockResolvedValue(false);
   });
 
   it("rejects unsupported query params on the default path", async () => {
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
+    const { handler, fetch } = buildHandler(InsightsSection.Delivery);
 
     const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
+      AUTH,
       request("/insights/delivery?unknownFilter=value")
-    );
-
-    expect(response.status).toBe(400);
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("rejects unsupported query params via the legacy teamId transform path", async () => {
-    mocks.findById.mockResolvedValue({ id: TEAM_ID });
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      section: InsightsSection.Delivery,
-      errorMessage: "Failed to load insights",
-    });
-
-    const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
-      request(`/insights/delivery?teamId=${TEAM_ID}&unknownFilter=value`)
     );
 
     expect(response.status).toBe(400);

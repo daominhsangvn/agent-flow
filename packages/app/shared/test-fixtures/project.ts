@@ -22,6 +22,5 @@ export const makeProject = (
   updatedAt: new Date("2024-01-02"),
   status: ProjectStatus.InProgress,
   completionPercentage: 0,
-  teams: [{ id: "team-1", name: "Team One" }],
   ...overrides,
 });

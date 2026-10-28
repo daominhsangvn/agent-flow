@@ -47,6 +47,12 @@ vi.mock("../../hooks/use-project-repositories", () => ({
     data: [{ id: "repo-1", fullName: "brenock/ip-okf" }],
   }),
 }));
+vi.mock("../../hooks/use-project-connections", () => ({
+  useProjectConnections: () => ({ data: [] }),
+}));
+vi.mock("@repo/app/integrations/hooks/use-integrations", () => ({
+  useIntegrationProviders: () => ({ data: [] }),
+}));
 
 const SAVED_YAML = [
   "# Requirement analysis (BA)",

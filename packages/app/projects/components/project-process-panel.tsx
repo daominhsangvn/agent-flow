@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  agentStepFinish,
   PROCESS_PRESETS,
   PROCESS_STEPS_MAX,
   type ProcessStep,
@@ -12,6 +13,7 @@ import {
 } from "@repo/api/src/types/project-process";
 // Cross-slice: same retryable error block as the repositories list.
 import { QueryErrorMessage } from "@repo/app/integrations/components/query-error-message";
+import { useIntegrationProviders } from "@repo/app/integrations/hooks/use-integrations";
 import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { PROCESS_FORM_EDITOR_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Badge } from "@repo/design-system/components/ui/badge";
@@ -33,6 +35,7 @@ import {
 } from "@repo/design-system/components/ui/tabs";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { lazy, Suspense, useId, useMemo, useState } from "react";
+import { useProjectConnections } from "../hooks/use-project-connections";
 import {
   useProjectProcess,
   useProjectProcessVersions,
@@ -261,8 +264,11 @@ function ProcessOverview({ process }: { process: ProjectProcess }) {
 function StepFacts({ step }: { step: ProcessStep }) {
   const facts: string[] = [];
   if (step.type === ProcessStepType.Agent) {
+    if (step.role) {
+      facts.push(step.role);
+    }
     facts.push(step.instruction.split("\n")[0] ?? "");
-    if (step.finish === ProcessStepFinish.Push) {
+    if (agentStepFinish(step) === ProcessStepFinish.Push) {
       facts.push("pushes");
     }
   }
@@ -551,6 +557,9 @@ function ProcessYamlView({
   onChange: (draft: ProjectProcessInput) => void;
 }) {
   const repositories = useProjectRepositories(projectId);
+  // Only org admins edit the process, and only they may list connections.
+  const connections = useProjectConnections(projectId);
+  const providers = useIntegrationProviders();
   const stepIds = Array.isArray(draft.steps)
     ? draft.steps.flatMap((step) =>
         typeof step?.id === "string" && step.id ? [step.id] : []
@@ -563,17 +572,20 @@ function ProcessYamlView({
         (repository) => repository.fullName
       ),
       stepIds: stepIdsKey ? stepIdsKey.split("\n") : [],
+      projectConnections: connections.data ?? [],
+      providers: providers.data ?? [],
     }),
-    [repositories.data, stepIdsKey]
+    [repositories.data, stepIdsKey, connections.data, providers.data]
   );
   const text = processYamlText(draft);
   return (
     <>
       <p className="text-muted-foreground text-xs">
         Suggestions appear as you type: the keys that fit where the cursor is,
-        their allowed values, your repositories and step ids; {"{{"} lists the
-        variables of an instruction, Ctrl+Space shows the suggestions anywhere.
-        Comments are kept.
+        their allowed values, your repositories, step ids and the connections an
+        agent step's connections: may grant; {"{{"} lists the variables of an
+        instruction, Ctrl+Space shows the suggestions anywhere. Comments are
+        kept.
       </p>
       <Suspense
         fallback={

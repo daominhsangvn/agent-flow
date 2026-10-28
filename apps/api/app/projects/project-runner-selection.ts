@@ -37,10 +37,17 @@ export type ProjectRunnerChoice =
 export type ChooseProjectRunnerInput = {
   organizationId: string;
   userId: string;
-  documentId: string;
   /** Computer the caller asked for; kept when it is one of the runners. */
   preferredComputeTargetId?: string | null;
-};
+} & ProjectRunnerScope;
+
+/**
+ * Whose project's runners: a document's, or the project's own (a workflow run
+ * before its documents exist).
+ */
+export type ProjectRunnerScope =
+  | { documentId: string; projectId?: never }
+  | { projectId: string; documentId?: never };
 
 const capacitySchema = z.object({
   maxInFlightCommands: z.number().int().positive(),
@@ -50,13 +57,7 @@ export async function chooseProjectRunner(
   input: ChooseProjectRunnerInput
 ): Promise<ProjectRunnerChoice> {
   const { organizationId, userId } = input;
-  const document = await withDb((db) =>
-    db.artifact.findFirst({
-      where: { id: input.documentId, organizationId },
-      select: { project: { select: { settings: true } } },
-    })
-  );
-  const runnerIds = readProjectRunnerIds(document?.project?.settings);
+  const runnerIds = readProjectRunnerIds(await readProjectSettings(input));
   if (runnerIds.length === 0) {
     return { kind: ProjectRunnerChoiceKind.None };
   }
@@ -137,4 +138,27 @@ export async function countActiveLoopsByTarget(
 function capacityOf(capabilities: unknown): number {
   const parsed = capacitySchema.safeParse(capabilities);
   return parsed.success ? parsed.data.maxInFlightCommands : 1;
+}
+
+/** Settings of the project in scope (they list its runners). */
+async function readProjectSettings(
+  input: ChooseProjectRunnerInput
+): Promise<unknown> {
+  const { organizationId, projectId } = input;
+  if (projectId !== undefined) {
+    const project = await withDb((db) =>
+      db.project.findFirst({
+        where: { id: projectId, organizationId },
+        select: { settings: true },
+      })
+    );
+    return project?.settings;
+  }
+  const document = await withDb((db) =>
+    db.artifact.findFirst({
+      where: { id: input.documentId, organizationId },
+      select: { project: { select: { settings: true } } },
+    })
+  );
+  return document?.project?.settings;
 }

@@ -69,6 +69,7 @@ const BASE_URL = "http://localhost/integrations/connections";
 const CONNECTION: IntegrationConnection = {
   id: CONNECTION_ID,
   managedByWorkflowId: null,
+  providedByServer: false,
   provider: IntegrationProviderKey.Jira,
   name: "Jira Cloud",
   status: IntegrationConnectionStatus.Active,
@@ -91,6 +92,7 @@ const INBOUND_DETAILS = {
   inboundUrl: "https://hooks.example.test/webhooks/integrations/key",
   inboundSecret: "inbound-secret",
   setupInstructions: "Configure the webhook",
+  inboundUrlWarning: null,
 };
 
 function request(method: string, path = "", body?: unknown): NextRequest {
@@ -124,43 +126,51 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("reads are open to every org member", () => {
-  beforeEach(asMember);
+describe("reads are admin-only", () => {
+  it.each([
+    {
+      name: "GET /integrations/connections",
+      call: () => listConnections(request("GET"), noParams()),
+    },
+    {
+      name: "GET /integrations/connections/{id}",
+      call: () =>
+        getConnection(request("GET", `/${CONNECTION_ID}`), idParams()),
+    },
+    {
+      name: "GET /integrations/connections/{id}/deliveries",
+      call: () =>
+        getDeliveries(
+          request("GET", `/${CONNECTION_ID}/deliveries`),
+          idParams()
+        ),
+    },
+  ])("$name returns 403 for members", async ({ call }) => {
+    asMember();
 
-  it("lists the organization's connections for a viewer who is not an admin", async () => {
+    const response = await call();
+
+    expect(response.status).toBe(Status.Forbidden);
+    for (const method of Object.values(mocks.service)) {
+      expect(method).not.toHaveBeenCalled();
+    }
+  });
+
+  it("lists the organization's connections for org admins", async () => {
+    asAdmin();
     mocks.service.list.mockResolvedValue([CONNECTION]);
 
     const response = await listConnections(request("GET"), noParams());
 
     expect(response.status).toBe(200);
-    const json = await response.json();
-    expect(json.data.connections).toHaveLength(1);
+    expect((await response.json()).data.connections).toHaveLength(1);
     expect(mocks.service.list).toHaveBeenCalledWith("org-1", {
-      isAdmin: false,
-    });
-    expect(mocks.getOrgAdminStatus).toHaveBeenCalledWith(
-      "auth-org-1",
-      "auth-user-1"
-    );
-  });
-
-  it("reads as an admin viewer for org admins", async () => {
-    asAdmin();
-    mocks.service.list.mockResolvedValue([]);
-    mocks.service.get.mockResolvedValue(CONNECTION);
-
-    await listConnections(request("GET"), noParams());
-    await getConnection(request("GET", `/${CONNECTION_ID}`), idParams());
-
-    expect(mocks.service.list).toHaveBeenCalledWith("org-1", {
-      isAdmin: true,
-    });
-    expect(mocks.service.get).toHaveBeenCalledWith("org-1", CONNECTION_ID, {
       isAdmin: true,
     });
   });
 
   it("returns one connection or 404", async () => {
+    asAdmin();
     mocks.service.get
       .mockResolvedValueOnce(CONNECTION)
       .mockResolvedValueOnce(null);
@@ -176,12 +186,13 @@ describe("reads are open to every org member", () => {
 
     expect(found.status).toBe(200);
     expect(mocks.service.get).toHaveBeenCalledWith("org-1", CONNECTION_ID, {
-      isAdmin: false,
+      isAdmin: true,
     });
     expect(missing.status).toBe(404);
   });
 
   it("lists deliveries after confirming the connection exists", async () => {
+    asAdmin();
     mocks.service.get.mockResolvedValue(CONNECTION);
     mocks.service.listDeliveries.mockResolvedValue([
       {
@@ -210,6 +221,7 @@ describe("reads are open to every org member", () => {
   });
 
   it("returns 404 for the deliveries of a missing connection", async () => {
+    asAdmin();
     mocks.service.get.mockResolvedValue(null);
 
     const response = await getDeliveries(

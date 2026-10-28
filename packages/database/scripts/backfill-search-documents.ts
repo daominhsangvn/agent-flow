@@ -37,7 +37,7 @@
  * loop's `prompt` (the loop's own request text), and, since the Phase-2
  * navigation slice (parent FEA-3800), a DOCUMENT's latest-version content (no
  * longer title-only). ROUTE FIELDS: documents also carry `slug` + `entitySubtype`
- * (their `type`), and projects `slug` + `teamId` (owning team), so a hit can
+ * (their `type`), and projects `slug`, so a hit can
  * build its real web route; loops route by id and carry none.
  */
 
@@ -79,11 +79,10 @@ export type ProjectionRow = {
   priority: string | null;
   updatedAt: Date;
   // Phase-2 route fields (parent FEA-3800): the type that does not carry a given
-  // field leaves it null (documents: slug + entitySubtype; projects: slug +
-  // teamId; loops: none).
+  // field leaves it null (documents: slug + entitySubtype; projects: slug;
+  // loops: none).
   slug: string | null;
   entitySubtype: string | null;
-  teamId: string | null;
   // Route anchor (FEA-3930 comment/PR/branch slice): the id of a DIFFERENT entity
   // the hit routes to (PR → owning branch; comment → anchored artifact). Null for
   // the types that route off their own `entityId`.
@@ -103,7 +102,6 @@ type SourceRow = {
   updatedAt: Date;
   slug: string | null;
   entitySubtype: string | null;
-  teamId: string | null;
   anchorEntityId: string | null;
 };
 
@@ -151,8 +149,6 @@ export type SearchBackfillClient = {
       take: number;
       cursor?: { id: string };
       skip?: number;
-      // Projects select the owning team through a nested relation
-      // (`teams: { take: 1, select: { teamId } }`).
       select: Record<string, boolean | Record<string, unknown>>;
     }): Promise<
       Array<{
@@ -166,8 +162,6 @@ export type SearchBackfillClient = {
         status: string | null;
         priority: string | null;
         updatedAt: Date;
-        // First team association carries the owning team id; empty when none.
-        teams: Array<{ teamId: string }>;
       }>
     >;
   };
@@ -364,7 +358,6 @@ async function backfillSource(
       updatedAt: source.updatedAt,
       slug: source.slug,
       entitySubtype: source.entitySubtype,
-      teamId: source.teamId,
       anchorEntityId: source.anchorEntityId,
     }));
 
@@ -450,7 +443,6 @@ export async function runSearchDocumentBackfill(
       updatedAt: row.updatedAt,
       slug: row.slug,
       entitySubtype: row.subtype,
-      teamId: null,
       anchorEntityId: null,
       [ENTITY_TYPE_KEY]: SearchEntityType.Document,
     }));
@@ -472,11 +464,6 @@ export async function runSearchDocumentBackfill(
         status: true,
         priority: true,
         updatedAt: true,
-        // Owning team for the team-scoped project route; first team only.
-        teams: {
-          take: 1,
-          select: { teamId: true },
-        },
       },
     });
     return page.map((row) => ({
@@ -491,7 +478,6 @@ export async function runSearchDocumentBackfill(
       updatedAt: row.updatedAt,
       slug: row.slug,
       entitySubtype: null,
-      teamId: row.teams[0]?.teamId ?? null,
       anchorEntityId: null,
       [ENTITY_TYPE_KEY]: SearchEntityType.Project,
     }));
@@ -528,10 +514,9 @@ export async function runSearchDocumentBackfill(
       status: row.status,
       priority: null,
       updatedAt: row.updatedAt,
-      // Loops route by id (`/loops/<id>`) and carry no slug/subtype/team.
+      // Loops route by id (`/loops/<id>`) and carry no slug/subtype.
       slug: null,
       entitySubtype: null,
-      teamId: null,
       anchorEntityId: null,
       [ENTITY_TYPE_KEY]: SearchEntityType.Loop,
     }));
@@ -576,7 +561,6 @@ export async function runSearchDocumentBackfill(
       slug: null,
       // The anchor artifact's TYPE drives session-vs-branch route selection.
       entitySubtype: row.thread.artifact?.type ?? null,
-      teamId: null,
       anchorEntityId: row.thread.artifactId,
       [ENTITY_TYPE_KEY]: SearchEntityType.Comment,
     }));
@@ -614,7 +598,6 @@ export async function runSearchDocumentBackfill(
         updatedAt: row.branchArtifact.updatedAt,
         slug: null,
         entitySubtype: null,
-        teamId: null,
         // A PR routes to its owning branch's detail page.
         anchorEntityId: row.branchArtifactId,
         [ENTITY_TYPE_KEY]: SearchEntityType.PullRequest,
@@ -653,7 +636,6 @@ export async function runSearchDocumentBackfill(
       updatedAt: row.updatedAt,
       slug: null,
       entitySubtype: null,
-      teamId: null,
       anchorEntityId: null,
       [ENTITY_TYPE_KEY]: SearchEntityType.Branch,
     }));
@@ -713,7 +695,6 @@ export async function runSearchDocumentBackfill(
         ),
         // The component kind rides in entity_subtype (matches the write hook).
         entitySubtype: row.componentKind,
-        teamId: null,
         anchorEntityId: null,
         [ENTITY_TYPE_KEY]: SearchEntityType.AgentComponent,
       }));
@@ -798,14 +779,14 @@ async function upsertRowsRaw(
       // time-ordered id keeps the primary-key B-tree append-mostly as the
       // projection grows. On CONFLICT the row is updated in place, so a fresh
       // id per attempt is harmless.
-      Prisma.sql`(${uuidV7()}::uuid, ${r.organizationId}::uuid, ${r.entityType}, ${r.entityId}::uuid, ${r.title}, ${r.body}, ${r.projectId ? Prisma.sql`${r.projectId}::uuid` : Prisma.sql`NULL`}, ${r.assigneeId ? Prisma.sql`${r.assigneeId}::uuid` : Prisma.sql`NULL`}, ${r.status}, ${r.priority}, ${r.updatedAt}, ${r.slug}, ${r.entitySubtype}, ${r.teamId ? Prisma.sql`${r.teamId}::uuid` : Prisma.sql`NULL`}, ${r.anchorEntityId ? Prisma.sql`${r.anchorEntityId}::uuid` : Prisma.sql`NULL`})`
+      Prisma.sql`(${uuidV7()}::uuid, ${r.organizationId}::uuid, ${r.entityType}, ${r.entityId}::uuid, ${r.title}, ${r.body}, ${r.projectId ? Prisma.sql`${r.projectId}::uuid` : Prisma.sql`NULL`}, ${r.assigneeId ? Prisma.sql`${r.assigneeId}::uuid` : Prisma.sql`NULL`}, ${r.status}, ${r.priority}, ${r.updatedAt}, ${r.slug}, ${r.entitySubtype}, ${r.anchorEntityId ? Prisma.sql`${r.anchorEntityId}::uuid` : Prisma.sql`NULL`})`
   );
 
   const result = await tx.$executeRaw`
     INSERT INTO "search_document" (
       "id", "organization_id", "entity_type", "entity_id",
       "title", "body", "project_id", "assignee_id", "status", "priority",
-      "updated_at", "slug", "entity_subtype", "team_id", "anchor_entity_id"
+      "updated_at", "slug", "entity_subtype", "anchor_entity_id"
     )
     VALUES ${Prisma.join(values)}
     ON CONFLICT ("organization_id", "entity_type", "entity_id")
@@ -819,7 +800,6 @@ async function upsertRowsRaw(
       "updated_at" = EXCLUDED."updated_at",
       "slug" = EXCLUDED."slug",
       "entity_subtype" = EXCLUDED."entity_subtype",
-      "team_id" = EXCLUDED."team_id",
       "anchor_entity_id" = EXCLUDED."anchor_entity_id"
   `;
 

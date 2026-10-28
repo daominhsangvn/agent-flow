@@ -19,7 +19,6 @@ import {
 import { admitSyncedCommandComponents } from "@/lib/command-key-admission";
 import { mapWithDbConcurrency } from "@/lib/db-fanout";
 import type { DesktopAgentComponentsPayload } from "@/lib/desktop-agent-sessions-schema";
-import { isOrgSessionSyncPolicyEnabled } from "@/lib/org-session-sync-policy";
 import type { DesktopComponentsSyncResponse } from "./route";
 import { dropSkillShadowedCommands } from "./skill-shadow-guard";
 
@@ -29,11 +28,6 @@ type DesktopComponentsSyncInput = {
   organizationId: string;
   payload: DesktopAgentComponentsPayload;
   userId: string;
-  /**
-   * FEA-4169: server-side ORG POLICY gate. Defaults to the DB-backed
-   * {@link isOrgSessionSyncPolicyEnabled}. Overridable in tests.
-   */
-  isOrgPolicyEnabled?: (organizationId: string) => Promise<boolean>;
 };
 
 type SyncedComponent = DesktopAgentComponentsPayload["components"][number];
@@ -555,17 +549,6 @@ export const desktopComponentsSyncService = {
       input.clerkUserId
     );
     if (!target) {
-      return Result.err(Status.Forbidden);
-    }
-
-    // FEA-4169: server-owned ORG POLICY gate. Component inventory rows are
-    // session-derived data materialized at transcript-import time, so a
-    // policy-off org must not ingest them either — enforced server-side so an
-    // older/compromised Desktop that ignores the policy cannot persist them.
-    // Fail-closed (unresolved org → deny) and independent of any client field.
-    const isOrgPolicyEnabled =
-      input.isOrgPolicyEnabled ?? isOrgSessionSyncPolicyEnabled;
-    if (!(await isOrgPolicyEnabled(input.organizationId))) {
       return Result.err(Status.Forbidden);
     }
 

@@ -6,6 +6,10 @@ import {
 } from "@repo/api/src/types/integration";
 import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dialog";
 import { copyToClipboard } from "@repo/app/shared/lib/clipboard-utils";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -20,6 +24,7 @@ import { MarkdownContent } from "@repo/design-system/components/ui/primitives/ma
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
+  AlertTriangleIcon,
   CopyIcon,
   EyeIcon,
   EyeOffIcon,
@@ -153,6 +158,12 @@ function InboundEndpointSection({
         label="Inbound URL"
         value={details.inboundUrl}
       />
+      {details.inboundUrlWarning ? (
+        <Alert data-testid="integration-inbound-url-warning" variant="warning">
+          <AlertTriangleIcon />
+          <AlertDescription>{details.inboundUrlWarning}</AlertDescription>
+        </Alert>
+      ) : null}
       <SecretValue
         id="integration-inbound-secret"
         label="Secret"

@@ -8,14 +8,14 @@ import { describe, expect, it, vi } from "vitest";
 // Mock next/navigation — useSortParams calls useRouter, usePathname, useSearchParams
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: vi.fn(), replace: vi.fn() })),
-  usePathname: vi.fn(() => "/teams/team-1/projects"),
+  usePathname: vi.fn(() => "/test-org/projects"),
   useSearchParams: vi.fn(
     () =>
       new URLSearchParams() as unknown as ReturnType<
         typeof import("next/navigation").useSearchParams
       >
   ),
-  useParams: vi.fn(() => ({ orgSlug: "test-org", teamId: "team-1" })),
+  useParams: vi.fn(() => ({ orgSlug: "test-org" })),
 }));
 
 // Mock useOrganizationUsers — avoids needing a QueryClient provider
@@ -50,7 +50,7 @@ import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provi
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { PROJECT_COMPLETION_EMPTY_STATE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type { ReactNode } from "react";
-import { ProjectsTable } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/components/projects-table";
+import { ProjectsTable } from "@/app/(authenticated)/[orgSlug]/projects/components/projects-table";
 
 // ISS-4792 (ISS-4779 closed-by-default): the completion-ring empty-population
 // state is gated behind `project-completion-empty-state` (default OFF). Mount the
@@ -93,13 +93,12 @@ const makeProject = (
   updatedAt: new Date("2024-01-02"),
   status: "IN_PROGRESS",
   completionPercentage: 42,
-  teams: [],
   ...overrides,
 });
 
 describe("ProjectsTable — status tooltip", () => {
   it("renders the StatusPercentageIcon element for each project row", () => {
-    render(<ProjectsTable projects={[makeProject()]} teamId="team-1" />);
+    render(<ProjectsTable projects={[makeProject()]} />);
 
     // StatusPercentageIcon renders a data-slot attribute
     const icon = document.querySelector("[data-slot='status-percentage-icon']");
@@ -107,7 +106,7 @@ describe("ProjectsTable — status tooltip", () => {
   });
 
   it("renders tooltip content with the correct explanatory text", () => {
-    render(<ProjectsTable projects={[makeProject()]} teamId="team-1" />);
+    render(<ProjectsTable projects={[makeProject()]} />);
 
     const tooltips = screen.getAllByTestId("tooltip-content");
     const statusTooltip = tooltips.find((el) =>
@@ -122,7 +121,7 @@ describe("ProjectsTable — status tooltip", () => {
       makeProject({ id: "01PROJECT000000000000002", name: "Beta" }),
     ];
 
-    render(<ProjectsTable projects={projects} teamId="team-1" />);
+    render(<ProjectsTable projects={projects} />);
 
     const tooltips = screen.getAllByTestId("tooltip-content");
     const statusTooltips = tooltips.filter((el) =>
@@ -132,7 +131,7 @@ describe("ProjectsTable — status tooltip", () => {
   });
 
   it("renders the empty state when projects list is empty", () => {
-    render(<ProjectsTable projects={[]} teamId="team-1" />);
+    render(<ProjectsTable projects={[]} />);
 
     expect(screen.getByText("No projects yet")).toBeInTheDocument();
   });
@@ -149,7 +148,6 @@ describe("ProjectsTable — empty population vs 0% (ISS-4679, flag ON)", () => {
               completionPopulationEmpty: true,
             }),
           ]}
-          teamId="team-1"
         />,
         { enabled: true }
       )
@@ -179,10 +177,7 @@ describe("ProjectsTable — empty population vs 0% (ISS-4679, flag ON)", () => {
   it("0% completion renders a solid track named '0% of documents and issues complete'", () => {
     render(
       withEmptyStateFlag(
-        <ProjectsTable
-          projects={[makeProject({ completionPercentage: 0 })]}
-          teamId="team-1"
-        />,
+        <ProjectsTable projects={[makeProject({ completionPercentage: 0 })]} />,
         { enabled: true }
       )
     );
@@ -212,7 +207,6 @@ describe("ProjectsTable — empty population vs 0% (ISS-4679, flag ON)", () => {
               completionPercentage: 0,
             }),
           ]}
-          teamId="team-1"
         />,
         { enabled: true }
       )
@@ -237,7 +231,6 @@ describe("ProjectsTable — completion-ring empty state gated OFF (ISS-4792, def
               completionPopulationEmpty: true,
             }),
           ]}
-          teamId="team-1"
         />,
         { enabled: false }
       )
@@ -268,7 +261,6 @@ describe("ProjectsTable — completion-ring empty state gated OFF (ISS-4792, def
             completionPopulationEmpty: true,
           }),
         ]}
-        teamId="team-1"
       />
     );
 

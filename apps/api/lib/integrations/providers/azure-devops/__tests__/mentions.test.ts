@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AdoEventAttribute,
   AdoField,
   AdoServiceHookEventType,
   AzureDevOpsTriggerType,
@@ -45,7 +46,7 @@ describe("mentionsAdoBot", () => {
 });
 
 describe("work item mentioned events", () => {
-  it("emits one event for an update whose comment mentions the bot", () => {
+  it("emits a mentioned and a conditions event for an update whose comment mentions the bot", () => {
     const result = eventsFromWorkItemUpdate({
       organizationUrl: TEST_ORG_URL,
       workItemId: TEST_WORK_ITEM_ID,
@@ -71,6 +72,15 @@ describe("work item mentioned events", () => {
         triggerType: AzureDevOpsTriggerType.WorkItemMentioned,
         dedupKey: `${TEST_WORK_ITEM_ID}:mention:7`,
         item: { key: `#${TEST_WORK_ITEM_ID}` },
+      },
+      {
+        triggerType: AzureDevOpsTriggerType.WorkItemConditions,
+        dedupKey: `${TEST_WORK_ITEM_ID}:conditions:7`,
+        attributes: {
+          [AdoEventAttribute.Mentioned]: true,
+          [AdoEventAttribute.BecameAssigned]: false,
+          [AdoEventAttribute.AddedTags]: [],
+        },
       },
     ]);
   });
@@ -103,6 +113,7 @@ describe("work item mentioned events", () => {
 
     expect(fromHuman.events.map((event) => event.dedupKey)).toEqual([
       `${TEST_WORK_ITEM_ID}:mention:8`,
+      `${TEST_WORK_ITEM_ID}:conditions:8`,
     ]);
     expect(fromBot.events).toEqual([]);
     expect(AdoServiceHookEventType.WorkItemCommented).toBe(

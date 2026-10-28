@@ -1,6 +1,5 @@
 import type {
   TranscriptCompleteRequest,
-  TranscriptSkipRequest,
   TranscriptSyncPlanRequest,
 } from "@repo/api/src/types/desktop-transcripts";
 import {
@@ -21,8 +20,6 @@ const mocks = vi.hoisted(() => {
       update: vi.fn(),
     },
     sessionDetail: { findUnique: vi.fn() },
-    // FEA-4169: the default org-policy gate reads Organization via withDb.
-    organization: { findUnique: vi.fn() },
     $executeRaw: vi.fn(),
   };
   const withDb = Object.assign(
@@ -68,7 +65,6 @@ import {
   baseDeps,
   CT,
   NOW,
-  ORG,
   SID,
   STORED_SHA,
   s3Port,
@@ -116,12 +112,6 @@ function completeRequest(
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.findOwnedById.mockResolvedValue({ id: CT });
-  // FEA-4169: default the org policy ON so the existing plan/complete/skip
-  // behavior tests exercise the happy path; the policy-off case is covered
-  // explicitly below by overriding this or injecting deps.isOrgPolicyEnabled.
-  mocks.db.organization.findUnique.mockResolvedValue({
-    sessionSyncPolicyEnabled: true,
-  });
   mocks.db.sessionTranscript.findUnique.mockResolvedValue(null);
   mocks.db.sessionDetail.findUnique.mockResolvedValue(null);
   mocks.db.sessionTranscript.upsert.mockResolvedValue({});
@@ -738,95 +728,5 @@ describe("per-file advisory lock derivation (PRD-536 D12)", () => {
     });
     expect(mocks.db.$executeRaw).toHaveBeenCalledTimes(1);
     assertDualLock(firstLockSql());
-  });
-});
-
-describe("FEA-4169: server-side org session-sync policy gate", () => {
-  function skipRequest(): TranscriptSkipRequest {
-    return {
-      computeTargetId: CT,
-      externalSessionId: SID,
-      fileKey: "main",
-      sourceHarness: "claude_code",
-      reason: TranscriptSkipReason.TooLarge,
-    };
-  }
-
-  it("planSync denies (PolicyDisabled) when the org policy is OFF, minting no URL and writing no row", async () => {
-    const isOrgPolicyEnabled = vi.fn(async () => false);
-    const s3 = s3Port();
-    const result = await transcriptSyncService.planSync({
-      ...auth,
-      request: planRequest(),
-      deps: { ...baseDeps(s3), isOrgPolicyEnabled },
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: TranscriptSyncErrorReason.PolicyDisabled,
-    });
-    // Org-scoped, enforced before any S3/URL or DB write.
-    expect(isOrgPolicyEnabled).toHaveBeenCalledWith(ORG);
-    expect(s3.presignPutObject).not.toHaveBeenCalled();
-    expect(s3.createMultipartUpload).not.toHaveBeenCalled();
-    expect(mocks.withDb.tx).not.toHaveBeenCalled();
-    expect(mocks.db.sessionTranscript.upsert).not.toHaveBeenCalled();
-  });
-
-  it("complete denies (PolicyDisabled) when the org policy is OFF, completing no upload", async () => {
-    const isOrgPolicyEnabled = vi.fn(async () => false);
-    const s3 = s3Port();
-    const result = await transcriptSyncService.complete({
-      ...auth,
-      request: completeRequest(),
-      deps: { ...baseDeps(s3), isOrgPolicyEnabled },
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: TranscriptSyncErrorReason.PolicyDisabled,
-    });
-    expect(s3.completeMultipartUpload).not.toHaveBeenCalled();
-    expect(mocks.withDb.tx).not.toHaveBeenCalled();
-  });
-
-  it("markPermanentlySkipped denies (PolicyDisabled) when the org policy is OFF", async () => {
-    const isOrgPolicyEnabled = vi.fn(async () => false);
-    const result = await transcriptSyncService.markPermanentlySkipped({
-      ...auth,
-      request: skipRequest(),
-      deps: { ...baseDeps(s3Port()), isOrgPolicyEnabled },
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: TranscriptSyncErrorReason.PolicyDisabled,
-    });
-    expect(mocks.withDb.tx).not.toHaveBeenCalled();
-    expect(mocks.db.sessionTranscript.upsert).not.toHaveBeenCalled();
-  });
-
-  it("default DB-backed gate: an unresolved org fails closed (denies) without throwing", async () => {
-    // No injected dep → the DB-backed default runs. A missing org row degrades
-    // to deny (fail-closed), never a throw, so version skew is enforced safely.
-    mocks.db.organization.findUnique.mockResolvedValue(null);
-    const result = await transcriptSyncService.planSync({
-      ...auth,
-      request: planRequest(),
-      deps: baseDeps(s3Port()),
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: TranscriptSyncErrorReason.PolicyDisabled,
-    });
-  });
-
-  it("default DB-backed gate: an explicitly-enabled org is allowed to plan", async () => {
-    mocks.db.organization.findUnique.mockResolvedValue({
-      sessionSyncPolicyEnabled: true,
-    });
-    const result = await transcriptSyncService.planSync({
-      ...auth,
-      request: planRequest({ planEndOffset: 1000 }),
-      deps: baseDeps(s3Port()),
-    });
-    expect(result.ok).toBe(true);
   });
 });

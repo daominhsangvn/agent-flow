@@ -313,6 +313,7 @@ test("a loop that retries in fresh Claude sessions is one session with summed to
       outputTokens: 12,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
+      estimatedCostUsd: 2,
     },
   ]);
   assert.equal(session.sessionAnalytics?.estimatedCostUsd, 2);
@@ -330,6 +331,68 @@ test("a loop that retries in fresh Claude sessions is one session with summed to
       observedAt: T0,
     },
   ]);
+});
+
+test("a session's cumulative results count once: the latest replaces the earlier", () => {
+  const stream = createLoopSessionStream();
+  const result = (modelUsage: Record<string, unknown>) =>
+    JSON.stringify({
+      type: "result",
+      session_id: "s-1",
+      is_error: false,
+      modelUsage,
+    });
+  const lines = [
+    JSON.stringify({ type: "system", subtype: "init", session_id: "s-1" }),
+    // The main agent stops while a background subagent still runs ...
+    result({
+      m: { inputTokens: 100, outputTokens: 7, costUSD: 1, costBasis: "list" },
+    }),
+    // ... and stops again, with the session's totals so far, once it reports.
+    result({
+      m: { inputTokens: 150, outputTokens: 9, costUSD: 1.5, costBasis: "list" },
+      h: { inputTokens: 20, outputTokens: 2, costUSD: 0.25, costBasis: "list" },
+    }),
+  ];
+  for (const line of lines) {
+    foldStreamLine(stream, line, T0);
+  }
+  const session = buildSyncedSession(stream, {
+    loopId: LOOP,
+    name: "EXECUTE PLN-2",
+    running: false,
+    failed: false,
+    startedAt: T0,
+    updatedAt: T0,
+    endedAt: T0,
+    repositoryFullName: null,
+    worktreePath: null,
+    sourceArtifactId: null,
+    baseBranch: null,
+    workBranch: null,
+    runnerName: "runner-1",
+    command: "EXECUTE",
+  });
+  assert.deepEqual(session.tokenUsageByModel, [
+    {
+      model: "m",
+      inputTokens: 150,
+      outputTokens: 9,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      estimatedCostUsd: 1.5,
+    },
+    {
+      model: "h",
+      inputTokens: 20,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      estimatedCostUsd: 0.25,
+    },
+  ]);
+  assert.equal(session.sessionAnalytics?.inputTokens, 170);
+  assert.equal(session.sessionAnalytics?.estimatedCostUsd, 1.75);
 });
 
 test("the work branch is read from a linked worktree's HEAD", () => {
@@ -423,6 +486,8 @@ test("reports a loop while it runs and once more when it ends, with its key", as
     getComputeTargetId: () => TARGET,
     getPluginDirs: () => [makePlugin()],
     intervalMs: 3_600_000,
+    // Within the finished-loop report window of the job's completedAt.
+    now: () => new Date("2026-10-11T00:30:00.000Z"),
     fetchImpl: (input, init) => {
       requests.push({
         url: String(input),

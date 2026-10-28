@@ -67,13 +67,10 @@ describe("NameCell — Link vs div rendering", () => {
     expect(anchor).toHaveAttribute("href", "/test-org/issues/FEAT-1");
   });
 
-  it("renders project NameCell as <a> when team context is available", () => {
+  it("renders project NameCell as an org-level <a>", () => {
     const item: DocumentRowItem = {
       kind: "project",
-      data: makeProject({
-        id: "project-1",
-        teams: [{ id: "team-1", name: "Team One" }],
-      }),
+      data: makeProject({ id: "project-1" }),
     };
     const { container } = render(
       <DocumentRow item={item} visibleColumns={[]} />
@@ -81,23 +78,7 @@ describe("NameCell — Link vs div rendering", () => {
 
     const anchor = container.querySelector("a");
     expect(anchor).toBeInTheDocument();
-    expect(anchor).toHaveAttribute(
-      "href",
-      "/test-org/teams/team-1/projects/project-1"
-    );
-  });
-
-  it("renders project NameCell as div when no team is available", () => {
-    const item: DocumentRowItem = {
-      kind: "project",
-      data: makeProject({ id: "project-1", teams: [] }),
-    };
-    const { container } = render(
-      <DocumentRow item={item} visibleColumns={[]} />
-    );
-
-    // No <a> tag should be rendered in the NameCell when href cannot be resolved
-    expect(container.querySelector("a")).not.toBeInTheDocument();
+    expect(anchor).toHaveAttribute("href", "/test-org/projects/project-1");
   });
 
   it("renders artifact NameCell as div when document type is non-navigable", () => {

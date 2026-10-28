@@ -10,6 +10,7 @@ import {
   type RunProcessSnapshot,
   RunProcessSource,
   runProcessSnapshotSchema,
+  writesReleaseNotes,
 } from "@repo/api/src/types/project-process";
 import { Result } from "@repo/api/src/types/result";
 import {
@@ -175,7 +176,8 @@ function withoutYaml(snapshot: RunProcessSnapshot): RunProcessSnapshot {
 /**
  * What the agents of a plan or implement step decide on their own, sent to
  * the computer with the step's loop when the step changes the built-in
- * behaviour; undefined otherwise, so built-in runs launch exactly as before.
+ * behaviour; undefined otherwise. Every workflow EXECUTE also writes release
+ * notes unless its step turns them off.
  */
 export function stepAgentPolicy(
   step: ProcessStep | null
@@ -186,11 +188,14 @@ export function stepAgentPolicy(
   ) {
     return { recommendations: step.recommendations };
   }
-  if (
-    step?.type === ProcessStepType.AgentFlowExecute &&
-    step.review !== ProcessExecuteReview.Full
-  ) {
-    return { review: step.review };
+  if (step?.type === ProcessStepType.AgentFlowExecute) {
+    const policy: LoopAgentPolicy = {
+      ...(step.review === ProcessExecuteReview.Full
+        ? {}
+        : { review: step.review }),
+      ...(writesReleaseNotes(step) ? { releaseNotes: true } : {}),
+    };
+    return Object.keys(policy).length > 0 ? policy : undefined;
   }
   return;
 }

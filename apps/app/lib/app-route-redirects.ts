@@ -50,6 +50,7 @@ const AUTHENTICATED_ROUTE_DIRECTORIES = new Set<string>([
   "agents",
   "judges-analytics",
   "teams",
+  "projects",
   "build",
   "settings",
   "search",
@@ -71,6 +72,9 @@ const AUTHENTICATED_ROUTE_DIRECTORIES = new Set<string>([
 // `"/a/b".split("/")` is `["", "a", "b"]`, so segment 1 is the first real one.
 const FIRST_SEGMENT_INDEX = 1;
 const SECOND_SEGMENT_INDEX = 2;
+
+const LEGACY_TEAMS_SEGMENT = "teams";
+const PROJECTS_SEGMENT = "projects";
 
 // ISS-4477: the retired Loops LIST route forwards to Sessions, its successor.
 // The forward lives HERE in the proxy — not in the `[orgSlug]/loops/page.tsx`
@@ -287,6 +291,10 @@ export function resolveRedirect(
   const { firstSegmentIsRouteDirectory, routeSegmentIndex } =
     resolveRouteSegmentPosition(segments, orgSlug);
 
+  // Team routes are retired: projects live at `/{org}/projects/...`, so
+  // `/teams/{teamId}/projects/...` drops the two team segments in the same hop.
+  stripLegacyTeamProjectSegments(segments, routeSegmentIndex);
+
   const routeSegment = segments[routeSegmentIndex];
   if (
     routeSegment === "search" &&
@@ -493,4 +501,23 @@ function resolveRouteSegmentPosition(
       ? FIRST_SEGMENT_INDEX
       : SECOND_SEGMENT_INDEX,
   };
+}
+
+/**
+ * Drops the `teams/{teamId}` prefix from a legacy team project path in place.
+ * Returns true when the segments were rewritten.
+ */
+function stripLegacyTeamProjectSegments(
+  segments: string[],
+  routeSegmentIndex: number
+): boolean {
+  if (
+    segments[routeSegmentIndex] === LEGACY_TEAMS_SEGMENT &&
+    segments[routeSegmentIndex + 1] &&
+    segments[routeSegmentIndex + 2] === PROJECTS_SEGMENT
+  ) {
+    segments.splice(routeSegmentIndex, 2);
+    return true;
+  }
+  return false;
 }

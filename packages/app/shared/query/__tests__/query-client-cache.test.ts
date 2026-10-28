@@ -27,7 +27,7 @@ const REACT_QUERY_STOCK_GC_TIME_MS = 5 * 60 * 1000;
 // A real listing-family key and a real detail key from a shipped key factory, so
 // the scoping test exercises the exact key shapes production emits rather than
 // synthetic ones.
-const LIST_KEY = projectKeys.list({ teamId: "team-1" });
+const LIST_KEY = projectKeys.list({ scope: "team-1" });
 const DETAIL_KEY = projectKeys.detail("project-1");
 
 describe("makeQueryClient gcTime constants", () => {

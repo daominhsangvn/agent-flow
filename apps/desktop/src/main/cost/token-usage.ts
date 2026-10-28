@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { LoopSessionOrigin } from "@agentflow-ai/loops-api/events";
+import { z } from "zod";
 
 /** Per-model token breakdown. */
 export type ModelTokenUsage = {
@@ -11,7 +12,11 @@ export type ModelTokenUsage = {
 };
 
 const CLAUDE_OUTPUT_FILE = "claude-output.jsonl";
-const CLAUDE_OUTPUT_SIDECAR_FILE = "claude-output.name.txt";
+/**
+ * Names the run's archived output; empty while a run writes the legacy file
+ * (the start-of-run sentinel of resolveClaudeOutputPath).
+ */
+export const CLAUDE_OUTPUT_SIDECAR_FILE = "claude-output.name.txt";
 const CLAUDE_OUTPUT_RENAMED_PREFIX = "claude-output-";
 const CLAUDE_OUTPUT_RENAMED_SUFFIX = ".jsonl";
 
@@ -717,4 +722,196 @@ export function parseApiKeySource(claudeWorkDir: string): string | null {
     }
   });
   return apiKeySource;
+}
+
+/**
+ * Claude Code's own accounting over every Claude session of a run: the LAST
+ * `result` of each session, summed across the sessions.
+ *
+ * A session writes a `result` each time its main agent stops (for example
+ * while background subagents still run, and again once they report back), and
+ * every one carries the session's CUMULATIVE totals, so adding them all up
+ * counts the same tokens again and again. Distinct sessions are distinct work
+ * (a loop runs each iteration in a fresh Claude session) and do add up.
+ */
+export type HarnessUsageTotals = {
+  sessionCount: number;
+  /** Σ of each session's latest `total_cost_usd`; null when one is unknown. */
+  totalCostUsd: number | null;
+  /** Σ of each session's latest `usage`; null when one is unknown. */
+  usage: HarnessResult["usage"];
+  /** Σ of each session's latest `modelUsage` (a model's cost null when unknown). */
+  modelUsage: HarnessResult["modelUsage"];
+};
+
+type HarnessSessionSnapshot = Pick<
+  HarnessResult,
+  "totalCostUsd" | "usage" | "modelUsage"
+>;
+
+/**
+ * Totals of the run's Claude sessions (see {@link HarnessUsageTotals}), or null
+ * when the capture holds no `result` (a persistent transcript, or a run that
+ * ended before its first one). A `result` without `session_id` belongs to the
+ * session of the `init` before it. A model the CLI priced at a guessed rate
+ * (`costBasis: "unknown"`, e.g. a model served by an Anthropic-compatible
+ * provider) has an unknown cost, and so has its session.
+ */
+export function parseHarnessUsageTotals(
+  claudeWorkDir: string
+): HarnessUsageTotals | null {
+  const latestBySession = new Map<string, HarnessSessionSnapshot>();
+  let currentSessionId: string | null = null;
+  scanJsonlLines(claudeWorkDir, (entry) => {
+    if (entry.type === "system" && entry.subtype === "init") {
+      currentSessionId = stringOrNull(entry.session_id);
+      return;
+    }
+    if (entry.type !== "result") {
+      return;
+    }
+    const sessionId =
+      stringOrNull(entry.session_id) ??
+      currentSessionId ??
+      `result-${latestBySession.size}`;
+    const modelUsage = parseHarnessModelUsage(entry.modelUsage);
+    const guessed = guessedCostModels(entry.modelUsage);
+    for (const model of guessed) {
+      const row = modelUsage[model];
+      if (row) {
+        row.costUsd = null;
+      }
+    }
+    latestBySession.set(sessionId, {
+      totalCostUsd:
+        guessed.size > 0 ? null : nonNegativeOrNull(entry.total_cost_usd),
+      usage: parseHarnessUsage(entry.usage),
+      modelUsage,
+    });
+  });
+  if (latestBySession.size === 0) {
+    return null;
+  }
+  return sumHarnessSessions([...latestBySession.values()]);
+}
+
+/**
+ * The run's token usage as reported to AgentFlow: Claude Code's per-session
+ * totals when the capture has them, else the assistant messages' usage. The
+ * latter is the input side only: a stream-json assistant event carries the
+ * usage known when the message started, so its output tokens fall far short.
+ */
+export function resolveRunTokenUsage(
+  streamUsage: ReturnType<typeof parseTokenUsage>,
+  harnessTotals: HarnessUsageTotals | null
+): ReturnType<typeof parseTokenUsage> {
+  const models = Object.entries(harnessTotals?.modelUsage ?? {});
+  if (models.length === 0) {
+    return streamUsage;
+  }
+  const tokensByModel: Record<string, ModelTokenUsage> = {};
+  for (const [model, { input, output, cacheCreation, cacheRead }] of models) {
+    tokensByModel[model] = { input, output, cacheCreation, cacheRead };
+  }
+  const rows = Object.values(tokensByModel);
+  const sum = (pick: (row: ModelTokenUsage) => number) =>
+    rows.reduce((total, row) => total + pick(row), 0);
+  return {
+    inputTokens: sum((row) => row.input),
+    outputTokens: sum((row) => row.output),
+    cacheCreationInputTokens: sum((row) => row.cacheCreation),
+    cacheReadInputTokens: sum((row) => row.cacheRead),
+    turns: streamUsage.turns,
+    models: [
+      ...new Set([...streamUsage.models, ...Object.keys(tokensByModel)]),
+    ],
+    tokensByModel,
+  };
+}
+
+/**
+ * The last `result` with the run's totals in place of its own (cost, usage,
+ * per-model usage), so a run of several sessions reports all of them. Its
+ * turns, durations, stop reason and permission denials stay the last
+ * session's.
+ */
+export function withHarnessUsageTotals(
+  harnessResult: HarnessResult | null,
+  harnessTotals: HarnessUsageTotals | null
+): HarnessResult | null {
+  if (!(harnessResult && harnessTotals)) {
+    return harnessResult;
+  }
+  return {
+    ...harnessResult,
+    totalCostUsd: harnessTotals.totalCostUsd,
+    usage: harnessTotals.usage,
+    modelUsage: harnessTotals.modelUsage,
+  };
+}
+
+function sumHarnessSessions(
+  sessions: HarnessSessionSnapshot[]
+): HarnessUsageTotals {
+  let totalCostUsd: number | null = 0;
+  let usage: HarnessResult["usage"] = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    webSearchRequests: 0,
+  };
+  const modelUsage: HarnessResult["modelUsage"] = {};
+  for (const session of sessions) {
+    totalCostUsd = addKnown(totalCostUsd, session.totalCostUsd);
+    usage =
+      usage && session.usage
+        ? {
+            input: usage.input + session.usage.input,
+            output: usage.output + session.usage.output,
+            cacheRead: usage.cacheRead + session.usage.cacheRead,
+            cacheWrite: usage.cacheWrite + session.usage.cacheWrite,
+            webSearchRequests:
+              usage.webSearchRequests + session.usage.webSearchRequests,
+          }
+        : null;
+    for (const [model, row] of Object.entries(session.modelUsage)) {
+      const total = modelUsage[model];
+      modelUsage[model] = total
+        ? {
+            input: total.input + row.input,
+            output: total.output + row.output,
+            cacheRead: total.cacheRead + row.cacheRead,
+            cacheCreation: total.cacheCreation + row.cacheCreation,
+            costUsd: addKnown(total.costUsd, row.costUsd),
+          }
+        : { ...row };
+    }
+  }
+  return { sessionCount: sessions.length, totalCostUsd, usage, modelUsage };
+}
+
+/** A sum that is unknown as soon as one of its terms is. */
+function addKnown(total: number | null, value: number | null): number | null {
+  return total === null || value === null ? null : total + value;
+}
+
+/** The `costBasis` of a model the CLI has no price for (its cost is a guess). */
+export const UNKNOWN_COST_BASIS = "unknown";
+
+const GuessedCostRowSchema = z.object({
+  costBasis: z.literal(UNKNOWN_COST_BASIS),
+});
+
+/** The models of a `result.modelUsage` priced at a guessed rate. */
+function guessedCostModels(value: unknown): Set<string> {
+  const rows = z.record(z.string(), z.unknown()).safeParse(value);
+  if (!rows.success) {
+    return new Set();
+  }
+  return new Set(
+    Object.entries(rows.data)
+      .filter(([, row]) => GuessedCostRowSchema.safeParse(row).success)
+      .map(([model]) => model)
+  );
 }

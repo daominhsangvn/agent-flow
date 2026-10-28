@@ -1,8 +1,14 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import {
+  type ProcessStep,
+  ProcessStepType,
+} from "@repo/api/src/types/project-process";
 import { Result } from "@repo/api/src/types/result";
 import {
   WORKFLOW_RUN_FINAL_STATUSES,
+  type WorkflowRunError,
   WorkflowRunErrorCode,
+  WorkflowRunRetryMode,
   WorkflowRunStatus,
 } from "@repo/api/src/types/workflow";
 import { Prisma, withDb } from "@repo/database";
@@ -13,12 +19,23 @@ import {
   drainActionRuns,
   enqueueRunEvents,
   hasPostEvents,
+  RUN_CANCELLED_SKIP_REASON,
+  skipPendingPostActionRuns,
   skipUnfinishedPreActionRuns,
 } from "./actions";
+import { stepStartedEvents } from "./agent-step";
+import { resumeFailedStep } from "./agent-step-resume";
 import { cancelRunLoops } from "./cancel";
 import { runError } from "./errors";
-import { runPhaseStep } from "./phases";
-import { readRunStatus } from "./run-data";
+import { enterStep, loadRunContext, runPhaseStep } from "./phases";
+import { resolveRunProcess } from "./process";
+import {
+  findResumableLoop,
+  findRetryableStep,
+  RETRYABLE_RUN_STATUSES,
+} from "./retry-step";
+import { readAgentConfig, readRunStatus } from "./run-data";
+import type { RunLoopState } from "./run-loops";
 import {
   type EngineRun,
   failRun,
@@ -141,7 +158,90 @@ export async function cancelRun(
         ),
       },
     });
-    return applied ? Result.ok(null) : Result.err(CancelRunFailure.Busy);
+    if (!applied) {
+      return Result.err(CancelRunFailure.Busy);
+    }
+    await skipPendingPostActionRuns(run.id, RUN_CANCELLED_SKIP_REASON);
+    return Result.ok(null);
+  } finally {
+    await releaseLease(lease);
+  }
+}
+
+export const RetryRunFailure = {
+  NotFound: "not_found",
+  NotRetryable: "not_retryable",
+  /** Resume was asked, but the step has no agent session to go on with. */
+  NotResumable: "not_resumable",
+  /** The step could not be started; `error` says why. The run stays failed. */
+  StartFailed: "start_failed",
+  Busy: "busy",
+} as const;
+export type RetryRunFailure =
+  (typeof RetryRunFailure)[keyof typeof RetryRunFailure];
+
+/**
+ * Runs the step a run failed or was cancelled in again (retry-step.ts):
+ * takes the run's lease, launches the step's loop and writes its status.
+ */
+export async function retryRun(
+  organizationId: string,
+  runId: string,
+  mode: WorkflowRunRetryMode = WorkflowRunRetryMode.Restart
+): Promise<
+  Result<null, { failure: RetryRunFailure; error?: WorkflowRunError }>
+> {
+  const now = new Date();
+  const leaseUntil = await acquireFailedRunLease(organizationId, runId, now);
+  if (!leaseUntil) {
+    const current = await withDb((db) =>
+      db.workflowRun.findFirst({
+        where: { id: runId, organizationId },
+        select: { status: true },
+      })
+    );
+    return Result.err({
+      failure: current
+        ? RetryRunFailure.NotRetryable
+        : RetryRunFailure.NotFound,
+    });
+  }
+  const lease: RunLease = { runId, until: leaseUntil };
+  try {
+    const run = await loadEngineRun(runId);
+    const error = await withDb((db) =>
+      db.workflowRun.findUnique({
+        where: { id: runId },
+        select: { error: true },
+      })
+    );
+    const step = run
+      ? findRetryableStep({ ...run, error: error?.error })
+      : null;
+    if (!(run && step)) {
+      return Result.err({ failure: RetryRunFailure.NotRetryable });
+    }
+    const resumeFrom =
+      mode === WorkflowRunRetryMode.Resume
+        ? await findResumableLoop(run.id, step)
+        : null;
+    if (mode === WorkflowRunRetryMode.Resume && !resumeFrom) {
+      return Result.err({ failure: RetryRunFailure.NotResumable });
+    }
+    const outcome = await retryFailedStep(run, step, now, resumeFrom);
+    if (outcome.kind !== "transition") {
+      return Result.err({ failure: RetryRunFailure.Busy });
+    }
+    if (outcome.status === WorkflowRunStatus.Failed) {
+      return Result.err({
+        failure: RetryRunFailure.StartFailed,
+        error: outcome.data?.error ?? undefined,
+      });
+    }
+    const applied = await applyTransition(run, now, outcome);
+    return applied
+      ? Result.ok(null)
+      : Result.err({ failure: RetryRunFailure.Busy });
   } finally {
     await releaseLease(lease);
   }
@@ -161,6 +261,8 @@ const ENGINE_RUN_SELECT = {
   agentConfig: true,
   runAsUserId: true,
   connectionId: true,
+  projectId: true,
+  projectConnectionId: true,
   featureDocumentId: true,
   planDocumentId: true,
   phaseStartedAt: true,
@@ -168,7 +270,7 @@ const ENGINE_RUN_SELECT = {
   process: true,
   stepId: true,
   stepState: true,
-  workflow: { select: { name: true, enabled: true, projectId: true } },
+  workflow: { select: { name: true, enabled: true } },
 } as const;
 
 /** The lease this advance holds; `until` moves forward when it is renewed. */
@@ -341,6 +443,27 @@ async function acquireLease(
   return result.count === 1 ? leaseUntil : null;
 }
 
+/** The lease of a failed or cancelled run, which acquireLease never grants (it is final). */
+async function acquireFailedRunLease(
+  organizationId: string,
+  runId: string,
+  now: Date
+): Promise<Date | null> {
+  const leaseUntil = new Date(now.getTime() + RUN_LEASE_MS);
+  const result = await withDb((db) =>
+    db.workflowRun.updateMany({
+      where: {
+        id: runId,
+        organizationId,
+        status: { in: [...RETRYABLE_RUN_STATUSES] },
+        OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }],
+      },
+      data: { leaseUntil },
+    })
+  );
+  return result.count === 1 ? leaseUntil : null;
+}
+
 async function acquireLeaseWithRetry(runId: string): Promise<Date | null> {
   for (let attempt = 0; attempt < CANCEL_LEASE_ATTEMPTS; attempt++) {
     const lease = await acquireLease(runId, new Date());
@@ -405,9 +528,8 @@ function toRunUpdate(
     stepAttempts: 0,
     nextStepAt: null,
   };
-  if (isFinal(outcome.status)) {
-    update.completedAt = now;
-  }
+  // A retried run leaves `failed`, so it is not complete any more.
+  update.completedAt = isFinal(outcome.status) ? now : null;
   if (data.error !== undefined) {
     update.error = data.error ?? Prisma.DbNull;
   }
@@ -444,5 +566,59 @@ function logTransition(
     to: outcome.status,
     events: outcome.events,
     errorCode: outcome.data?.error?.code ?? null,
+  });
+}
+
+/**
+ * The transition that runs `step` (findRetryableStep) again: its loop is
+ * launched and the run takes the step's status. A failure outcome means the
+ * step could not be started (the run stays failed; the caller reports it).
+ */
+async function retryFailedStep(
+  run: EngineRun,
+  step: ProcessStep,
+  now: Date,
+  resumeFrom: RunLoopState | null
+): Promise<StepOutcome> {
+  if (!run.workflow.enabled) {
+    return failRun(
+      runError(
+        WorkflowRunErrorCode.WorkflowDisabled,
+        "The workflow is disabled."
+      )
+    );
+  }
+  const agent = readAgentConfig(run.agentConfig);
+  if (!agent) {
+    return failRun(
+      runError(
+        WorkflowRunErrorCode.AgentConfigInvalid,
+        "The run's agent configuration is invalid."
+      )
+    );
+  }
+  const data = { cycle: run.cycle + 1, error: null, stepState: null };
+  if (resumeFrom && step.type === ProcessStepType.Agent) {
+    const context = await loadRunContext(run);
+    if (!context.ok) {
+      return failRun(context.error);
+    }
+    return await resumeFailedStep({
+      run,
+      ...context.value,
+      step,
+      loop: resumeFrom,
+      events: stepStartedEvents(step),
+      data,
+    });
+  }
+  return await enterStep({
+    run,
+    agent,
+    runProcess: resolveRunProcess(run.process, agent),
+    step,
+    events: [],
+    data,
+    now,
   });
 }

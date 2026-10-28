@@ -288,6 +288,7 @@ export function restCommentsNewestFirst() {
     comments: [
       {
         id: "20002",
+        parentId: 20_001,
         author: { accountId: HUMAN_ACCOUNT_ID, displayName: "Bea Analyst" },
         body: { type: "doc", version: 1, content: [] },
         renderedBody: "<p>Please also support <i>semicolons</i>.</p>",
@@ -347,6 +348,49 @@ export function assigneeItem(from: string | null, to: string | null) {
   };
 }
 
+/** REST changelog item for a labels change (space-separated label lists). */
+export function labelsItem(from: string, to: string) {
+  return {
+    field: "labels",
+    fieldtype: "jira",
+    fieldId: "labels",
+    from: null,
+    fromString: from,
+    to: null,
+    toString: to,
+  };
+}
+
+export function statusItem(from: string, to: string) {
+  return {
+    field: "status",
+    fieldtype: "jira",
+    fieldId: "status",
+    from: "10000",
+    fromString: from,
+    to: "10001",
+    toString: to,
+  };
+}
+
+export function statusChangedWebhook(options: {
+  from: string;
+  to: string;
+  user?: unknown;
+}) {
+  return {
+    timestamp: WEBHOOK_TIMESTAMP,
+    webhookEvent: JiraWebhookEvent.IssueUpdated,
+    issue_event_type_name: "issue_generic",
+    user: options.user ?? HUMAN_USER,
+    issue: webhookIssue({ assignee: null }),
+    changelog: {
+      id: "10401",
+      items: [statusItem(options.from, options.to)],
+    },
+  };
+}
+
 export function searchIssue(options: {
   id: string;
   key: string;
@@ -357,6 +401,7 @@ export function searchIssue(options: {
   creator?: unknown;
   withChangelog?: boolean;
   changelogTotal?: number;
+  labels?: string[];
 }) {
   const histories = options.histories ?? [];
   return {
@@ -366,7 +411,7 @@ export function searchIssue(options: {
       summary: `Issue ${options.key}`,
       issuetype: { name: "Story" },
       project: { key: options.key.split("-")[0] },
-      labels: [],
+      labels: options.labels ?? [],
       status: { name: "To Do" },
       assignee: options.assignee === undefined ? BOT_USER : options.assignee,
       creator: options.creator ?? HUMAN_USER,

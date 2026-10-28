@@ -26,9 +26,8 @@ type UseDefaultBranchesResult = {
   isLoading: boolean;
 };
 
-// Batched per-repo branch lookups. Mirrors the pattern in
-// `useTeamRepositoriesUnion` so the result reference stays stable across
-// renders when nothing changes; downstream effects in `JobRepositoriesSection`
+// Batched per-repo branch lookups. The result reference stays
+// stable across renders when nothing changes; downstream effects in `JobRepositoriesSection`
 // rely on this for their dependency array.
 export function useDefaultBranches({
   repoIds,

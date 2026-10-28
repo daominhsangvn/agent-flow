@@ -15,19 +15,23 @@ vi.mock("@repo/analytics/client", () => ({
 vi.mock("@repo/app/onboarding/hooks/use-onboarding", () => ({
   useOnboardingStatus: () => ({ data: mocks.status }),
 }));
-vi.mock("@/hooks/queries/use-agent-onboarding", () => ({
-  useAgentOnboarding: () => ({
-    shouldShow: true,
-    hasGitHub: false,
-    hasElectron: false,
-    bootstrapInProgress: false,
-    dismiss: vi.fn(),
-  }),
-}));
+vi.mock("@/hooks/queries/use-agent-onboarding", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/hooks/queries/use-agent-onboarding")
+    >();
+  return {
+    ...actual,
+    useAgentOnboarding: () => ({
+      shouldShow: true,
+      runner: actual.AgentRunnerStatus.None,
+      prereqsMet: false,
+      bootstrapInProgress: false,
+      dismiss: vi.fn(),
+    }),
+  };
+});
 vi.mock("@/hooks/use-org-slug", () => ({ useOrgSlug: () => "acme" }));
-vi.mock("@/lib/integration-connect-urls", () => ({
-  getGitHubConnectUrl: () => "/api/integrations/github?install=true",
-}));
 vi.mock("@repo/navigation/link", () => ({
   Link: ({ children }: { children: React.ReactNode }) => (
     <a href="/">{children}</a>
@@ -66,8 +70,8 @@ describe("AgentOnboardingCard — checklist stand-down", () => {
   });
 
   it("stands down while the setup checklist is up", () => {
-    // Both cards ask for GitHub and for Desktop, off different signals, so
-    // stacking them lets one screen contradict itself about the same fact.
+    // Both cards ask for a runner, off different signals, so stacking them
+    // lets one screen contradict itself about the same fact.
     render(<AgentOnboardingCard />);
 
     expect(screen.queryByText(AGENT_CARD_TITLE)).toBeNull();

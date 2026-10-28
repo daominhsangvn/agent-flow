@@ -31,7 +31,6 @@ type MovableEntity = {
 type MoveEntityDialogProps = {
   entity?: MovableEntity;
   entities?: MovableEntity[];
-  teamId?: string | null;
   currentProjectId?: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -41,7 +40,6 @@ type MoveEntityDialogProps = {
 export function MoveEntityDialog({
   entity,
   entities,
-  teamId,
   currentProjectId,
   open,
   onOpenChange,
@@ -59,7 +57,7 @@ export function MoveEntityDialog({
   const isBulkMove = entitiesToMove.length > 1;
   const primaryEntity = entitiesToMove[0];
 
-  const { data: projects = [] } = useProjects(teamId ?? undefined);
+  const { data: projects = [] } = useProjects();
   const batchMove = useBatchMoveArtifacts();
 
   const entityProjectId = primaryEntity?.projectId ?? currentProjectId;

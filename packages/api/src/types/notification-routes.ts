@@ -47,7 +47,6 @@ export type NotificationEntityRouteParams =
     }
   | {
       kind: typeof NotificationEntityKind.Project;
-      teamId: string;
       projectId: string;
     }
   | {
@@ -81,7 +80,7 @@ export function getNotificationEntityPath(
       return `/${prefix}/${params.slug}`;
     }
     case NotificationEntityKind.Project:
-      return `/teams/${params.teamId}/projects/${params.projectId}`;
+      return `/projects/${params.projectId}`;
     case NotificationEntityKind.Loop:
       return `/loops/${params.loopId}`;
     case NotificationEntityKind.Session:

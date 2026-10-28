@@ -522,3 +522,40 @@ describe("resolveRedirect — ISS-4570 permanent vs temporary status", () => {
     ).toBe(RedirectStatus.Temporary);
   });
 });
+
+describe("resolveRedirect — retired team project routes", () => {
+  it("drops the team segments from org-prefixed project routes", () => {
+    expect(redirectPath("/acme/teams/t1/projects", ORG)).toBe("/acme/projects");
+    expect(redirectPath("/acme/teams/t1/projects/archived", ORG)).toBe(
+      "/acme/projects/archived"
+    );
+    expect(redirectPath("/acme/teams/t1/projects/p1", ORG)).toBe(
+      "/acme/projects/p1"
+    );
+    expect(redirectPath("/acme/teams/t1/projects/p1/issues/x", ORG)).toBe(
+      "/acme/projects/p1/issues/x"
+    );
+  });
+
+  it("adds the org prefix to bare legacy team project routes", () => {
+    expect(redirectPath("/teams/t1/projects/p1", ORG)).toBe(
+      "/acme/projects/p1"
+    );
+    expect(redirectPath("/teams/t1/projects", ORG)).toBe("/acme/projects");
+  });
+
+  it("leaves team routes without a projects segment alone", () => {
+    expect(redirectPath("/acme/teams/t1", ORG)).toBeNull();
+  });
+
+  it("is a fixed point for the new routes", () => {
+    expect(redirectPath("/acme/projects/p1", ORG)).toBeNull();
+    expect(redirectPath("/projects", ORG)).toBe("/acme/projects");
+  });
+
+  it("redirects temporarily", () => {
+    expect(resolveRedirect("/acme/teams/t1/projects/p1", ORG)?.status).toBe(
+      RedirectStatus.Temporary
+    );
+  });
+});

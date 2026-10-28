@@ -1,7 +1,10 @@
 import {
+  approvalFromSignal,
   nextProcessStep,
   type ProcessStep,
   ProcessStepType,
+  type ReviewDecision,
+  ReviewDecisionKind,
   type RunStepState,
 } from "@repo/api/src/types/project-process";
 import {
@@ -24,7 +27,7 @@ import {
 /**
  * Approval steps of a project process (ProcessStepType.Approval,
  * docs/workflows.md "Project process"): the run waits in needs_approval
- * (with run.needs_input for the post actions that notify people) until a
+ * (with input.needed for the post actions that notify people) until a
  * person decides in AgentFlow (POST /workflow-runs/{id}/approval). An
  * approval goes on to the next step; a rejection fails the run.
  */
@@ -35,18 +38,27 @@ export function enterApprovalStep(input: {
   events: WorkflowRunEvent[];
   data: RunTransitionData;
   now: Date;
+  /**
+   * Signals from the source item that arrived before the step (an approve
+   * label added while the plan was still written): the first approval
+   * decides the step at once, and nobody is notified of a wait.
+   */
+  pending?: readonly ReviewDecision[];
 }): StepOutcome {
+  const approved = input.pending?.find(
+    (signal) => signal.kind === ReviewDecisionKind.Approve
+  );
   const state: RunStepState = {
     waiting: null,
     approval: {
       stepId: input.step.id,
       requestedAt: input.now.toISOString(),
-      decision: null,
+      decision: approved ? approvalFromSignal(approved) : null,
     },
   };
   return transition(
     WorkflowRunStatus.NeedsApproval,
-    [...input.events, WorkflowRunEvent.NeedsInput],
+    approved ? input.events : [...input.events, WorkflowRunEvent.NeedsInput],
     { ...input.data, stepState: toJsonObject(state) }
   );
 }

@@ -1,7 +1,6 @@
 import { OrgPolicyField } from "@repo/app/settings/lib/org-policy-toggle-state";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionSyncPolicyCard } from "../session-sync-policy-card";
 import { TranscriptSearchCard } from "../transcript-search-card";
 
 const mocks = vi.hoisted(() => ({
@@ -29,12 +28,9 @@ const LOADING_RE = /loading settings/i;
 
 const UNKNOWN_BADGE_LABEL = "Status unknown";
 
-const SESSION_SYNC_HELP_RE = /stays on each member's machine/i;
-
 const TRANSCRIPT_SEARCH_HELP_RE = /not just their titles/i;
 
 const HELP_TEXT_RE_BY_FIELD: Record<string, RegExp> = {
-  [OrgPolicyField.SessionSyncPolicyEnabled]: SESSION_SYNC_HELP_RE,
   [OrgPolicyField.SearchIncludeTranscripts]: TRANSCRIPT_SEARCH_HELP_RE,
 };
 
@@ -45,16 +41,10 @@ const NOT_CONFIRMED_RE = /couldn't confirm that change saved/i;
 const SAVE_ERROR_RE = /couldn't save that change/i;
 
 /**
- * Both settings toggles ride the same optional-field contract (ISS-4624), so
- * the deploy-skew states are proven once against both cards.
+ * Every settings toggle rides the same optional-field contract (ISS-4624), so
+ * the deploy-skew states are proven against each card.
  */
 const CARDS = [
-  {
-    name: "SessionSyncPolicyCard",
-    Component: SessionSyncPolicyCard,
-    field: OrgPolicyField.SessionSyncPolicyEnabled,
-    title: "Sync session data to the cloud",
-  },
   {
     name: "TranscriptSearchCard",
     Component: TranscriptSearchCard,
@@ -345,17 +335,13 @@ describe.each(CARDS)("$name deploy-skew states", ({
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("ignores a sibling field's echo when judging this card's save", () => {
-    const siblingField =
-      field === OrgPolicyField.SessionSyncPolicyEnabled
-        ? OrgPolicyField.SearchIncludeTranscripts
-        : OrgPolicyField.SessionSyncPolicyEnabled;
+  it("ignores another field's echo when judging this card's save", () => {
     mocks.useUpdateOrganization.mockReturnValue({
       mutate: DEFAULT_MUTATE,
       isPending: false,
       isError: false,
-      variables: { id: ORGANIZATION_ID, [siblingField]: true },
-      data: { id: ORGANIZATION_ID, [siblingField]: true },
+      variables: { id: ORGANIZATION_ID, name: "Renamed" },
+      data: { id: ORGANIZATION_ID, name: "Renamed" },
     });
 
     render(<Component isAdmin />);

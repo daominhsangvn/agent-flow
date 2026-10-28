@@ -44,9 +44,7 @@ import {
   getDataColumnIndex,
 } from "@repo/design-system/lib/grid-table-aria";
 import { cn } from "@repo/design-system/lib/utils";
-import { getStringRouteParam } from "@repo/navigation/route-param";
 import { useOrgPath } from "@repo/navigation/use-org-path";
-import { useRouteParams } from "@repo/navigation/use-route-params";
 import { EllipsisIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -204,11 +202,7 @@ export function DocumentRow({
   dragHandle,
   insideAriaTable = false,
 }: DocumentRowProps) {
-  const params = useRouteParams();
   const buildOrgPath = useOrgPath();
-  // Empty string (param absent or not a single string) falls through to the
-  // row's own team id in computeHref().
-  const activeTeamId = getStringRouteParam(params, "teamId") || undefined;
 
   const rankSlot = buildRankSlot(
     rankInteractionMode,
@@ -220,13 +214,10 @@ export function DocumentRow({
   );
 
   function computeHref(): string | null {
-    // Project rows are not artifacts: their route needs the team context, so
+    // Project rows are not artifacts: they route by id at the org level, so
     // they stay outside the row-type registry.
     if (item.kind === "project") {
-      const teamId = activeTeamId ?? item.data.teams[0]?.id;
-      return teamId
-        ? buildOrgPath(`/teams/${teamId}/projects/${item.data.id}`)
-        : null;
+      return buildOrgPath(`/projects/${item.data.id}`);
     }
     const route = getRowTypeConfig(item)?.route ?? null;
     return route ? buildOrgPath(route) : null;

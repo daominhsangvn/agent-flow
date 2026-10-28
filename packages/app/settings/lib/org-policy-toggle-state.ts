@@ -18,7 +18,6 @@ type AlertVariant = ComponentProps<typeof Alert>["variant"];
  */
 export const OrgPolicyField = {
   SearchIncludeTranscripts: "searchIncludeTranscripts",
-  SessionSyncPolicyEnabled: "sessionSyncPolicyEnabled",
 } as const satisfies Record<
   string,
   keyof Organization & keyof UpdateOrganizationInput
@@ -221,8 +220,6 @@ export function buildOrgPolicyUpdateInput(
   switch (field) {
     case OrgPolicyField.SearchIncludeTranscripts:
       return { id, searchIncludeTranscripts: value };
-    case OrgPolicyField.SessionSyncPolicyEnabled:
-      return { id, sessionSyncPolicyEnabled: value };
     default: {
       const exhaustive: never = field;
       return exhaustive;

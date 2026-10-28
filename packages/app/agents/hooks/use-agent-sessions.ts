@@ -7,7 +7,6 @@ import type {
   AgentSessionsPageData,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
-import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import type {
   AgentSessionQueryFilters,
@@ -82,7 +81,7 @@ export function useAgentSessionUsage(
     ...options,
     queryKey: agentSessionKeys.usage(dataSource.scope, filters),
     queryFn: () => dataSource.usage(filters),
-    enabled: isAgentSessionQueryEnabled(filters) && (options?.enabled ?? true),
+    enabled: options?.enabled ?? true,
   });
 }
 
@@ -99,7 +98,7 @@ export function useAgentSessions(
     ...options,
     queryKey: agentSessionKeys.list(dataSource.scope, filters),
     queryFn: () => dataSource.list(filters),
-    enabled: isAgentSessionQueryEnabled(filters) && (options?.enabled ?? true),
+    enabled: options?.enabled ?? true,
   });
 }
 
@@ -130,7 +129,7 @@ export function useAgentSessionsPageData(
     ...options,
     queryKey: agentSessionKeys.pageData(dataSource.scope, filters),
     queryFn: () => dataSource.pageData(filters),
-    enabled: isAgentSessionQueryEnabled(filters) && (options?.enabled ?? true),
+    enabled: options?.enabled ?? true,
   });
 }
 
@@ -158,14 +157,6 @@ export function useAgentSessionAnalytics(
     ...options,
     queryKey: agentSessionKeys.analytics(dataSource.scope, filters),
     queryFn: () => dataSource.analytics(filters),
-    enabled: isAgentSessionQueryEnabled(filters) && (options?.enabled ?? true),
+    enabled: options?.enabled ?? true,
   });
-}
-
-function isAgentSessionQueryEnabled(
-  filters: AgentSessionQueryFilters
-): boolean {
-  return !(
-    filters.viewerScope === AgentSessionViewerScope.Team && !filters.teamId
-  );
 }

@@ -40,6 +40,7 @@ vi.mock("../editor/editable-document-title", () => ({
 // Keep the room-less branch so no RoomProvider is required for the mount.
 vi.mock("../../../users/hooks/use-users", () => ({
   useCurrentUser: () => ({ data: null, isLoading: false }),
+  useOrganizationUsers: () => ({ data: [], isLoading: false }),
 }));
 
 const CHAT_PANEL_TESTID = "legacy-chat-panel";

@@ -1,8 +1,13 @@
 "use client";
 
 import type {
+  ToolCallDecision,
+  ToolCallDecisionRequest,
+} from "@repo/api/src/types/integration-tools";
+import type {
   AnswerStepQuestionsInput,
   DecideStepApprovalInput,
+  DecideStepReviewInput,
 } from "@repo/api/src/types/project-process";
 import {
   type SaveWorkflowInput,
@@ -13,6 +18,8 @@ import {
   type WorkflowActionRun,
   WorkflowActionRunStatus,
   type WorkflowRunDetail,
+  type WorkflowRunRetryMode,
+  type WorkflowRunRetryRequest,
   type WorkflowRunStatus,
   type WorkflowRunSummary,
   type WorkflowRunsResponse,
@@ -256,6 +263,31 @@ export function useCancelWorkflowRun() {
   });
 }
 
+/**
+ * Runs the failed step of a failed run again (a new loop in a new cycle):
+ * resuming its failed agent session, or restarting the step.
+ */
+export function useRetryWorkflowRun() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({ runId, mode }: RetryWorkflowRunVariables) =>
+      apiClient.post<WorkflowRunDetail>(`${runPath(runId)}/retry`, {
+        mode,
+      } satisfies WorkflowRunRetryRequest),
+    onSuccess: (run) => {
+      refreshRunCaches(queryClient, run);
+    },
+    ...mutationErrorOptions(WorkflowMutationErrorTitle.RetryRun),
+  });
+}
+
+export type RetryWorkflowRunVariables = {
+  runId: string;
+  mode: WorkflowRunRetryMode;
+};
+
 export type RetryWorkflowActionRunVariables = {
   runId: string;
   actionRunId: string;
@@ -280,6 +312,37 @@ export function useRetryWorkflowActionRun() {
       refreshRunCaches(queryClient, run);
     },
     ...mutationErrorOptions(WorkflowMutationErrorTitle.RetryActionRun),
+  });
+}
+
+export type DecideWorkflowToolCallVariables = {
+  runId: string;
+  callId: string;
+  decision: ToolCallDecision;
+};
+
+/**
+ * Approves (carries out) or rejects an agent's integration tool call whose
+ * grant requires approval; the answer is the run detail with its outcome.
+ */
+export function useDecideWorkflowToolCall() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({
+      runId,
+      callId,
+      decision,
+    }: DecideWorkflowToolCallVariables) =>
+      apiClient.post<WorkflowRunDetail>(
+        `${runPath(runId)}/tool-calls/${encodeURIComponent(callId)}/decision`,
+        { decision } satisfies ToolCallDecisionRequest
+      ),
+    onSuccess: (run) => {
+      refreshRunCaches(queryClient, run);
+    },
+    ...mutationErrorOptions(WorkflowMutationErrorTitle.DecideToolCall),
   });
 }
 
@@ -444,3 +507,26 @@ function runPath(runId: string): string {
 type PolledQuery<TData> = {
   state: { status: "pending" | "error" | "success"; data: TData | undefined };
 };
+
+export type DecideWorkflowRunReviewVariables = {
+  runId: string;
+  input: DecideStepReviewInput;
+};
+
+/**
+ * Decides the step under review a run waits on: approve (or complete) and
+ * reject for org admins, feedback for any member.
+ */
+export function useDecideWorkflowRunReview() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({ runId, input }: DecideWorkflowRunReviewVariables) =>
+      apiClient.post<WorkflowRunDetail>(`${runPath(runId)}/review`, input),
+    onSuccess: (run) => {
+      refreshRunCaches(queryClient, run);
+    },
+    ...mutationErrorOptions(WorkflowMutationErrorTitle.DecideReview),
+  });
+}

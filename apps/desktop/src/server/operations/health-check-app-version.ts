@@ -24,6 +24,8 @@ import type { GatewayCheckResult as CheckResult } from "./health-check-types.js"
  */
 
 const COMMIT_SHORT_HASH_LENGTH = 7;
+/** What the build scripts stamp when they are not given a commit. */
+const UNKNOWN_COMMIT_HASH = "unknown";
 const NUMERIC_ONLY_REGEX = /^\d+$/;
 
 /**
@@ -183,7 +185,12 @@ function buildSourceBuildResult(
   currentVersion: string,
   commitHash: string
 ): CheckResult {
-  const shortHash = commitHash.slice(0, COMMIT_SHORT_HASH_LENGTH);
+  // A build without a commit stamp (the runner image's default) says nothing
+  // rather than "local build unknown".
+  const shortHash =
+    commitHash === UNKNOWN_COMMIT_HASH
+      ? ""
+      : commitHash.slice(0, COMMIT_SHORT_HASH_LENGTH);
   const suffix = shortHash ? ` ${shortHash}` : "";
   return {
     ...baseAppVersionResult(currentVersion),

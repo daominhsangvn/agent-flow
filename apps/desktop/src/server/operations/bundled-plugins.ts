@@ -14,7 +14,9 @@ import { fileURLToPath } from "node:url";
  *      the plugins disables bundling
  *   2. `<resourcesPath>/agent-plugins` in a packaged build (electron-builder
  *      extraResources)
- *   3. `<repo>/agent-plugins` when running from source
+ *   3. `agent-plugins/` next to the module: the headless runner release,
+ *      which ships it beside runner.mjs
+ *   4. `<repo>/agent-plugins` when running from source
  */
 
 export const PLUGINS_DIR_ENV = "AGENTFLOW_PLUGINS_DIR";
@@ -113,9 +115,11 @@ function defaultRoots(): string[] {
   if (resourcesPath) {
     candidates.push(path.join(resourcesPath, "agent-plugins"));
   }
+  // The headless runner release: agent-plugins/ next to runner.mjs.
   // Source layouts: apps/desktop/out/main (electron-vite build output) and
   // apps/desktop/src/server/operations (tests running from source).
   candidates.push(
+    path.join(moduleDir, "agent-plugins"),
     path.resolve(moduleDir, "..", "..", "..", "..", "agent-plugins"),
     path.resolve(moduleDir, "..", "..", "..", "..", "..", "agent-plugins")
   );

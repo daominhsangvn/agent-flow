@@ -462,6 +462,7 @@ export function runSnapshot(
     step: null,
     reply: null,
     documents: [],
+    releaseNotes: null,
     stepReplies: {},
     summaryMarkdown:
       "✅ **#4321** is done. Pull request: https://github.com/contoso/shop/pull/42",

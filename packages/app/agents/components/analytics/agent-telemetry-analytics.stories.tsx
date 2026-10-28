@@ -15,7 +15,6 @@ const queryState: AgentTelemetryAnalyticsQueryState = {
   harness: "all",
   page: 0,
   selectedProjectId: null,
-  selectedTeamId: null,
   selectedUserId: null,
   status: "all",
 };

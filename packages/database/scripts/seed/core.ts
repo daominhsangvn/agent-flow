@@ -7,7 +7,6 @@ import {
   GitHubInstallationStatus,
   Priority,
   ProjectStatus,
-  TeamRole,
 } from "../../generated/client";
 import type { TransactionClient } from "../../generated/internal/prismaNamespace";
 import { pickRequired } from "./allocations";
@@ -41,7 +40,6 @@ const SLUG_TYPE_PREFIXES = Object.values(SlugPrefix);
  * created two owners for the same rows and let payloads silently drift.
  */
 export type CoreSeedResult = {
-  teamId: string;
   projectIds: readonly string[];
   artifactIds: readonly string[];
   /** The single seeded GitHubInstallation row, owned by seedCoreEntities. */
@@ -54,7 +52,6 @@ export type CoreSeedResult = {
 
 /**
  * Seeds the core organizational entities:
- * - One Team with the seed user as OWNER
  * - Two Projects under the organization, both assigned to the seed user
  * - SlugCounter rows for all artifact type prefixes
  *
@@ -63,7 +60,7 @@ export type CoreSeedResult = {
  *
  * @param prisma - Initialized PrismaClient connected to the target database.
  * @param context - Resolved organization and user identifiers.
- * @returns IDs for the seeded team and projects for use by downstream modules.
+ * @returns IDs for the seeded projects for use by downstream modules.
  */
 export async function seedCoreEntities(
   prisma: TransactionClient,
@@ -73,54 +70,7 @@ export async function seedCoreEntities(
   const { organizationId, userId } = context;
   const counts = createUpsertCounts();
 
-  seedLog("Seeding core entities (Team, Projects, SlugCounters)…");
-
-  // -------------------------------------------------------------------------
-  // Team
-  // -------------------------------------------------------------------------
-
-  const teamId = deterministicUuid(`team:${organizationId}:default`);
-  const teamMemberId = deterministicUuid(`team-member:${teamId}:${userId}`);
-
-  const team = await upsertRow({
-    model: "Team",
-    id: teamId,
-    upsert: () =>
-      prisma.team.upsert({
-        where: { id: teamId },
-        create: {
-          id: teamId,
-          organizationId,
-          name: "Default Team",
-          slug: "default",
-        },
-        update: {
-          name: "Default Team",
-        },
-      }),
-    counts,
-  });
-
-  // Add the seed user as OWNER of the team.
-  await upsertRow({
-    model: "TeamMember",
-    id: teamMemberId,
-    upsert: () =>
-      prisma.teamMember.upsert({
-        where: { id: teamMemberId },
-        create: {
-          id: teamMemberId,
-          teamId: team.id,
-          userId,
-          role: TeamRole.OWNER,
-        },
-        update: {
-          role: TeamRole.OWNER,
-        },
-        select: { id: true },
-      }),
-    counts,
-  });
+  seedLog("Seeding core entities (Projects, SlugCounters)…");
 
   // -------------------------------------------------------------------------
   // Projects
@@ -250,7 +200,6 @@ export async function seedCoreEntities(
   const artifactResult = await seedArtifacts(prisma, context, projectIds, plan);
 
   return {
-    teamId: team.id,
     projectIds,
     artifactIds: artifactResult.artifactIds,
     githubInstallationId: artifactResult.githubInstallationId,

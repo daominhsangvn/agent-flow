@@ -9,6 +9,7 @@ import {
   type WorkflowAgentConfig,
   WorkflowRunErrorCode,
   WorkflowRunStatus,
+  workflowPrdRuleSchema,
 } from "@repo/api/src/types/workflow";
 import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -83,7 +84,9 @@ function engineRun(overrides: Partial<EngineRun> = {}): EngineRun {
     },
     stepId: "analyze",
     stepState: null,
-    workflow: { name: "BREP", enabled: true, projectId: "project-1" },
+    projectId: "project-1",
+    projectConnectionId: null,
+    workflow: { name: "BREP", enabled: true },
     ...overrides,
   };
 }
@@ -92,7 +95,9 @@ const AGENT: WorkflowAgentConfig = {
   mode: WorkflowAgentMode.PlanAndExecute,
   stopOnOpenQuestions: true,
   computeTargetId: "runner-ipt",
+  runners: [],
   repository: null,
+  prd: workflowPrdRuleSchema.parse({}),
   instructions: "",
   titleTemplate: "{{source.key}}: {{source.title}}",
   process: null,

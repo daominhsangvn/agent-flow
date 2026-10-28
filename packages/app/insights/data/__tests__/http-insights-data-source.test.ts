@@ -16,24 +16,15 @@ describe("insightsPath", () => {
     expect(path.startsWith("/insights/delivery?period=30&scope=me")).toBe(true);
   });
 
-  it("includes the teamId when provided", () => {
-    const path = insightsPath(
-      "utilization",
-      InsightsPeriod.Quarter,
-      InsightsScope.Team,
-      "team-1"
+  it("only sends period, scope and time zone filters", () => {
+    const path = insightsPath("agents", InsightsPeriod.Week, InsightsScope.Org);
+    const keys = Array.from(
+      new URL(path, "http://localhost").searchParams.keys()
     );
 
-    expect(path).toContain("/insights/utilization?");
-    expect(path).toContain("period=90");
-    expect(path).toContain("scope=team");
-    expect(path).toContain("teamId=team-1");
-  });
-
-  it("omits the teamId when absent", () => {
-    const path = insightsPath("agents", InsightsPeriod.Week, InsightsScope.Org);
-
-    expect(path).not.toContain("teamId");
+    expect(
+      keys.filter((key) => !["period", "scope", "timeZone"].includes(key))
+    ).toEqual([]);
   });
 });
 
@@ -44,7 +35,7 @@ describe("createHttpInsightsReads", () => {
 
     await reads.getDelivery(InsightsPeriod.Month, InsightsScope.Me);
     await reads.getUtilization(InsightsPeriod.Month, InsightsScope.Org);
-    await reads.getAgents(InsightsPeriod.Month, InsightsScope.Team, "team-1");
+    await reads.getAgents(InsightsPeriod.Month, InsightsScope.Org);
 
     expect(get).toHaveBeenNthCalledWith(
       1,
@@ -56,8 +47,7 @@ describe("createHttpInsightsReads", () => {
     );
     expect(get).toHaveBeenNthCalledWith(
       3,
-      expect.stringContaining("/insights/agents?period=30&scope=team")
+      expect.stringContaining("/insights/agents?period=30&scope=org")
     );
-    expect(get.mock.calls[2]?.[0]).toContain("teamId=team-1");
   });
 });

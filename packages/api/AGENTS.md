@@ -57,7 +57,7 @@ Some `packages/api/src` helpers are consumed in two modes: Vercel/Turbopack bund
 
 ## Helper Functions
 
-Utility functions that operate on shared types belong here (e.g., `getRoutePrefixForType`, `resolveProjectRepoDefaults`, `isDocumentArtifact`, `isActiveGenerationStatus`). These must be pure — no I/O, no `@repo/database` calls.
+Utility functions that operate on shared types belong here (e.g., `getRoutePrefixForType`, `getProjectSettings`, `isDocumentArtifact`, `isActiveGenerationStatus`). These must be pure — no I/O, no `@repo/database` calls.
 
 Session Trace derivation helpers that collapse repeated source records must preserve cumulative user-visible fields. For repeated phase keys, aggregate duration across every iteration and cover loopback/repeated-key cases in behavior tests instead of letting the last source row overwrite prior iterations.
 
@@ -75,4 +75,4 @@ When replacing or bundling GitHub REST pull-request data with GraphQL data, pres
 
 ## Domain Glossary
 
-Team, Project, Loop, Workflow, Document, Artifact, Engineer Feature, Desktop Gateway, Relay, MCP — see `docs/domain-glossary.md`.
+Project, Loop, Workflow, Document, Artifact, Engineer Feature, Desktop Gateway, Relay, MCP — see `docs/domain-glossary.md`.

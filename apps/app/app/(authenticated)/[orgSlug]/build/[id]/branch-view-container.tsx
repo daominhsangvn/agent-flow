@@ -899,6 +899,7 @@ function BranchViewUnavailableState({
     details: loadState.details,
     onRetry,
     orgSlug,
+    showProjectLink: loadState.mode !== BranchViewLoadUiMode.Unknown,
     showRetry:
       loadState.mode === BranchViewLoadUiMode.TransientLoadError ||
       loadState.mode === BranchViewLoadUiMode.Unknown,
@@ -968,6 +969,7 @@ function buildUnavailableActions(input: {
   details: ReturnType<typeof getBranchViewLoadState>["details"];
   onRetry: () => void;
   orgSlug: string;
+  showProjectLink: boolean;
   showRetry: boolean;
 }) {
   const actions: ReactNode[] = [];
@@ -1013,12 +1015,10 @@ function buildUnavailableActions(input: {
       </Button>
     );
   }
-  if (input.details.teamId && input.details.projectId) {
+  if (input.showProjectLink && input.details.projectId) {
     actions.push(
       <Button asChild key="project" size="sm" variant="outline">
-        <Link
-          href={`/${input.orgSlug}/teams/${input.details.teamId}/projects/${input.details.projectId}`}
-        >
+        <Link href={`/${input.orgSlug}/projects/${input.details.projectId}`}>
           Back to project
         </Link>
       </Button>

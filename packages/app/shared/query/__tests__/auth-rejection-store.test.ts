@@ -66,7 +66,7 @@ describe("auth-rejection-store", () => {
   });
 
   // ISS-5095: the regression that blanked the workspace. A resource-scoped 403
-  // (GET /teams/:id/repositories for an org member who is not on that team) is
+  // (a sub-resource read an org member is not allowed to see) is
   // NOT a session failure and must never latch the shell-wide re-auth surface.
   it("does NOT latch on an ApiError 403 (forbidden resource, not a dead session)", () => {
     let notified = 0;

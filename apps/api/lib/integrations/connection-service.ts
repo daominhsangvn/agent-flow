@@ -2,19 +2,18 @@ import { isDeepStrictEqual } from "node:util";
 import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
 import {
   type CreateIntegrationConnectionInput,
+  INTEGRATION_POLL_INTERVAL_DEFAULT_SECONDS,
   type IntegrationConnection,
   IntegrationConnectionStatus,
   type IntegrationConnectionTestResult,
   type IntegrationDelivery,
   IntegrationDeliveryMode,
   type IntegrationInboundDetails,
-  type IntegrationSecretFieldState,
   type UpdateIntegrationConnectionInput,
 } from "@repo/api/src/types/integration";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import {
   type IntegrationConnection as IntegrationConnectionRecord,
-  type IntegrationDelivery as IntegrationDeliveryRecord,
   Prisma,
   withDb,
 } from "@repo/database";
@@ -22,6 +21,12 @@ import { log } from "@repo/observability/log";
 import { v7 as uuidv7 } from "uuid";
 import { z } from "zod";
 import { checkCredentialOrigin } from "./connection/credential-origin";
+import {
+  clampDeliveriesLimit,
+  DELIVERIES_DEFAULT_LIMIT,
+  toDeliveryDto,
+  toSecretFieldStates,
+} from "./connection/dto-fields";
 import {
   checkDeliveryMode,
   parseConnectionConfig,
@@ -44,15 +49,23 @@ import {
   sealInboundSecret,
 } from "./connection/secrets";
 import {
+  findAdoptableConnection,
+  findServerConnection,
+  isProvidedServerConnection,
+  isServerConnectionCurrent,
+} from "./connection/server-connection-state";
+import {
   parseConnectionStatus,
   parseCredentialHints,
   parseDeliveryMode,
-  parseDeliveryOutcome,
-  parseDeliverySource,
   parseStoredAccount,
   toAccountSummary,
   toJsonObject,
 } from "./connection/stored-json";
+import {
+  pollScheduleChanges,
+  resolveNextStatus,
+} from "./connection/update-schedule";
 import {
   ADMIN_VIEWER,
   type ConfigViewer,
@@ -60,7 +73,15 @@ import {
 } from "./connection/url-redaction";
 import { createProviderHttp } from "./http";
 import { generateInboundSecret } from "./inbound-auth";
+import { inboundUrlWarning } from "./inbound-url";
 import { type AnyProvider, getIntegrationProvider } from "./registry";
+import {
+  getServerConnectionSpecs,
+  isProvidedByServer,
+  SERVER_CONNECTION_READ_ONLY_MESSAGE,
+  type ServerConnectionSpec,
+  serverConnectionLockKey,
+} from "./server-connections";
 import {
   type ConnectionRuntime,
   type IntegrationAccount,
@@ -87,11 +108,16 @@ export type LoadedConnection = {
 export type ConnectionServiceError = { status: StatusCode; message: string };
 
 export const integrationConnectionService = {
-  /** Members who are not org admins see url-kind config fields as their origin only. */
+  /**
+   * Members who are not org admins see url-kind config fields as their
+   * origin only. The connections the server provides (Local Git) are created
+   * or refreshed first.
+   */
   async list(
     organizationId: string,
     viewer: ConfigViewer
   ): Promise<IntegrationConnection[]> {
+    await ensureServerConnections(organizationId);
     const records = await withDb((db) =>
       db.integrationConnection.findMany({
         where: { organizationId },
@@ -119,6 +145,11 @@ export const integrationConnectionService = {
     const provider = getIntegrationProvider(input.provider);
     if (!provider) {
       return badRequest(`Unknown integration provider "${input.provider}"`);
+    }
+    if (isProvidedByServer(provider.key)) {
+      return badRequest(
+        `${provider.displayName} is provided by the server: every organization already has its connection.`
+      );
     }
     const mode = checkDeliveryMode(provider, input.deliveryMode);
     if (!mode.ok) {
@@ -171,6 +202,9 @@ export const integrationConnectionService = {
     if (!record) {
       return notFound();
     }
+    if (isProvidedServerConnection(record)) {
+      return badRequest(SERVER_CONNECTION_READ_ONLY_MESSAGE);
+    }
     const provider = getIntegrationProvider(record.provider);
     if (!provider) {
       return badRequest(`Unknown integration provider "${record.provider}"`);
@@ -206,12 +240,16 @@ export const integrationConnectionService = {
     if (!record) {
       return notFound();
     }
+    if (isProvidedServerConnection(record)) {
+      return badRequest(SERVER_CONNECTION_READ_ONLY_MESSAGE);
+    }
     const usageCount = countUsage(record);
     if (usageCount > 0) {
       return inUse(usageCount);
     }
     // The relation filters make the delete atomic with the usage check: a
-    // trigger, action or project repository added since the read keeps the row.
+    // trigger, action, project repository or project connection added since
+    // the read keeps the row.
     const deleted = await withDb((db) =>
       db.integrationConnection.deleteMany({
         where: {
@@ -220,6 +258,7 @@ export const integrationConnectionService = {
           triggers: { none: {} },
           actions: { none: {} },
           projectRepositories: { none: {} },
+          projectConnections: { none: {} },
         },
       })
     );
@@ -438,15 +477,18 @@ const DEFAULT_PUBLIC_API_URL = "http://localhost:3002";
 const INBOUND_WEBHOOK_PATH = "/webhooks/integrations/";
 const TRAILING_SLASHES_RE = /\/+$/;
 const INBOUND_KEY_RE = /^[A-Za-z0-9_-]{16,64}$/;
-const DELIVERIES_DEFAULT_LIMIT = 50;
-const DELIVERIES_MAX_LIMIT = 200;
 const LAST_ERROR_MAX_LENGTH = 1000;
 
 const connectionIdSchema = z.uuid();
 
 const USAGE_COUNT_INCLUDE = {
   _count: {
-    select: { triggers: true, actions: true, projectRepositories: true },
+    select: {
+      triggers: true,
+      actions: true,
+      projectRepositories: true,
+      projectConnections: true,
+    },
   },
 } as const satisfies Prisma.IntegrationConnectionInclude;
 
@@ -464,14 +506,6 @@ type ConnectionIdentity = Pick<
   ConnectionRuntime,
   "id" | "organizationId" | "name"
 >;
-
-type PollScheduleInput = {
-  deliveryMode: IntegrationDeliveryMode;
-  status: IntegrationConnectionStatus;
-  /** Submitted interval; undefined keeps the stored one. */
-  pollIntervalSeconds: number | undefined;
-  now: Date;
-};
 
 function isConnectionId(id: string): boolean {
   return connectionIdSchema.safeParse(id).success;
@@ -645,67 +679,6 @@ function buildUpdateData(
   return data;
 }
 
-/**
- * An explicit status wins. A successful re-validation clears an error status
- * but never re-enables a disabled connection.
- */
-function resolveNextStatus(
-  record: IntegrationConnectionRecord,
-  requested: UpdateIntegrationConnectionInput["status"],
-  revalidated: boolean
-): IntegrationConnectionStatus {
-  const current = parseConnectionStatus(record.status);
-  if (requested !== undefined) {
-    return requested;
-  }
-  if (revalidated && current !== IntegrationConnectionStatus.Disabled) {
-    return IntegrationConnectionStatus.Active;
-  }
-  return current;
-}
-
-/**
- * Entering poll mode polls right away from a fresh cursor (a stale cursor
- * would replay a backlog); re-enabling a polling connection polls right away;
- * a changed poll interval takes effect now; leaving poll mode unschedules it.
- */
-function pollScheduleChanges(
-  record: IntegrationConnectionRecord,
-  next: PollScheduleInput
-): Prisma.IntegrationConnectionUpdateInput {
-  const wasPolling = record.deliveryMode === IntegrationDeliveryMode.Poll;
-  if (next.deliveryMode !== IntegrationDeliveryMode.Poll) {
-    return wasPolling ? { nextPollAt: null } : {};
-  }
-  if (!wasPolling) {
-    return { nextPollAt: next.now, pollCursor: Prisma.DbNull };
-  }
-  const reEnabled =
-    record.status === IntegrationConnectionStatus.Disabled &&
-    next.status !== IntegrationConnectionStatus.Disabled;
-  if (reEnabled) {
-    return { nextPollAt: next.now };
-  }
-  return rescheduleForInterval(record, next);
-}
-
-/**
- * A new poll interval moves the next poll to at most one new interval from
- * now; a poll that is already due sooner keeps its time.
- */
-function rescheduleForInterval(
-  record: IntegrationConnectionRecord,
-  next: PollScheduleInput
-): Prisma.IntegrationConnectionUpdateInput {
-  const interval = next.pollIntervalSeconds;
-  if (interval === undefined || interval === record.pollIntervalSeconds) {
-    return {};
-  }
-  const latest = new Date(next.now.getTime() + interval * 1000);
-  const current = record.nextPollAt;
-  return { nextPollAt: current && current < latest ? current : latest };
-}
-
 function toValidatedSettingsData(
   settings: ValidatedSettings,
   secretKeys: readonly string[],
@@ -817,7 +790,12 @@ function toInboundDetails(
     inboundUrl,
     deliveryMode: parseDeliveryMode(record.deliveryMode),
   });
-  return { inboundUrl, inboundSecret, setupInstructions };
+  return {
+    inboundUrl,
+    inboundSecret,
+    setupInstructions,
+    inboundUrlWarning: inboundUrlWarning(inboundUrl),
+  };
 }
 
 function toConnectionDto(
@@ -827,6 +805,7 @@ function toConnectionDto(
   const deliveryMode = parseDeliveryMode(record.deliveryMode);
   return {
     managedByWorkflowId: record.managedByWorkflowId,
+    providedByServer: isProvidedServerConnection(record),
     id: record.id,
     provider: record.provider,
     name: record.name,
@@ -870,43 +849,12 @@ function toPublicConfig(
   return redactUrlFields(publicConfig, provider.connection.fields, viewer);
 }
 
-function toSecretFieldStates(
-  record: IntegrationConnectionRecord
-): Record<string, IntegrationSecretFieldState> {
-  const hints = parseCredentialHints(record.credentialHints);
-  const provider = getIntegrationProvider(record.provider);
-  const keys = provider
-    ? getSecretFieldKeys(provider.connection.fields)
-    : Object.keys(hints);
-  return Object.fromEntries(
-    keys.map((key) => [
-      key,
-      {
-        isSet: Object.hasOwn(hints, key),
-        lastFour: hints[key] ?? null,
-      },
-    ])
-  );
-}
-
-function toDeliveryDto(record: IntegrationDeliveryRecord): IntegrationDelivery {
-  return {
-    id: record.id,
-    deliveryId: record.deliveryId,
-    source: parseDeliverySource(record.source),
-    eventType: record.eventType,
-    outcome: parseDeliveryOutcome(record.outcome),
-    detail: record.detail,
-    runCount: record.runCount,
-    receivedAt: record.receivedAt,
-  };
-}
-
 function countUsage(record: ConnectionRecordWithUsage): number {
   return (
     record._count.triggers +
     record._count.actions +
-    record._count.projectRepositories
+    record._count.projectRepositories +
+    record._count.projectConnections
   );
 }
 
@@ -959,13 +907,6 @@ function trimError(message: string): string {
     : message;
 }
 
-function clampDeliveriesLimit(limit: number): number {
-  if (!Number.isFinite(limit)) {
-    return DELIVERIES_DEFAULT_LIMIT;
-  }
-  return Math.min(Math.max(1, Math.trunc(limit)), DELIVERIES_MAX_LIMIT);
-}
-
 function firstNonEmpty(...values: Array<string | undefined>): string | null {
   return (
     values.find((value) => value !== undefined && value.trim() !== "") ?? null
@@ -988,10 +929,110 @@ function inUse<T>(
 ): Result<T, ConnectionServiceError> {
   const usage =
     usageCount === null
-      ? "workflow triggers, actions or project repositories"
-      : `${usageCount} workflow trigger(s), action(s) or project repositories`;
+      ? "workflow triggers, actions, project repositories or project connections"
+      : `${usageCount} workflow trigger(s), action(s), project repositories or project connections`;
   return Result.err({
     status: Status.Conflict,
     message: `The connection is used by ${usage}. Remove them from their workflows and projects first.`,
+  });
+}
+
+/**
+ * Creates or refreshes the organization's server-provided connections (see
+ * server-connections.ts). Fails open: a connection that cannot be written is
+ * logged and the list is served without it.
+ */
+async function ensureServerConnections(organizationId: string): Promise<void> {
+  for (const spec of getServerConnectionSpecs()) {
+    try {
+      await ensureServerConnection(organizationId, spec);
+    } catch (error) {
+      log.warn(`${LOG_PREFIX} Could not provide the server connection`, {
+        organizationId,
+        provider: spec.provider,
+        error,
+      });
+    }
+  }
+}
+
+/**
+ * Writes the connection when it is missing, when the environment changed it,
+ * or when its last check failed a while ago; a connection an admin added for
+ * the same server is adopted instead of adding a second one. The settings are
+ * checked against the source system like a save (outside the transaction); a
+ * failed check still stores the connection, in the error status with the
+ * reason, so Settings shows it.
+ */
+async function ensureServerConnection(
+  organizationId: string,
+  spec: ServerConnectionSpec
+): Promise<void> {
+  const provider = getIntegrationProvider(spec.provider);
+  if (!provider) {
+    return;
+  }
+  const existing = await findServerConnection(organizationId, provider.key);
+  if (existing && isServerConnectionCurrent(existing, provider, spec)) {
+    return;
+  }
+  const id = existing?.id ?? uuidv7();
+  const validated = await validateSettings(
+    provider,
+    { id, organizationId, name: spec.name },
+    spec.config,
+    spec.secrets
+  );
+  const settings: ValidatedSettings = validated.ok
+    ? validated.value
+    : { config: spec.config, secrets: spec.secrets, account: null };
+  const secretKeys = getSecretFieldKeys(provider.connection.fields);
+  const data = {
+    name: spec.name,
+    createdById: null,
+    status: validated.ok
+      ? IntegrationConnectionStatus.Active
+      : IntegrationConnectionStatus.Error,
+    ...toValidatedSettingsData(settings, secretKeys, new Date()),
+    ...(validated.ok
+      ? {}
+      : { lastValidatedAt: null, lastError: trimError(validated.error) }),
+  };
+  const lockKey = serverConnectionLockKey(organizationId, provider.key);
+  const written = await withDb.tx(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0::bigint))`;
+    const target =
+      (await findServerConnection(organizationId, provider.key)) ??
+      (await findAdoptableConnection(
+        organizationId,
+        provider,
+        settings.config
+      ));
+    if (target) {
+      await tx.integrationConnection.updateMany({
+        where: { id: target.id, organizationId },
+        data,
+      });
+      return target.id;
+    }
+    await tx.integrationConnection.create({
+      data: {
+        id,
+        organizationId,
+        provider: provider.key,
+        deliveryMode: IntegrationDeliveryMode.None,
+        pollIntervalSeconds: INTEGRATION_POLL_INTERVAL_DEFAULT_SECONDS,
+        inboundKey: generateInboundKey(),
+        inboundSecretEncrypted: sealInboundSecret(generateInboundSecret()),
+        ...data,
+      },
+    });
+    return id;
+  });
+  log.info(`${LOG_PREFIX} Provided the server connection`, {
+    organizationId,
+    connectionId: written,
+    provider: provider.key,
+    ok: validated.ok,
   });
 }

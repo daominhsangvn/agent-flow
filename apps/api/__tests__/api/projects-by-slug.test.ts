@@ -39,7 +39,6 @@ const mockProjectWithDetails = {
   name: "Test Project",
   slug: "PROJ-1",
   completionPercentage: 0,
-  teams: [],
 };
 
 describe("GET /api/projects/by-slug/:slug", () => {

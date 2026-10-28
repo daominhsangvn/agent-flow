@@ -3,6 +3,7 @@ import {
   updateIntegrationConnectionInputSchema,
 } from "@repo/api/src/types/integration";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { ADMIN_VIEWER } from "@/lib/integrations/connection/url-redaction";
 import { integrationConnectionService } from "@/lib/integrations/connection-service";
 import {
   errorResponse,
@@ -15,27 +16,31 @@ import {
   connectionErrorResponse,
   denyUnlessOrgAdmin,
   keepSubmittedFields,
-  resolveConfigViewer,
 } from "../route-helpers";
 
 const ROUTE = "/integrations/connections/[id]";
 
 /**
  * GET /integrations/connections/{id}
- * One connection (secrets only as isSet + last four). Any org member;
- * members who are not org admins see url-kind config fields as their origin
- * only.
+ * One connection (secrets only as isSet + last four). Org admins only.
  */
 export const GET = withAnyAuth<
   IntegrationConnection,
   "/integrations/connections/[id]"
->(async (auth, _request, params) => {
+>(async (auth, request, params) => {
   try {
+    const denied = await denyUnlessOrgAdmin(auth, {
+      method: request.method,
+      route: ROUTE,
+    });
+    if (denied) {
+      return denied;
+    }
     const { id } = await params;
     const connection = await integrationConnectionService.get(
       auth.user.organizationId,
       id,
-      await resolveConfigViewer(auth)
+      ADMIN_VIEWER
     );
     if (!connection) {
       return notFoundResponse("Integration connection");

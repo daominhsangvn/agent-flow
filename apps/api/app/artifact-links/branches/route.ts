@@ -3,7 +3,6 @@ import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
 } from "@repo/api/src/types/artifact";
-import type { JsonObject } from "@repo/api/src/types/common";
 import { withDb } from "@repo/database";
 import { z } from "zod";
 import { branchService } from "@/app/branches/branch-service";
@@ -54,7 +53,7 @@ export const POST = withAnyAuth<
       const project = await withDb((db) =>
         db.project.findUnique({
           where: { id: body.projectId, organizationId: user.organizationId },
-          select: { id: true, settings: true },
+          select: { id: true },
         })
       );
       if (!project) {
@@ -64,7 +63,6 @@ export const POST = withAnyAuth<
       const resolved = await loadProjectRepoDefaults({
         projectId: project.id,
         organizationId: user.organizationId,
-        projectSettings: (project.settings ?? {}) as JsonObject,
       });
       if (!resolved) {
         return badRequestResponse(
@@ -74,7 +72,7 @@ export const POST = withAnyAuth<
 
       const result = await branchService.upsertBranchArtifact({
         organizationId: user.organizationId,
-        repositoryId: resolved.primary.installationRepositoryId,
+        repositoryId: null,
         repositoryFullName: resolved.primary.fullName,
         branchName: body.branchName,
         defaultBranch: body.defaultBranch ?? null,

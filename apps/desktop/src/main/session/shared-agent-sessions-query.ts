@@ -167,9 +167,7 @@ function resolveUserScope(
 }
 
 function hasUnsupportedCloudFilter(query: SharedAgentSessionsQuery): boolean {
-  return Boolean(
-    coerceOptionalString(query.teamId) || coerceOptionalString(query.projectId)
-  );
+  return Boolean(coerceOptionalString(query.projectId));
 }
 
 export function parseOptionalDate(

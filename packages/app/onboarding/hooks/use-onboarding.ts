@@ -35,10 +35,8 @@ export function useCompleteWizard() {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: (input: {
-      createdTeamId?: string;
-      createdProjectId?: string;
-    }) => apiClient.put<OnboardingStatus>("/onboarding/complete-wizard", input),
+    mutationFn: (input: { createdProjectId?: string }) =>
+      apiClient.put<OnboardingStatus>("/onboarding/complete-wizard", input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: onboardingKeys.all });
     },

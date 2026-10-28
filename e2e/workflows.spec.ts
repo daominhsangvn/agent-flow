@@ -36,7 +36,6 @@ import {
   registerComputeTarget,
 } from "./helpers/compute-targets";
 import { createProject, deleteProject } from "./helpers/create-project";
-import { createTeam, deleteTeam } from "./helpers/create-team";
 import { deleteDocument } from "./helpers/documents";
 import {
   type HttpSink,
@@ -45,7 +44,9 @@ import {
 } from "./helpers/http-sink";
 import {
   createIntegrationConnection,
+  createProjectConnection,
   deleteIntegrationConnection,
+  deleteProjectConnection,
   getIntegrationInboundDetails,
   toLocalInboundUrl,
 } from "./helpers/integrations";
@@ -71,6 +72,7 @@ const ITEM_TITLE = "E2E workflow item";
 const ITEM_DESCRIPTION =
   "Created by e2e/workflows.spec.ts. The run is expected to fail because the compute target has no desktop app.";
 const SINK_PATH = "/workflow-events";
+const WEBHOOK_KEY = "e2e-webhook";
 const HttpStatus = { Ok: 200, Unauthorized: 401 } as const;
 const TEST_TIMEOUT_MS = 240_000;
 const RUN_FAILURE_TIMEOUT_MS = 90_000;
@@ -95,10 +97,10 @@ const runEventDeliverySchema = z.object({
 });
 
 type WorkflowFixture = {
-  teamId: string | null;
   projectId: string | null;
   computeTargetId: string | null;
   connectionId: string | null;
+  projectConnectionId: string | null;
   workflowId: string | null;
   documentIds: string[];
 };
@@ -115,23 +117,17 @@ test.describe("workflows", { tag: E2ETag.Smoke }, () => {
 
     const sink = await startHttpSink();
     const fixture: WorkflowFixture = {
-      teamId: null,
       projectId: null,
       computeTargetId: null,
       connectionId: null,
+      projectConnectionId: null,
       workflowId: null,
       documentIds: [],
     };
 
     try {
-      const team = await createTeam(request, {
-        name: createUniqueName("e2e-workflow-team"),
-        token,
-      });
-      fixture.teamId = team.id;
       const project = await createProject(request, {
         name: createUniqueName("e2e-workflow-project"),
-        teamIds: [team.id],
         token,
       });
       fixture.projectId = project.id;
@@ -153,6 +149,19 @@ test.describe("workflows", { tag: E2ETag.Smoke }, () => {
         token,
       });
       fixture.connectionId = connection.id;
+      // Workflows name the project's connections by key.
+      const projectConnection = await createProjectConnection(request, {
+        projectId: project.id,
+        input: {
+          connectionId: connection.id,
+          key: WEBHOOK_KEY,
+          name: connection.name,
+          settings: {},
+          override: null,
+        },
+        token,
+      });
+      fixture.projectConnectionId = projectConnection.id;
       const inbound = await getIntegrationInboundDetails(
         request,
         connection.id,
@@ -177,14 +186,14 @@ test.describe("workflows", { tag: E2ETag.Smoke }, () => {
           },
           triggers: [
             {
-              connectionId: connection.id,
+              connectionKey: WEBHOOK_KEY,
               type: WebhookIntegrationKey.RequestTrigger,
               config: {},
             },
           ],
           actions: [
             {
-              connectionId: connection.id,
+              connectionKey: WEBHOOK_KEY,
               type: WebhookIntegrationKey.PostAction,
               stage: WorkflowActionStage.Pre,
               config: sinkConfig,
@@ -192,7 +201,7 @@ test.describe("workflows", { tag: E2ETag.Smoke }, () => {
               continueOnError: false,
             },
             {
-              connectionId: connection.id,
+              connectionKey: WEBHOOK_KEY,
               type: WebhookIntegrationKey.PostAction,
               stage: WorkflowActionStage.Post,
               config: sinkConfig,
@@ -411,6 +420,12 @@ async function cleanupFixture(
 ): Promise<void> {
   // Dependents first: the connection answers 409 while a workflow uses it.
   await deleteWorkflow(request, fixture.workflowId, token);
+  await deleteProjectConnection(
+    request,
+    fixture.projectId,
+    fixture.projectConnectionId,
+    token
+  );
   await deleteIntegrationConnection(request, fixture.connectionId, token);
   await deleteComputeTarget(request, fixture.computeTargetId, token);
   for (const documentId of fixture.documentIds) {
@@ -418,8 +433,5 @@ async function cleanupFixture(
   }
   if (fixture.projectId) {
     await deleteProject(request, fixture.projectId, token);
-  }
-  if (fixture.teamId) {
-    await deleteTeam(request, fixture.teamId, token);
   }
 }

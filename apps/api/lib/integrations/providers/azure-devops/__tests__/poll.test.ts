@@ -24,6 +24,10 @@ import {
   buildChangedWorkItemsQuery,
   pollAzureDevOps,
 } from "@/lib/integrations/providers/azure-devops/poll";
+import {
+  workItemConditionsConfigSchema,
+  workItemConditionsTrigger,
+} from "@/lib/integrations/providers/azure-devops/triggers";
 import { HttpMethod } from "@/lib/integrations/types";
 
 const WIQL_PATH = "/contoso/_apis/wit/wiql";
@@ -43,6 +47,10 @@ describe("pollAzureDevOps", () => {
     ).toEqual([
       [AzureDevOpsTriggerType.WorkItemAssigned, `${TEST_WORK_ITEM_ID}:rev:7`],
       [AzureDevOpsTriggerType.WorkItemTagged, `${TEST_WORK_ITEM_ID}:tags:7`],
+      [
+        AzureDevOpsTriggerType.WorkItemConditions,
+        `${TEST_WORK_ITEM_ID}:conditions:7`,
+      ],
     ]);
     const [assigned] = result.events;
     expect(assigned?.actor).toEqual({
@@ -64,6 +72,77 @@ describe("pollAzureDevOps", () => {
     expect(result.events[1]?.attributes[AdoEventAttribute.AddedTags]).toEqual([
       "AgentFlow",
     ]);
+    expect(result.events[2]?.attributes).toMatchObject({
+      [AdoEventAttribute.Tags]: ["Checkout", "AgentFlow"],
+      [AdoEventAttribute.AssignedToBot]: true,
+      [AdoEventAttribute.BecameAssigned]: true,
+      [AdoEventAttribute.AddedTags]: ["AgentFlow"],
+      [AdoEventAttribute.Mentioned]: false,
+    });
+  });
+
+  it("judges a combination with the work item state right after each update", async () => {
+    const fake = createFakeAdo([
+      {
+        method: HttpMethod.Post,
+        path: WIQL_PATH,
+        json: { workItems: [{ id: TEST_WORK_ITEM_ID }] },
+      },
+      {
+        method: HttpMethod.Get,
+        path: BATCH_PATH,
+        json: { value: [batchItem(TEST_WORK_ITEM_ID, 6)] },
+      },
+      {
+        method: HttpMethod.Get,
+        path: updatesPath(TEST_WORK_ITEM_ID),
+        json: {
+          value: [
+            fieldUpdate(5, "2026-10-04T11:56:00.000Z", {
+              [AdoField.Tags]: {
+                oldValue: "Checkout",
+                newValue: "Checkout; AgentFlow",
+              },
+            }),
+            fieldUpdate(6, "2026-10-04T11:58:00.000Z", {
+              [AdoField.AssignedTo]: {
+                oldValue: identityRef(HUMAN),
+                newValue: identityRef(BOT),
+              },
+            }),
+          ],
+        },
+      },
+    ]);
+    const ctx = createAdoContext(fake);
+    const config = workItemConditionsConfigSchema.parse({
+      assigned: true,
+      tags: ["agentflow"],
+    });
+
+    const result = await pollAzureDevOps(ctx, null);
+
+    expect(
+      result.events
+        .filter(
+          (event) =>
+            event.triggerType === AzureDevOpsTriggerType.WorkItemConditions
+        )
+        .map((event) => [
+          event.dedupKey,
+          event.attributes[AdoEventAttribute.AssignedToBot],
+          workItemConditionsTrigger.matches(event, config, ctx.connection),
+        ])
+    ).toEqual([
+      // Tagged while still assigned to someone else.
+      [`${TEST_WORK_ITEM_ID}:conditions:5`, false, false],
+      // Assigning it to the bot completes the combination.
+      [`${TEST_WORK_ITEM_ID}:conditions:6`, true, true],
+    ]);
+    const [batch] = fake.requestsTo(HttpMethod.Get, BATCH_PATH);
+    expect(batch?.url.searchParams.get("fields")).toContain(
+      AdoField.AssignedTo
+    );
   });
 
   it("queries WIQL for items assigned to @Me changed since five minutes ago minus the overlap", async () => {
@@ -211,6 +290,7 @@ describe("pollAzureDevOps", () => {
     expect(skips).toEqual(["252", "452"]);
     expect(result.events.map((event) => event.dedupKey)).toEqual([
       `${TEST_WORK_ITEM_ID}:rev:452`,
+      `${TEST_WORK_ITEM_ID}:conditions:452`,
     ]);
   });
 
@@ -314,6 +394,8 @@ function batchItem(
       [AdoField.AreaPath]: "Fabrikam Web\\Checkout",
       [AdoField.State]: "Active",
       [AdoField.Tags]: "Checkout; AgentFlow",
+      // The WIQL query only returns work items assigned to the bot.
+      [AdoField.AssignedTo]: identityRef(BOT),
       [AdoField.ChangedDate]: "2026-10-04T11:59:30.000Z",
       ...fields,
     },

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
-  DEFAULT_GATEWAY_PORT,
   DEFAULT_MAX_CONCURRENT_COMMANDS,
   DEFAULT_RUNNER_WORKSPACE,
   loadHeadlessConfig,
@@ -15,6 +15,8 @@ const API_KEY = "sk_live_test_key_value";
 const DOCKER_HOST_API_URL = "http://host.docker.internal:3002";
 const REJECTED_KEY = "not-a-key";
 const REJECTED_KEY_RE = /not-a-key/;
+const PROJECT_KEY_REQUIRED_RE = /PROJECT_KEY: required/;
+const NOT_A_DIRECTORY_RE = /is not a directory/;
 
 function baseEnv(): NodeJS.ProcessEnv {
   return {
@@ -44,7 +46,7 @@ test("applies defaults and normalizes the API URL to its origin", () => {
     result.config.maxConcurrentCommands,
     DEFAULT_MAX_CONCURRENT_COMMANDS
   );
-  assert.equal(result.config.gatewayPort, DEFAULT_GATEWAY_PORT);
+  assert.equal(result.config.gatewayPort, null);
   assert.equal(result.config.rewriteCallbackUrl, true);
   assert.equal(result.config.reportSessions, true);
 });
@@ -137,4 +139,50 @@ test("refuses plain http to a non-loopback API unless the host is allowed", () =
   } finally {
     delete process.env[ALLOW_HTTP_HOSTS_ENV];
   }
+});
+
+test("personal mode works in the project folder, one loop at a time by default", () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "personal-config-"));
+  try {
+    const result = loadHeadlessConfig({
+      ...baseEnv(),
+      [HeadlessRunnerEnv.Mode]: "Personal",
+      [HeadlessRunnerEnv.ProjectKey]: " pro-1 ",
+      [HeadlessRunnerEnv.ProjectDir]: projectDir,
+      [HeadlessRunnerEnv.Workspace]: "/ignored",
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) {
+      return;
+    }
+    assert.deepEqual(result.config.personal, {
+      projectKey: "PRO-1",
+      projectDir: path.resolve(projectDir),
+      parallel: false,
+      skipPermissions: false,
+    });
+    assert.equal(result.config.workspaceDir, path.resolve(projectDir));
+  } finally {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("personal mode needs a project key and an existing project folder", () => {
+  const result = loadHeadlessConfig({
+    ...baseEnv(),
+    [HeadlessRunnerEnv.Mode]: "personal",
+    [HeadlessRunnerEnv.ProjectDir]: path.join(os.tmpdir(), "no-such-project"),
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) {
+    return;
+  }
+  assert.equal(result.errors.length, 2);
+  assert.match(result.errors.join("\n"), PROJECT_KEY_REQUIRED_RE);
+  assert.match(result.errors.join("\n"), NOT_A_DIRECTORY_RE);
+});
+
+test("auto mode has no personal settings", () => {
+  const result = loadHeadlessConfig(baseEnv());
+  assert.equal(result.ok && result.config.personal, null);
 });

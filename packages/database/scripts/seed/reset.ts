@@ -41,7 +41,6 @@ export type ResetClient = PrismaClient | TransactionClient;
 
 export type ResetScope = {
   projectIds: string[];
-  teamIds: string[];
   artifactIds: string[];
   documentDetailIds: string[];
   branchArtifactIds: string[];
@@ -138,7 +137,6 @@ function snapshotMatchesOrg(
 function mergeResetScopes(left: ResetScope, right: ResetScope): ResetScope {
   return {
     projectIds: mergeIds(left.projectIds, right.projectIds),
-    teamIds: mergeIds(left.teamIds, right.teamIds),
     artifactIds: mergeIds(left.artifactIds, right.artifactIds),
     documentDetailIds: mergeIds(
       left.documentDetailIds,
@@ -199,7 +197,6 @@ async function collectResetScope(
 ): Promise<ResetScope> {
   const [
     projects,
-    teams,
     artifacts,
     loops,
     computeTargets,
@@ -213,7 +210,6 @@ async function collectResetScope(
       where: { organizationId },
       select: { id: true },
     }),
-    prisma.team.findMany({ where: { organizationId }, select: { id: true } }),
     prisma.artifact.findMany({
       where: { organizationId },
       select: { id: true },
@@ -243,7 +239,6 @@ async function collectResetScope(
   ]);
 
   const projectIds = projects.map(({ id }) => id);
-  const teamIds = teams.map(({ id }) => id);
   const artifactIds = artifacts.map(({ id }) => id);
   const loopIds = loops.map(({ id }) => id);
   const computeTargetIds = computeTargets.map(({ id }) => id);
@@ -294,7 +289,6 @@ async function collectResetScope(
 
   return {
     projectIds,
-    teamIds,
     artifactIds,
     documentDetailIds: documentDetails.map(({ artifactId }) => artifactId),
     branchArtifactIds: branchDetails.map(({ artifactId }) => artifactId),
@@ -584,27 +578,6 @@ async function deleteResettableRows(
     prisma.artifact.deleteMany({ where: { organizationId } })
   );
 
-  await deleteAndRecord(counts, "TeamRepository", () =>
-    prisma.teamRepository.deleteMany({
-      where: { teamId: { in: scope.teamIds } },
-    })
-  );
-  await deleteAndRecord(counts, "ProjectTeam", () =>
-    prisma.projectTeam.deleteMany({
-      where: {
-        OR: [
-          { teamId: { in: scope.teamIds } },
-          { projectId: { in: scope.projectIds } },
-        ],
-      },
-    })
-  );
-  await deleteAndRecord(counts, "TeamMember", () =>
-    prisma.teamMember.deleteMany({ where: { teamId: { in: scope.teamIds } } })
-  );
-  await deleteAndRecord(counts, "Team", () =>
-    prisma.team.deleteMany({ where: { organizationId } })
-  );
   await deleteAndRecord(counts, "Project", () =>
     prisma.project.deleteMany({ where: { organizationId } })
   );

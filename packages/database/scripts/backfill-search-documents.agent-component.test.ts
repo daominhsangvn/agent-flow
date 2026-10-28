@@ -53,7 +53,6 @@ describe("runSearchDocumentBackfill — agent-component corpus (FEA-4011 Slice A
       assigneeId: null,
       status: null,
       priority: null,
-      teamId: null,
       anchorEntityId: null,
     });
   });

@@ -64,12 +64,15 @@ describe("workflow labels", () => {
     expect(expected.filter((value) => !map[value]?.trim())).toEqual([]);
   });
 
-  it("names the pre action status and event", () => {
+  it("names the triggered actions status and event", () => {
     expect(WORKFLOW_RUN_STATUS_LABELS[WorkflowRunStatus.PreActions]).toBe(
-      "Running pre actions"
+      "Running triggered actions"
     );
     expect(WORKFLOW_RUN_EVENT_LABELS[WorkflowRunEvent.Triggered]).toBe(
-      "Trigger received (pre actions)"
+      "Trigger received"
+    );
+    expect(WORKFLOW_RUN_EVENT_LABELS[WorkflowRunEvent.ExecuteCompleted]).toBe(
+      "Implementation done"
     );
   });
 

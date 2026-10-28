@@ -19,14 +19,21 @@ import { LoopCommand } from "@agentflow-ai/loops-api/commands";
 import { LoopHarness } from "@agentflow-ai/loops-api/desktop-request";
 import {
   LOOP_STEP_ARTIFACT_KEY,
+  LOOP_STEP_ATTACH_FILE_BYTES_MAX,
+  LOOP_STEP_ATTACH_FILES_MAX,
   LOOP_STEP_FILE_BYTES_MAX,
   type LoopStepConfig,
   LoopStepFile,
   LoopStepFinish,
   type LoopStepResult,
 } from "@agentflow-ai/loops-api/loop-step";
+import {
+  CLAUDE_OUTPUT_SIDECAR_FILE,
+  resolveClaudeOutputPath,
+} from "../src/main/cost/token-usage.js";
 import type { SupportedRuntimeSelection } from "../src/server/operations/harness-pipeline.js";
 import {
+  buildStepAttachments,
   buildStepLaunch,
   buildStepWorkspaceInstructions,
   collectStepFiles,
@@ -37,9 +44,10 @@ import {
   readStepOutputs,
 } from "../src/server/operations/loop-step.js";
 
+const LARGER_THAN_4MB_RE = /larger than 4 MB/;
 const TOOLKIT_MISSING_RE = /acme\/speckit is not in the loop workspace/;
 const SLASH_LAUNCH_RE =
-  /'--resume' 'session-b' '\/speckit-specify CSV export' 2>/;
+  /'--resume' 'session-b' '--' '\/speckit-specify CSV export' 2>/;
 
 let root: string;
 
@@ -118,6 +126,33 @@ describe("loop step requests", () => {
 });
 
 describe("prepareLoopStep", () => {
+  test("removes files left by an earlier task that match the step's attach globs", async () => {
+    const ws = workspace("prepare-attach");
+    const work = path.join(ws.rootDir, ".agentflow-ai", "work");
+    mkdirSync(path.join(work, "evidence-LD-5"), { recursive: true });
+    writeFileSync(path.join(work, "RESULTS-LD-5.md"), "old");
+    writeFileSync(path.join(work, "evidence-LD-5", "a.png"), "old");
+    writeFileSync(path.join(work, "notes.md"), "keep");
+
+    await prepareLoopStep({
+      step: step({
+        attach: [
+          ".agentflow-ai/work/RESULTS-*.md",
+          ".agentflow-ai/work/evidence-*/*.png",
+        ],
+      }),
+      workspaceRoot: ws.rootDir,
+      claudeWorkDir: ws.workDir,
+      artifacts: [],
+      repos: [],
+      log: () => undefined,
+    });
+
+    assert.equal(existsSync(path.join(work, "RESULTS-LD-5.md")), false);
+    assert.equal(existsSync(path.join(work, "evidence-LD-5", "a.png")), false);
+    assert.equal(existsSync(path.join(work, "notes.md")), true);
+  });
+
   test("clears the previous step's outputs and writes the step and the Issue", async () => {
     const ws = workspace("prepare");
     for (const file of [
@@ -173,6 +208,31 @@ describe("prepareLoopStep", () => {
       ),
       step()
     );
+  });
+
+  test("starts the step's own output, so it is never read from an earlier loop's archived stream", async () => {
+    const ws = workspace("output");
+    // EXECUTE's run-loop.sh archived its stream and named it in the sidecar.
+    const archived = "claude-output-20261013-104258-execute.jsonl";
+    writeFileSync(path.join(ws.workDir, archived), "{}\n");
+    writeFileSync(
+      path.join(ws.workDir, CLAUDE_OUTPUT_SIDECAR_FILE),
+      `${archived}\n`
+    );
+
+    await prepareLoopStep({
+      step: step(),
+      workspaceRoot: ws.rootDir,
+      claudeWorkDir: ws.workDir,
+      artifacts: [],
+      repos: [],
+      log: () => undefined,
+    });
+    const own = path.join(ws.workDir, "claude-output.jsonl");
+    writeFileSync(own, "{}\n");
+
+    assert.equal(resolveClaudeOutputPath(ws.workDir), own);
+    assert.equal(existsSync(path.join(ws.workDir, archived)), true);
   });
 
   test("links the toolkit's directories into the workspace root, keeping the workspace's own entries", async () => {
@@ -438,11 +498,36 @@ describe("buildStepLaunch", () => {
       stdinClaudeArgs: ["-p", "-", "--verbose"],
       claudeWorkDir: ws.workDir,
       harnessBin: "claude",
+      apiBaseUrl: "http://api.test",
     });
 
     const command = launch.args.at(-1) ?? "";
     assert.match(command, SLASH_LAUNCH_RE);
     assert.ok(!command.includes(" < "));
+  });
+
+  test("forks the resumed session when the step asks for it (a retry)", async () => {
+    const ws = workspace("launch-fork");
+    const launch = await buildStepLaunch({
+      body: {
+        command: LoopCommand.Step,
+        prompt: "Continue the step.",
+        parentSessionId: "session-f",
+        step: step({ forkSession: true }),
+      },
+      runtime: runtime(LoopHarness.Claude),
+      baseClaudeArgs: ["-p", "--verbose"],
+      stdinClaudeArgs: ["-p", "-", "--verbose"],
+      claudeWorkDir: ws.workDir,
+      harnessBin: "claude",
+      apiBaseUrl: "http://api.test",
+    });
+
+    assert.ok(
+      (launch.args.at(-1) ?? "").includes(
+        "'--resume' 'session-f' '--fork-session'"
+      )
+    );
   });
 
   test("pipes any other instruction through stdin", async () => {
@@ -454,6 +539,7 @@ describe("buildStepLaunch", () => {
       stdinClaudeArgs: ["-p", "-", "--verbose"],
       claudeWorkDir: ws.workDir,
       harnessBin: "claude",
+      apiBaseUrl: "http://api.test",
     });
 
     assert.ok((launch.args.at(-1) ?? "").includes("step-prompt.txt"));
@@ -461,5 +547,95 @@ describe("buildStepLaunch", () => {
       readFileSync(path.join(ws.workDir, "step-prompt.txt"), "utf8"),
       "Review the spec."
     );
+  });
+});
+
+describe("step attachments", () => {
+  test("a binary file round-trips through base64, a big one is skipped, extra matches are counted", () => {
+    const dir = path.join(root, "attach-unit");
+    mkdirSync(dir, { recursive: true });
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 255, 128, 10, 13]);
+    writeFileSync(path.join(dir, "a.png"), png);
+    writeFileSync(
+      path.join(dir, "big.bin"),
+      Buffer.alloc(LOOP_STEP_ATTACH_FILE_BYTES_MAX + 1)
+    );
+    const entry = (name: string) => ({
+      path: `w/${name}`,
+      file: path.join(dir, name),
+    });
+
+    const one = buildStepAttachments([entry("a.png"), entry("big.bin")]);
+    assert.equal(one.omitted, 0);
+    assert.equal(one.attachments[0].path, "w/a.png");
+    assert.deepEqual(Buffer.from(one.attachments[0].data ?? "", "base64"), png);
+    assert.equal(one.attachments[1].data, undefined);
+    assert.match(one.attachments[1].skipped ?? "", LARGER_THAN_4MB_RE);
+
+    const many = Array.from({ length: LOOP_STEP_ATTACH_FILES_MAX + 3 }, () =>
+      entry("a.png")
+    );
+    const capped = buildStepAttachments(many);
+    assert.equal(capped.attachments.length, LOOP_STEP_ATTACH_FILES_MAX);
+    assert.equal(capped.omitted, 3);
+  });
+
+  test("readStepOutputs collects attach globs from the work directory, and omits the key without attach", async () => {
+    const ws = workspace("attach-outputs");
+    const base = {
+      workspaceRoot: ws.rootDir,
+      claudeWorkDir: ws.workDir,
+      artifacts: [],
+      repos: [],
+      log: () => undefined,
+    };
+    await prepareLoopStep({ ...base, step: step({ artifacts: [] }) });
+    const plain = readStepOutputs(ws.workDir)[
+      LOOP_STEP_ARTIFACT_KEY
+    ] as LoopStepResult;
+    assert.equal("attachments" in plain, false);
+
+    await prepareLoopStep({
+      ...base,
+      step: step({ artifacts: [], attach: [".agentflow-ai/work/PRD-*.md"] }),
+    });
+    writeFileSync(path.join(ws.workDir, "PRD-X.md"), "# PRD");
+    const result = readStepOutputs(ws.workDir)[
+      LOOP_STEP_ARTIFACT_KEY
+    ] as LoopStepResult;
+    assert.equal(result.attachments?.length, 1);
+    assert.equal(result.attachments?.[0].path, ".agentflow-ai/work/PRD-X.md");
+    assert.equal(
+      Buffer.from(result.attachments?.[0].data ?? "", "base64").toString(),
+      "# PRD"
+    );
+    assert.equal("attachmentsOmitted" in result, false);
+  });
+});
+
+describe("step inputs", () => {
+  test("writes inputs before the agent starts and removes old ones on the next step", async () => {
+    const ws = workspace("inputs");
+    const base = {
+      workspaceRoot: ws.rootDir,
+      claudeWorkDir: ws.workDir,
+      artifacts: [],
+      repos: [],
+      log: () => undefined,
+    };
+    await prepareLoopStep({
+      ...base,
+      step: step({
+        inputs: [
+          { name: "PRD-X.md", content: "# PRD X" },
+          { name: "..", content: "bad" },
+        ],
+      }),
+    });
+    const file = path.join(ws.workDir, "inputs", "PRD-X.md");
+    assert.equal(readFileSync(file, "utf8"), "# PRD X");
+
+    await prepareLoopStep({ ...base, step: step() });
+    assert.equal(existsSync(path.join(ws.workDir, "inputs")), false);
   });
 });

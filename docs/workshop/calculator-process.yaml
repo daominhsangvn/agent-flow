@@ -1,0 +1,45 @@
+# Calculator delivery process (AgentFlow workshop)
+#
+# 1. Plan: the AgentFlow planning agents explore the repository and write the
+#    implementation plan. Open questions stop the run: people decide them on
+#    the Jira ticket (a recommended answer is only a suggestion).
+# 2. Approve the plan: an org admin approves or rejects the plan in AgentFlow.
+# 3. Implement: the AgentFlow implementation agents review the plan, build it
+#    with tests, check the result against the plan's decision table and push
+#    a branch (the workflow opens the pull request).
+# 4. Release notes: an agent writes release notes for the app's users; they
+#    become a document of the project and the workflow posts them on Jira.
+steps:
+  - type: agentflow.plan
+    id: plan
+    name: Plan
+    questions: ask              # open questions stop the run (needs input)
+    recommendations: suggest    # keep recommended answers as suggestions
+  - type: approval
+    id: approve-plan
+    name: Approve the plan
+  - type: agentflow.execute
+    id: implement
+    name: Implement
+    review: full                # full review; fast skips it (~15 min faster)
+  - type: agent
+    id: release-notes
+    name: Release notes
+    instruction: |
+      Write short release notes for {{issue.key}} "{{issue.title}}" for the people who use the Calculator app (not for developers).
+
+      Read what was built: the requirement in {{issue.file}}, the implementation plan in .agentflow-ai/work/plan.md, and the changes on the run's branch in the repository folder (git log, git diff main...HEAD).
+
+      Write them in Markdown to .agentflow-ai/work/release-notes.md:
+      - one sentence that sums up the change,
+      - "What's new": the user-visible changes as bullets,
+      - "How to try it": two to four steps in the app,
+      - "Known limitations": only what the requirement or the code leaves out, else "None".
+
+      Do not change any other file.
+    reply: .agentflow-ai/work/release-notes.md
+    artifacts: [.agentflow-ai/work/release-notes.md]
+    document:
+      type: DOC
+      path: .agentflow-ai/work/release-notes.md
+      title: "Release notes: {{issue.key}} {{issue.title}}"

@@ -56,8 +56,6 @@ export function makeBranchData(
     prHtmlUrl: "https://example.com/pr",
     featureSlug: null,
     featureTitle: null,
-    teamId: null,
-    teamName: null,
     projectId: null,
     projectName: null,
     headBranch: "feature/x",

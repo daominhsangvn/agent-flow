@@ -7,6 +7,7 @@ import {
 import type {
   AgentSessionAnalytics,
   AgentSessionDetail,
+  AgentSessionListItem,
   AgentSessionListResponse,
   AgentSessionUsageSummary,
   DesktopAgentSessionsPayload,
@@ -215,7 +216,7 @@ export const agentSessionsService = {
           select: { slug: true },
         })
       ),
-      // Stream + aggregate the cohort into per-(date, user, team, project,
+      // Stream + aggregate the cohort into per-(date, user, project,
       // harness, model) CSV rows in `service/csv-export.ts` (the export concern),
       // keeping this composition root thin.
       collectAggregatedCsvExportRows(where),
@@ -564,8 +565,9 @@ export const agentSessionsService = {
       // FEA-4250: the detail path reconciles cost from per-event token costs
       // (FEA-2926), so recompute KLOC/$ against that reconciled denominator to
       // keep it consistent with the served Cost.
-      // FEA-4378: the NUMERATOR must match the list projection's — the roll-up of
-      // `max(localWorkingTreeDiff, authoredPrLinesChanged)`, NOT the line-only
+      // FEA-4378/ISS-4448: the NUMERATOR must match the list projection's —
+      // `max(localWorkingTreeDiff, branchDiffLines, authoredPrLinesChanged)`,
+      // the same signals as the displayed "Lines changed" — NOT the line-only
       // local diff. `listItem.authoredPrLinesChanged` already carries the gated
       // authored-PR roll-up (0 when no head branch resolves), so reuse it here.
       // Using the local diff alone would serve the tiny working-tree ratio on the
@@ -574,10 +576,7 @@ export const agentSessionsService = {
       // `kloc` (line-only relative to cost, but roll-up-based) is taken from
       // listItem unchanged; only KLOC/$ needs the reconciled denominator.
       locPerDollar: locPerDollarFromLines(
-        Math.max(
-          (listItem.linesAdded ?? 0) + (listItem.linesRemoved ?? 0),
-          listItem.authoredPrLinesChanged ?? 0
-        ),
+        deliveredLines(listItem),
         reconciledEstimatedCost
       ),
       models: models.length > 0 ? models : (listItem.models ?? []),
@@ -901,3 +900,22 @@ export const agentSessionsService = {
     };
   },
 };
+
+/**
+ * The LOC/$ numerator: the largest of the line signals the detail view's
+ * "Lines changed" resolves (local working-tree diff, branch-level diff,
+ * authored-PR roll-up), as the list projection computes it.
+ */
+function deliveredLines(
+  item: Pick<
+    AgentSessionListItem,
+    "linesAdded" | "linesRemoved" | "branchDiffStats" | "authoredPrLinesChanged"
+  >
+): number {
+  const branchDiff = item.branchDiffStats;
+  return Math.max(
+    (item.linesAdded ?? 0) + (item.linesRemoved ?? 0),
+    (branchDiff?.linesAdded ?? 0) + (branchDiff?.linesRemoved ?? 0),
+    item.authoredPrLinesChanged ?? 0
+  );
+}

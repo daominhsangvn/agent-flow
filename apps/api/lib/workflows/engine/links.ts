@@ -29,6 +29,11 @@ export function workflowRunUrl(
   return `${orgPrefix(orgSlug)}/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}`;
 }
 
+/** A project orchestrator's case (docs/orchestrator.md). */
+export function orchestratorCaseUrl(orgSlug: string, caseId: string): string {
+  return `${orgPrefix(orgSlug)}/orchestrator/cases/${encodeURIComponent(caseId)}`;
+}
+
 export function issueUrl(orgSlug: string, slug: string): string {
   return `${orgPrefix(orgSlug)}/issues/${encodeURIComponent(slug)}`;
 }

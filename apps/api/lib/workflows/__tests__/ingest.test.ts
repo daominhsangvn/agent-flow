@@ -17,6 +17,8 @@ import {
   type IngestDbFake,
   ORG_ID,
   PRISMA_DB_NULL,
+  PROJECT_CONNECTION_ID,
+  PROJECT_ID,
   RUN_AS_USER_ID,
   TRIGGER_ID,
   TRIGGER_TYPE,
@@ -63,6 +65,10 @@ vi.mock("@/lib/workflows/engine/actions", () => ({
   enqueueRunEvents: mocks.enqueueRunEvents,
 }));
 vi.mock("@/lib/wait-until", () => ({ waitUntil: mocks.waitUntil }));
+// ingest-orchestrated.test.ts covers the orchestrator's events.
+vi.mock("@/lib/orchestrator/inbound", () => ({
+  routeToOrchestrator: () => Promise.resolve([]),
+}));
 
 let fake: IngestDbFake;
 
@@ -72,6 +78,7 @@ beforeEach(() => {
   mocks.fake = fake;
   fake.addWorkflow();
   fake.addTrigger();
+  fake.addScope("PROJ");
   mocks.hasEnabledPreActions.mockResolvedValue(false);
   mocks.enqueueRunEvents.mockResolvedValue(1);
 });
@@ -400,3 +407,173 @@ describe("toDeliveryPayload", () => {
     expect(toDeliveryPayload(undefined)).toBeNull();
   });
 });
+
+describe("ingestEvents routing to project connections", () => {
+  it("records the trigger's project and project connection on the run", async () => {
+    await ingestEvents(input());
+
+    expect(fake.runs[0]).toMatchObject({
+      projectId: PROJECT_ID,
+      projectConnectionId: PROJECT_CONNECTION_ID,
+    });
+  });
+
+  it("ignores an item whose project no project connection claims", async () => {
+    const result = await ingestEvents(
+      input({
+        events: [
+          buildEvent({ item: { ...buildEvent().item, container: "OTHER" } }),
+        ],
+      })
+    );
+
+    expect(result.outcome).toBe(IntegrationDeliveryOutcome.Ignored);
+    expect(result.detail).toContain(
+      "No project connection of this connection takes the item"
+    );
+    expect(fake.runs).toHaveLength(0);
+  });
+
+  it("starts runs only for triggers of the project connection that claims the item", async () => {
+    fake.addTrigger({ id: OTHER_TRIGGER_ID, projectConnectionId: OTHER_PC_ID });
+
+    const result = await ingestEvents(input());
+
+    expect(result.decisions.map((decision) => decision.triggerId)).toEqual([
+      TRIGGER_ID,
+    ]);
+  });
+
+  it("routes an item the project's connections share to the one it arrived on", async () => {
+    fake.addScope("PROJ", OTHER_PC_ID, OTHER_CONNECTION_ID);
+    fake.addTrigger({
+      id: OTHER_TRIGGER_ID,
+      connectionId: OTHER_CONNECTION_ID,
+      projectConnectionId: OTHER_PC_ID,
+    });
+
+    const devBot = await ingestEvents(input());
+    const qcBot = await ingestEvents(
+      input({ connection: buildLoadedConnection(OTHER_CONNECTION_ID) })
+    );
+
+    expect(devBot.decisions.map((decision) => decision.triggerId)).toEqual([
+      TRIGGER_ID,
+    ]);
+    expect(qcBot.decisions.map((decision) => decision.triggerId)).toEqual([
+      OTHER_TRIGGER_ID,
+    ]);
+  });
+
+  it("ignores an item claimed only through another connection to the site", async () => {
+    fake.addScope("FOREIGN", OTHER_PC_ID, OTHER_CONNECTION_ID);
+    const foreignItem = buildEvent({
+      item: { ...buildEvent().item, container: "FOREIGN" },
+    });
+
+    const result = await ingestEvents(input({ events: [foreignItem] }));
+
+    expect(result.outcome).toBe(IntegrationDeliveryOutcome.Ignored);
+    expect(fake.runs).toHaveLength(0);
+  });
+});
+
+const OTHER_TRIGGER_ID = "0199a5f0-0000-7000-8000-0000000000e9";
+const OTHER_PC_ID = "0199a5f0-0000-7000-8000-0000000000b9";
+const OTHER_CONNECTION_ID = "0199a5f0-0000-7000-8000-0000000000c9";
+
+describe("replies to a run's comments", () => {
+  it("resumes the waiting run that posted the replied comment, and only that run", async () => {
+    const dev = fake.addRun({ status: WorkflowRunStatus.NeedsInput });
+    const qc = fake.addRun({
+      status: WorkflowRunStatus.NeedsInput,
+      workflowId: QC_WORKFLOW_ID,
+    });
+    fake.addRunComment(dev.id, DEV_QUESTION_ID);
+    fake.addRunComment(qc.id, QC_QUESTION_ID, "action");
+
+    const result = await ingestEvents(replyInput(QC_QUESTION_ID));
+
+    expect(result.decisions).toEqual([
+      {
+        triggerId: null,
+        workflowId: QC_WORKFLOW_ID,
+        decision: IngestDecision.Resumed,
+        runId: qc.id,
+      },
+    ]);
+    expect(result.outcome).toBe(IntegrationDeliveryOutcome.Accepted);
+    expect(qc).toMatchObject({
+      status: WorkflowRunStatus.Ingesting,
+      cycle: 2,
+      occurrenceKeys: [REPLY_DEDUP_KEY],
+    });
+    expect(dev.status).toBe(WorkflowRunStatus.NeedsInput);
+    expect(mocks.advanceRun).toHaveBeenCalledWith(qc.id);
+  });
+
+  it("ignores a reply to a comment no waiting run posted", async () => {
+    const dev = fake.addRun({ status: WorkflowRunStatus.NeedsInput });
+    fake.addRunComment(dev.id, DEV_QUESTION_ID);
+
+    const result = await ingestEvents(replyInput("99999"));
+
+    expect(result.outcome).toBe(IntegrationDeliveryOutcome.Ignored);
+    expect(dev.status).toBe(WorkflowRunStatus.NeedsInput);
+  });
+
+  it("resumes nothing when the replied run no longer waits for answers", async () => {
+    const dev = fake.addRun({ status: WorkflowRunStatus.Running });
+    fake.addRunComment(dev.id, DEV_QUESTION_ID);
+
+    const result = await ingestEvents(replyInput(DEV_QUESTION_ID));
+
+    expect(result.outcome).toBe(IntegrationDeliveryOutcome.Ignored);
+    expect(dev).toMatchObject({ status: WorkflowRunStatus.Running, cycle: 1 });
+  });
+
+  it("does not resume the run again on a redelivery of the reply", async () => {
+    const dev = fake.addRun({
+      status: WorkflowRunStatus.NeedsInput,
+      occurrenceKeys: [REPLY_DEDUP_KEY],
+    });
+    fake.addRunComment(dev.id, DEV_QUESTION_ID);
+
+    const result = await ingestEvents(
+      replyInput(DEV_QUESTION_ID, "delivery-2")
+    );
+
+    expect(result.decisions[0]?.decision).toBe(IngestDecision.Duplicate);
+    expect(dev.status).toBe(WorkflowRunStatus.NeedsInput);
+  });
+});
+
+const QC_WORKFLOW_ID = "0199a5f0-0000-7000-8000-0000000000f2";
+const DEV_QUESTION_ID = "10087";
+const QC_QUESTION_ID = "10095";
+const REPLY_DEDUP_KEY = "PROJ-7:reply:10100";
+const REPLY_TRIGGER_TYPE = "fake.comment_reply";
+
+/** A reply event (no trigger takes its type) on a provider with answerReply. */
+function replyInput(
+  repliedTo: string,
+  deliveryId = "delivery-reply"
+): IngestEventsInput {
+  const connection = buildLoadedConnection();
+  connection.provider.answerReply = (event) =>
+    event.triggerType === REPLY_TRIGGER_TYPE
+      ? String(event.attributes.repliedTo)
+      : null;
+  return input({
+    connection,
+    deliveryId,
+    eventType: "comment_created",
+    events: [
+      buildEvent({
+        triggerType: REPLY_TRIGGER_TYPE,
+        dedupKey: REPLY_DEDUP_KEY,
+        attributes: { projectKey: "PROJ", repliedTo },
+      }),
+    ],
+  });
+}

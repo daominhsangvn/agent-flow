@@ -8,6 +8,8 @@ export const AzureDevOpsTriggerType = {
   WorkItemAssigned: "azure_devops.work_item_assigned",
   WorkItemTagged: "azure_devops.work_item_tagged",
   WorkItemMentioned: "azure_devops.work_item_mentioned",
+  /** Assigned to the bot, tagged and/or mentioned, combined with AND or OR. */
+  WorkItemConditions: "azure_devops.work_item_conditions",
 } as const;
 export type AzureDevOpsTriggerType =
   (typeof AzureDevOpsTriggerType)[keyof typeof AzureDevOpsTriggerType];
@@ -17,6 +19,8 @@ export const AzureDevOpsActionType = {
   UpdateState: "azure_devops.update_state",
   CreatePullRequest: "azure_devops.create_pull_request",
   RunPipeline: "azure_devops.run_pipeline",
+  UpdateTags: "azure_devops.update_tags",
+  AddLink: "azure_devops.add_link",
 } as const;
 export type AzureDevOpsActionType =
   (typeof AzureDevOpsActionType)[keyof typeof AzureDevOpsActionType];
@@ -60,8 +64,14 @@ export const AdoEventAttribute = {
   AreaPath: "areaPath",
   Tags: "tags",
   State: "state",
-  /** Tags added by the change (work_item_tagged events only). */
+  /** Tags added by the change (work_item_tagged and work_item_conditions events). */
   AddedTags: "addedTags",
+  /** The work item is assigned to the bot after the change (work_item_conditions events). */
+  AssignedToBot: "assignedToBot",
+  /** The change assigned the work item to the bot, or it was created assigned to it. */
+  BecameAssigned: "becameAssigned",
+  /** The change is a mention of the bot (a comment, or the description of a new work item). */
+  Mentioned: "mentioned",
 } as const;
 export type AdoEventAttribute =
   (typeof AdoEventAttribute)[keyof typeof AdoEventAttribute];
@@ -87,9 +97,14 @@ export type AdoTextFormat = (typeof AdoTextFormat)[keyof typeof AdoTextFormat];
 /** JSON Patch operations used to update work items. */
 export const JsonPatchOperation = {
   Add: "add",
+  /** Fails the whole patch when the value differs (e.g. the revision read). */
+  Test: "test",
 } as const;
 export type JsonPatchOperation =
   (typeof JsonPatchOperation)[keyof typeof JsonPatchOperation];
 
 /** Relation type of a file attached to a work item. */
 export const ADO_ATTACHMENT_RELATION = "AttachedFile";
+
+/** Relation type of a web link on a work item. */
+export const ADO_HYPERLINK_RELATION = "Hyperlink";

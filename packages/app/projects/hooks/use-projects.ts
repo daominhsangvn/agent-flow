@@ -26,7 +26,6 @@ export type ProjectListFilters = {
 
 // Queries
 export function useProjects(
-  teamId?: string,
   options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">,
   filters?: ProjectListFilters
 ) {
@@ -34,30 +33,11 @@ export function useProjects(
   const normalizedFilters = normalizeProjectListFilters(filters);
 
   return useQuery({
-    queryKey: projectKeys.list({ teamId, ...normalizedFilters }),
+    queryKey: projectKeys.list({ ...normalizedFilters }),
     queryFn: () => {
-      const query = buildProjectListQuery(teamId, normalizedFilters);
+      const query = buildProjectListQuery(normalizedFilters);
       return apiClient.get<ProjectWithDetails[]>(`/projects${query}`);
     },
-    ...options,
-  });
-}
-
-export function useProjectsByTeam(
-  teamId: string,
-  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">,
-  filters?: ProjectListFilters
-) {
-  const apiClient = useApiClient();
-  const normalizedFilters = normalizeProjectListFilters(filters);
-
-  return useQuery({
-    queryKey: projectKeys.list({ teamId, ...normalizedFilters }),
-    queryFn: () => {
-      const query = buildProjectListQuery(teamId, normalizedFilters);
-      return apiClient.get<ProjectWithDetails[]>(`/projects${query}`);
-    },
-    enabled: !!teamId,
     ...options,
   });
 }
@@ -87,13 +67,8 @@ export function useCreateProject() {
         ...input,
         targetDate: input.targetDate?.toISOString(),
       }),
-    onSuccess: (result) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
-      if (result.teams.length) {
-        queryClient.invalidateQueries({
-          queryKey: projectKeys.recent(result.teams[0].id),
-        });
-      }
     },
   });
 }
@@ -123,11 +98,6 @@ export function useUpdateProject() {
       if (result.slug) {
         queryClient.invalidateQueries({
           queryKey: projectKeys.bySlug(result.slug),
-        });
-      }
-      if (result.teams.length) {
-        queryClient.invalidateQueries({
-          queryKey: projectKeys.recent(result.teams[0].id),
         });
       }
     },
@@ -356,11 +326,8 @@ function normalizeProjectStatuses(statuses: ProjectStatus[]): ProjectStatus[] {
   return [...new Set(statuses)].sort();
 }
 
-function buildProjectListQuery(teamId?: string, filters?: ProjectListFilters) {
+function buildProjectListQuery(filters?: ProjectListFilters) {
   const searchParams = new URLSearchParams();
-  if (teamId) {
-    searchParams.set("teamId", teamId);
-  }
   if (filters?.status?.length) {
     searchParams.set("status", filters.status.join(","));
   }

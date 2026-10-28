@@ -163,10 +163,6 @@ vi.mock("../desktop-telemetry-handler", () => ({
   handleTelemetryEvent: vi.fn().mockReturnValue({ ok: true, emits: [] }),
 }));
 
-vi.mock("../agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: vi.fn(),
-}));
-
 import { initDesktopGatewaySocketServer } from "../desktop-gateway-socket-server";
 
 const ORGANIZATION_ID = "org-1";

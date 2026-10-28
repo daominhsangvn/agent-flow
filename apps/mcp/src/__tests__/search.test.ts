@@ -39,8 +39,6 @@ describe("search MCP tool", () => {
           slug: "PRO-2",
           status: "ACTIVE",
           priority: null,
-          teamName: "Core",
-          teamId: "team-1",
           assignee: null,
           updatedAt: "2026-05-13T16:31:44.128Z",
         },
@@ -71,8 +69,6 @@ describe("search MCP tool", () => {
       id: "proj-1",
       name: "Auth",
       slug: "PRO-2",
-      teamName: "Core",
-      teamId: "team-1",
       assignee: null,
     });
   });

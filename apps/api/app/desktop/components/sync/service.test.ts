@@ -161,10 +161,6 @@ function buildInput(components: SyncedComponentInput[]) {
     // fixture shape matches it structurally.
     payload: buildPayload(components) as never,
     userId: USER_ID,
-    // FEA-4169: inject the org-policy gate as allowed so the write-path tests
-    // exercise persistence; the DB-backed default would need withDb.organization
-    // (not part of this unit's fake db). The policy-off case is covered below.
-    isOrgPolicyEnabled: async () => true,
   };
 }
 
@@ -274,26 +270,6 @@ describe("desktopComponentsSyncService.sync", () => {
       USER_ID,
       CLERK_USER_ID
     );
-  });
-
-  it("FEA-4169: denies (Status.Forbidden) when the org session-sync policy is OFF, without any write", async () => {
-    installOwnedTarget();
-    const isOrgPolicyEnabled = vi.fn(async () => false);
-
-    const result = await desktopComponentsSyncService.sync({
-      ...buildInput([buildComponent()]),
-      isOrgPolicyEnabled,
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe(Status.Forbidden);
-    }
-    // Gate is org-scoped and enforced BEFORE any DB write.
-    expect(isOrgPolicyEnabled).toHaveBeenCalledWith(ORG_ID);
-    expect(mocks.withDb).not.toHaveBeenCalled();
-    expect(mocks.upsert).not.toHaveBeenCalled();
-    expect(mocks.relinkActiveForComputeTarget).not.toHaveBeenCalled();
   });
 
   it("upserts each component keyed by (computeTargetId, componentKind, externalComponentId)", async () => {

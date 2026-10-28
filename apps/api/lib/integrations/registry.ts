@@ -4,15 +4,18 @@ import {
 } from "@repo/api/src/types/integration";
 import { azureDevOpsProvider } from "./providers/azure-devops/provider";
 import { bitbucketProvider } from "./providers/bitbucket/provider";
+import { confluenceProvider } from "./providers/confluence/provider";
 import { githubProvider } from "./providers/github/provider";
 import { jiraProvider } from "./providers/jira/provider";
 import { localGitProvider } from "./providers/local-git/provider";
 import { microsoftTeamsProvider } from "./providers/microsoft-teams/provider";
 import { webhookProvider } from "./providers/webhook/provider";
-import type {
-  IntegrationActionDefinition,
-  IntegrationProviderDefinition,
-  IntegrationTriggerDefinition,
+import { isProvidedByServer } from "./server-connections";
+import {
+  actionTarget,
+  type IntegrationActionDefinition,
+  type IntegrationProviderDefinition,
+  type IntegrationTriggerDefinition,
 } from "./types";
 
 // biome-ignore lint/suspicious/noExplicitAny: providers have heterogeneous config types
@@ -31,6 +34,7 @@ const PROVIDERS: readonly AnyProvider[] = [
   bitbucketProvider,
   localGitProvider,
   microsoftTeamsProvider,
+  confluenceProvider,
   webhookProvider,
 ];
 
@@ -75,9 +79,11 @@ export function toProviderSummary(
     docsUrl: provider.docsUrl ?? null,
     connectionFields: provider.connection.fields,
     credentialOriginFields: provider.connection.credentialOriginFields ?? [],
+    projectSettingsFields: provider.project?.settingsFields ?? [],
     deliveryModes: provider.inbound?.deliveryModes ?? [],
     capabilities: providerCapabilities(provider),
     builtIn: provider.builtIn === true,
+    providedByServer: isProvidedByServer(provider.key),
     triggers: provider.triggers.map((trigger) => ({
       key: trigger.key,
       displayName: trigger.displayName,
@@ -94,6 +100,9 @@ export function toProviderSummary(
       description: action.description,
       configFields: action.configFields,
       defaultEvents: action.defaultEvents,
+      repositoryScoped: action.repositoryScoped ?? false,
+      target: actionTarget(action),
+      sourceOperation: action.sourceOperation ?? null,
     })),
   };
 }
@@ -113,4 +122,16 @@ function providerCapabilities(provider: AnyProvider): IntegrationCapability[] {
     capabilities.push(IntegrationCapability.RepositoryCreation);
   }
   return capabilities;
+}
+
+/**
+ * Whether the type is a repository-scoped action ("Create pull request") of
+ * any provider. Action keys are globally unique, so the type alone decides.
+ */
+export function isRepositoryScopedActionType(actionType: string): boolean {
+  return PROVIDERS.some((provider) =>
+    provider.actions.some(
+      (action) => action.key === actionType && action.repositoryScoped
+    )
+  );
 }

@@ -73,6 +73,21 @@ describe("getModelPricing", () => {
     expect(pricing.output).toBe(15);
   });
 
+  it("prices Sonnet 5.5 and Haiku 5.5 at their own rates, not the default", () => {
+    expect(getModelPricing("claude-sonnet-5-5")).toEqual({
+      input: 2,
+      output: 10,
+      cacheWrite: 2.5,
+      cacheRead: 0.1,
+    });
+    expect(getModelPricing("claude-haiku-5-5")).toEqual({
+      input: 0.1,
+      output: 0.5,
+      cacheWrite: 0.125,
+      cacheRead: 0.01,
+    });
+  });
+
   it("falls back to default for unknown models", () => {
     const pricing = getModelPricing("unknown-model");
     expect(pricing).toEqual(DEFAULT_PRICING);

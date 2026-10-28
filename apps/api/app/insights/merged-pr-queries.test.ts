@@ -34,7 +34,6 @@ import {
 } from "./merged-pr-queries";
 
 const USER = "user-1";
-const TEAM = "team-1";
 const CTX = { organizationId: ORG, userId: USER, scope: InsightsScope.Org };
 const START = new Date("2026-05-01T00:00:00.000Z");
 const END = new Date("2026-06-01T00:00:00.000Z");
@@ -189,37 +188,5 @@ describe("the distinct-PR counts' tenant scope", () => {
     expect(recorded[0].text).toContain("a.created_by_id = ");
     expect(recorded[0].values).toContain(ORG);
     expect(recorded[0].values).toContain(USER);
-  });
-
-  it("narrows the Team scope to that team's members", async () => {
-    const recorded: Recorded[] = [];
-    mockDb(recorded);
-
-    await countClosedPrs(
-      { ...CTX, scope: InsightsScope.Team, teamId: TEAM },
-      START,
-      END
-    );
-
-    expect(recorded[0].text).toContain("FROM team_members tm");
-    expect(recorded[0].values).toContain(TEAM);
-    // These are tenant reads (apps/api/AGENTS.md): the team filter narrows WITHIN
-    // an org, it does not replace the org bound. Asserting only `team_members`
-    // stays green if the Team branch loses `a.organization_id`, which would let a
-    // count span organizations — the worst outcome available in this file.
-    expect(recorded[0].text).toContain("a.organization_id");
-    expect(recorded[0].values).toContain(ORG);
-  });
-
-  it("matches nothing for a Team scope with no team", async () => {
-    const recorded: Recorded[] = [];
-    mockDb(recorded);
-
-    await countClosedPrs({ ...CTX, scope: InsightsScope.Team }, START, END);
-
-    // Mirrors artifactScope's `id: { in: [] }` — a team-less team scope reads
-    // as no artifacts, never as the whole org.
-    expect(recorded[0].text).toContain("false");
-    expect(recorded[0].values).not.toContain(ORG);
   });
 });

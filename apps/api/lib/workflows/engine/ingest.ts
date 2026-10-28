@@ -8,17 +8,23 @@ import {
   WorkflowRunEvent,
   WorkflowRunStatus,
 } from "@repo/api/src/types/workflow";
+import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import { Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { v7 as uuidv7 } from "uuid";
+import { z } from "zod";
 import { getPrismaErrorCode } from "@/lib/db-utils";
 import type { LoadedConnection } from "@/lib/integrations/connection-service";
+import { itemScopeKey } from "@/lib/integrations/project-connections";
 import { findTriggerDefinition } from "@/lib/integrations/registry";
 import type { InboundEvent } from "@/lib/integrations/types";
 import { jsonValueSchema } from "@/lib/json-schema";
+import { routeToOrchestrator } from "@/lib/orchestrator/inbound";
 import { waitUntil } from "@/lib/wait-until";
 import { enqueueRunEvents, hasEnabledPreActions } from "./actions";
 import { advanceRun } from "./advance";
+import { findRepliedRuns, type RepliedRun } from "./answer-replies";
+import { routeReviewSignals } from "./review-signals";
 import { buildRunSource, toJsonObject } from "./run-data";
 
 /**
@@ -27,8 +33,14 @@ import { buildRunSource, toJsonObject } from "./run-data";
  *
  * 1. The delivery is recorded once per (connection, deliveryId); a provider
  *    retry is reported as `duplicate` and does nothing.
- * 2. Each event is matched against the enabled triggers of the connection
- *    (manual runs skip the filters of the chosen trigger).
+ * 2. Each event is routed to the project connection of this connection that
+ *    claims its item (ProjectConnectionScope: the Jira project key or Azure
+ *    DevOps project on the connection's site). Project connections of one
+ *    project may claim the same item through different connections (one Jira
+ *    bot each); each hears it on its own connection, with its own bot. An
+ *    item nobody claims through this connection is ignored.
+ *    The event is then matched against that project connection's enabled
+ *    triggers (manual runs skip the filters of the chosen trigger).
  * 3. Per matching trigger, under an advisory lock on (workflow, source item):
  *    an occurrence already seen (a run's dedupKey or one of the occurrence
  *    keys that resumed it) does nothing, an active run for the same item is
@@ -55,11 +67,14 @@ export const IngestDecision = {
   Duplicate: "duplicate",
   /** Another run for the same item is still active. */
   Active: "active",
+  /** A run waiting on the item took the event as a review or approval signal. */
+  Signaled: "signaled",
 } as const;
 export type IngestDecision =
   (typeof IngestDecision)[keyof typeof IngestDecision];
 
 export type IngestEventsInput = {
+  /** The organization connection the delivery arrived on. */
   connection: LoadedConnection;
   source: IntegrationDeliverySource;
   /** Provider delivery id, unique per connection. */
@@ -75,7 +90,8 @@ export type IngestEventsInput = {
 };
 
 export type IngestRunDecision = {
-  triggerId: string;
+  /** null for a review signal (review-signals.ts) or a reply (answer-replies.ts), which no trigger matched. */
+  triggerId: string | null;
   workflowId: string;
   decision: IngestDecision;
   runId: string;
@@ -106,16 +122,17 @@ export async function ingestEvents(
     };
   }
 
-  let decisions: IngestRunDecision[];
+  let decided: DecidedRuns;
   try {
-    decisions = await decideRuns(input, deliveryRowId);
+    decided = await decideRuns(input, deliveryRowId);
   } catch (error) {
     // Forget the delivery so the provider's retry is processed again.
     await discardDelivery(deliveryRowId);
     throw error;
   }
 
-  const summary = summarizeDecisions(input, decisions);
+  const { decisions } = decided;
+  const summary = summarizeDecisions(input, decided);
   await finishDelivery(input, deliveryRowId, summary);
   for (const decision of decisions) {
     if (startsWork(decision.decision)) {
@@ -154,6 +171,8 @@ type TriggerRow = {
   type: string;
   config: unknown;
   workflowId: string;
+  projectId: string;
+  projectConnectionId: string | null;
   workflow: { agentConfig: unknown; runAsUserId: string | null };
 };
 
@@ -168,6 +187,8 @@ const TRIGGER_SELECT = {
   type: true,
   config: true,
   workflowId: true,
+  projectId: true,
+  projectConnectionId: true,
   workflow: { select: { agentConfig: true, runAsUserId: true } },
 } as const;
 
@@ -197,26 +218,110 @@ async function insertDelivery(
   return result.count === 1;
 }
 
+/** The decisions, and how many events no project connection takes. */
+type DecidedRuns = {
+  decisions: IngestRunDecision[];
+  unrouted: number;
+  /** New messages handed to project orchestrators. */
+  orchestrated: number;
+};
+
 async function decideRuns(
   input: IngestEventsInput,
   deliveryRowId: string
-): Promise<IngestRunDecision[]> {
+): Promise<DecidedRuns> {
   if (input.events.length === 0) {
-    return [];
+    return { decisions: [], unrouted: 0, orchestrated: 0 };
   }
   const triggers = await loadTriggers(input);
+  const routes = await routeEvents(input, triggers);
   const decisions: IngestRunDecision[] = [];
-  for (const event of input.events) {
+  let unrouted = 0;
+  let orchestrated = 0;
+  for (const [index, event] of input.events.entries()) {
+    const route = routes[index];
+    if (route === undefined) {
+      unrouted += 1;
+      continue;
+    }
+    const replied =
+      route && !input.manualTriggerId
+        ? await findRepliedRuns({
+            connection: input.connection,
+            event,
+            projectConnectionId: route,
+            sourceKey: eventSourceKey(event),
+          })
+        : [];
+    for (const run of replied) {
+      decisions.push(await decideReply(input, event, run));
+    }
+    const signalled =
+      route && !input.manualTriggerId
+        ? await routeReviewSignals({
+            connection: input.connection,
+            event,
+            projectConnectionId: route,
+            sourceKey: eventSourceKey(event),
+          })
+        : [];
+    for (const run of signalled) {
+      decisions.push({
+        triggerId: null,
+        workflowId: run.workflowId,
+        decision: IngestDecision.Signaled,
+        runId: run.runId,
+      });
+    }
+    // A workflow whose run took the signal does not see it as a trigger.
     const matching = triggers.filter(
       (trigger) =>
         trigger.type === event.triggerType &&
+        trigger.projectConnectionId === route &&
+        !signalled.some((run) => run.workflowId === trigger.workflowId) &&
+        !isOrchestratedTrigger(trigger) &&
         triggerMatches(input, trigger, event)
     );
     for (const trigger of matching) {
-      decisions.push(await decideRun(input, event, trigger, deliveryRowId));
+      decisions.push(await decideRun(input, event, { trigger, deliveryRowId }));
+    }
+    if (route) {
+      orchestrated += await routeOrchestrated(input, event, route, triggers);
     }
   }
-  return decisions;
+  return { decisions, unrouted, orchestrated };
+}
+
+/**
+ * Hands the event to each orchestrated workflow whose trigger matches it, or
+ * whose orchestrator posted the message it replies to (docs/orchestrator.md).
+ * Returns the number of new messages recorded across those workflows.
+ */
+async function routeOrchestrated(
+  input: IngestEventsInput,
+  event: InboundEvent,
+  route: string,
+  triggers: TriggerRow[]
+): Promise<number> {
+  const workflows = triggers
+    .filter(
+      (trigger) =>
+        trigger.type === event.triggerType &&
+        trigger.projectConnectionId === route &&
+        isOrchestratedTrigger(trigger) &&
+        triggerMatches(input, trigger, event)
+    )
+    .map((trigger) => ({
+      workflowId: trigger.workflowId,
+      projectId: trigger.projectId,
+    }));
+  const routed = await routeToOrchestrator({
+    connection: input.connection,
+    event,
+    projectConnectionId: route,
+    workflows,
+  });
+  return routed.filter((result) => result.created).length;
 }
 
 async function loadTriggers(input: IngestEventsInput): Promise<TriggerRow[]> {
@@ -289,17 +394,14 @@ function triggerMatches(
 async function decideRun(
   input: IngestEventsInput,
   event: InboundEvent,
-  trigger: TriggerRow,
-  deliveryRowId: string
+  target: { trigger: TriggerRow; deliveryRowId: string }
 ): Promise<IngestRunDecision> {
+  const { trigger, deliveryRowId } = target;
   const dedupKey = buildDedupKey(
     event.dedupKey,
     input.manualTriggerId ? deliveryRowId : null
   );
-  const sourceKey = `${event.item.provider}:${event.item.key}`.slice(
-    0,
-    DEDUP_KEY_MAX_LENGTH
-  );
+  const sourceKey = eventSourceKey(event);
   const base = { triggerId: trigger.id, workflowId: trigger.workflowId };
   try {
     const decided = await withDb.tx(async (tx) => {
@@ -374,6 +476,8 @@ async function decideRunLocked(
       data: {
         organizationId: input.connection.record.organizationId,
         workflowId: trigger.workflowId,
+        projectId: trigger.projectId,
+        projectConnectionId: trigger.projectConnectionId,
         triggerId: trigger.id,
         connectionId: input.connection.record.id,
         deliveryId: keys.deliveryRowId,
@@ -398,7 +502,7 @@ async function decideRunLocked(
 }
 
 /**
- * needs_input -> next cycle: pre_actions (with this cycle's run.triggered
+ * needs_input -> next cycle: pre_actions (with this cycle's workflow.triggered
  * rows, in the caller's transaction) when the workflow has enabled pre
  * actions, else ingesting (Issue refreshed, PLAN again). The occurrence key is
  * remembered so a replay of it never starts a new run.
@@ -520,26 +624,37 @@ async function discardDelivery(deliveryRowId: string): Promise<void> {
 
 function summarizeDecisions(
   input: IngestEventsInput,
-  decisions: IngestRunDecision[]
+  { decisions, unrouted, orchestrated }: DecidedRuns
 ): DecisionSummary {
   const created = countDecisions(decisions, IngestDecision.Created);
-  const resumed = countDecisions(decisions, IngestDecision.Resumed);
-  if (created + resumed > 0) {
+  const resumed =
+    countDecisions(decisions, IngestDecision.Resumed) +
+    countDecisions(decisions, IngestDecision.Signaled);
+  if (created + resumed + orchestrated > 0) {
     return {
       outcome: IntegrationDeliveryOutcome.Accepted,
-      detail: acceptedDetail(created, resumed),
+      detail: acceptedDetail(created, resumed, orchestrated),
       runCount: created + resumed,
     };
   }
   return {
     outcome: IntegrationDeliveryOutcome.Ignored,
-    detail: ignoredDetail(input, decisions),
+    detail: ignoredDetail(input, decisions, unrouted),
     runCount: 0,
   };
 }
 
-function acceptedDetail(created: number, resumed: number): string {
+function acceptedDetail(
+  created: number,
+  resumed: number,
+  orchestrated: number
+): string {
   const parts: string[] = [];
+  if (orchestrated > 0) {
+    parts.push(
+      `${orchestrated} message${orchestrated === 1 ? "" : "s"} to the orchestrator`
+    );
+  }
   if (created > 0) {
     parts.push(`${created} run${created === 1 ? "" : "s"} started`);
   }
@@ -551,10 +666,14 @@ function acceptedDetail(created: number, resumed: number): string {
 
 function ignoredDetail(
   input: IngestEventsInput,
-  decisions: IngestRunDecision[]
+  decisions: IngestRunDecision[],
+  unrouted: number
 ): string {
   if (input.events.length === 0) {
     return input.ignoredReason ?? "The delivery contained no supported event";
+  }
+  if (unrouted === input.events.length) {
+    return "No project connection of this connection takes the item (its project is in no project's settings)";
   }
   if (decisions.length === 0) {
     return "No enabled trigger matched";
@@ -574,7 +693,17 @@ function countDecisions(
 
 function startsWork(decision: IngestDecision): boolean {
   return (
-    decision === IngestDecision.Created || decision === IngestDecision.Resumed
+    decision === IngestDecision.Created ||
+    decision === IngestDecision.Resumed ||
+    decision === IngestDecision.Signaled
+  );
+}
+
+/** The run's item, as runs store it (WorkflowRun.sourceKey). */
+function eventSourceKey(event: InboundEvent): string {
+  return `${event.item.provider}:${event.item.key}`.slice(
+    0,
+    DEDUP_KEY_MAX_LENGTH
   );
 }
 
@@ -593,4 +722,124 @@ function parseJsonText(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+/**
+ * The project connection each event belongs to, by index: an id, null for
+ * a connection without project settings (the workflow's built-in HTTP
+ * endpoint), or undefined when the event is ignored.
+ */
+async function routeEvents(
+  input: IngestEventsInput,
+  triggers: readonly TriggerRow[]
+): Promise<Array<string | null | undefined>> {
+  if (input.manualTriggerId) {
+    const route = triggers[0]?.projectConnectionId;
+    return input.events.map(() => route);
+  }
+  const { provider, runtime } = input.connection;
+  if (!provider.project) {
+    return input.events.map(() => null);
+  }
+  const scopeKeys = input.events.map((event) =>
+    itemScopeKey(provider, runtime.config, event.item.container)
+  );
+  const owners = await loadScopeOwners(
+    input,
+    scopeKeys.flatMap((key) => (key ? [key] : []))
+  );
+  return scopeKeys.map((key) => (key ? owners.get(key) : undefined));
+}
+
+/** The project connection of this connection claiming each scope. */
+async function loadScopeOwners(
+  input: IngestEventsInput,
+  scopeKeys: readonly string[]
+): Promise<Map<string, string>> {
+  if (scopeKeys.length === 0) {
+    return new Map();
+  }
+  const { organizationId, id: connectionId } = input.connection.record;
+  const rows = await withDb((db) =>
+    db.projectConnectionScope.findMany({
+      where: {
+        organizationId,
+        scopeKey: { in: [...new Set(scopeKeys)] },
+        projectConnection: { connectionId },
+      },
+      select: { scopeKey: true, projectConnectionId: true },
+    })
+  );
+  return new Map(rows.map((row) => [row.scopeKey, row.projectConnectionId]));
+}
+
+/**
+ * A reply to a comment of a run waiting for answers resumes it, like the
+ * triggers do (answer-replies.ts), under the same lock; the reply is
+ * remembered as an occurrence so a redelivery resumes nothing.
+ */
+async function decideReply(
+  input: IngestEventsInput,
+  event: InboundEvent,
+  replied: RepliedRun
+): Promise<IngestRunDecision> {
+  const sourceKey = eventSourceKey(event);
+  const dedupKey = buildDedupKey(event.dedupKey, null);
+  const decision = await withDb.tx(async (tx) => {
+    const lockKey = `workflow-run:${replied.workflowId}:${sourceKey}`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0::bigint))`;
+    const existing = await findRunByOccurrence(replied.workflowId, {
+      dedupKey,
+      sourceKey,
+    });
+    if (existing) {
+      return IngestDecision.Duplicate;
+    }
+    // The item's latest active run, as decideRunLocked reads it: the replied
+    // run resumes only while it is that run and still waits for answers.
+    const active = await withDb((db) =>
+      db.workflowRun.findFirst({
+        where: {
+          workflowId: replied.workflowId,
+          sourceKey,
+          status: { in: [...WORKFLOW_RUN_ACTIVE_STATUSES] },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, status: true, cycle: true },
+      })
+    );
+    const resumed =
+      active?.id === replied.runId &&
+      active.status === WorkflowRunStatus.NeedsInput &&
+      (await resumeRun({
+        run: {
+          ...active,
+          organizationId: input.connection.record.organizationId,
+        },
+        workflowId: replied.workflowId,
+        event,
+        dedupKey,
+        now: new Date(),
+      }));
+    return resumed ? IngestDecision.Resumed : IngestDecision.Active;
+  });
+  return {
+    triggerId: null,
+    workflowId: replied.workflowId,
+    decision,
+    runId: replied.runId,
+  };
+}
+
+const orchestratedAgentSchema = z.object({
+  mode: z.literal(WorkflowAgentMode.Orchestrated),
+});
+
+/**
+ * An orchestrated workflow starts no run: its requests go to the project's
+ * orchestrator (docs/orchestrator.md) instead.
+ */
+function isOrchestratedTrigger(trigger: TriggerRow): boolean {
+  return orchestratedAgentSchema.safeParse(trigger.workflow.agentConfig)
+    .success;
 }

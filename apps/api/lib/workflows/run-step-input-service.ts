@@ -1,6 +1,8 @@
 import {
   type AnswerStepQuestionsInput,
   type DecidedStepApproval,
+  type DecidedStepReview,
+  ReviewSignalVia,
   type RunStepState,
   runStepStateSchema,
 } from "@repo/api/src/types/project-process";
@@ -101,6 +103,55 @@ export const workflowRunStepInputService = {
           comment: input.comment,
           decidedBy: userId,
           decidedAt: new Date().toISOString(),
+        },
+      },
+    };
+    return await record(
+      organizationId,
+      run,
+      WorkflowRunStatus.NeedsApproval,
+      next
+    );
+  },
+
+  /**
+   * Records the decision on the step under review the run waits for:
+   * approve (or complete) goes on, feedback runs the step again with the
+   * comment, reject fails the run. Who may decide what is the route's check.
+   */
+  async decideReview(
+    organizationId: string,
+    userId: string,
+    runId: string,
+    input: DecidedStepReview
+  ): Promise<Result<WorkflowRunDetail, RunServiceError>> {
+    const run = await loadRun(organizationId, runId);
+    if (!run) {
+      return notFound();
+    }
+    const state = readStepState(run.stepState);
+    const review = state?.review;
+    if (
+      !(state && review?.requestedAt) ||
+      run.status !== WorkflowRunStatus.NeedsApproval
+    ) {
+      return conflict("The run is not waiting for a review.");
+    }
+    if (review.decision) {
+      return conflict("The review was already decided.");
+    }
+    const next: RunStepState = {
+      ...state,
+      review: {
+        ...review,
+        decision: {
+          kind: input.decision,
+          via: ReviewSignalVia.App,
+          text: input.comment,
+          by: userId,
+          author: null,
+          label: null,
+          at: new Date().toISOString(),
         },
       },
     };

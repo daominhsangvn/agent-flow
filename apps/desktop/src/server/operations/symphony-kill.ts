@@ -9,6 +9,7 @@ import {
 import path from "node:path";
 import type { JobStore, LocalJob } from "../../main/jobs/job-store.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
+import { killProcessTree } from "../platform-shell.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
 import { parseBody } from "./parse-body.js";
 import { json } from "./response-utils.js";
@@ -110,12 +111,12 @@ export function registerSymphonyKillRoutes(
       }
 
       try {
-        process.kill(-pid, "SIGTERM");
+        killProcessTree(pid, "SIGTERM");
         await new Promise((resolve) => setTimeout(resolve, 500));
 
         try {
           process.kill(pid, 0);
-          process.kill(-pid, "SIGKILL");
+          killProcessTree(pid, "SIGKILL");
         } catch {
           // Process already gone
         }

@@ -132,6 +132,22 @@ export type ComputeTargetCapabilities = {
   loopRunnerRefreshSupported?: boolean;
   /** Desktop supports the loop runner heartbeat protocol. */
   loopRunnerHeartbeatSupported?: boolean;
+  /**
+   * A STEP loop's `step.forkSession` resumes its parent's session in a copy
+   * (`--fork-session`). A runner without it drops the field and resumes the
+   * parent's session itself, so the API does not fork on it.
+   */
+  loopStepForkSession?: boolean;
+  /**
+   * The runner reads AGENTFLOW.md from a project's toolkit repository on
+   * `capabilities_refresh`. Older runners lack it and the API refuses the refresh.
+   */
+  toolkitCapabilitiesRefresh?: boolean;
+  /**
+   * A personal runner (docs/runner.md "Personal runner"): it runs only the
+   * process steps of this project, in a folder of its computer.
+   */
+  personalRunner?: { projectKey: string; parallel: boolean };
 };
 
 export const EMPTY_CAPABILITIES: ComputeTargetCapabilities = {

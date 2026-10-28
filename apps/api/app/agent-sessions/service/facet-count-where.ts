@@ -75,7 +75,7 @@ import { buildUsageSummaryWhereParts } from "./usage-summary-where";
  * claim to: separating a user-operated `userId` from the pinned scope is a
  * change to the Analytics query contract, not to this predicate.
  *
- * The date window, quality, team scope, and the autonomy/cost/change/PR clauses
+ * The date window, quality and the autonomy/cost/change/PR clauses
  * likewise stay on every facet: none of them is the counted dimension.
  */
 

@@ -6,6 +6,7 @@ import path from "node:path";
 import { Observability } from "../../main/telemetry/observability.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import { validateOutboundUrlForSurface } from "../outbound-url-policy.js";
+import { killProcessTree } from "../platform-shell.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
 import { getShellEnv, getShellPath } from "../shell-path.js";
 import { parseBody } from "./parse-body.js";
@@ -270,11 +271,11 @@ export function registerDeployRoutes(
     }
 
     try {
-      process.kill(-pid, "SIGTERM");
+      killProcessTree(pid, "SIGTERM");
       await wait(500);
       try {
         process.kill(pid, 0);
-        process.kill(-pid, "SIGKILL");
+        killProcessTree(pid, "SIGKILL");
       } catch {
         // Process is already gone.
       }
@@ -926,7 +927,7 @@ async function readJsonFile<T>(targetPath: string): Promise<T | null> {
 
 function killByPid(pid: number): "killed" | "error" {
   try {
-    process.kill(-pid, "SIGTERM");
+    killProcessTree(pid, "SIGTERM");
     return "killed";
   } catch {
     // Try direct PID fallback.

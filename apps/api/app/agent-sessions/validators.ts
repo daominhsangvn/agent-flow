@@ -1,8 +1,5 @@
 import { SESSION_QUALITY_VALUES } from "@repo/api/src/agent-session-filters";
-import {
-  AGENT_SESSION_VIEWER_SCOPE_OPTIONS,
-  AgentSessionViewerScope,
-} from "@repo/api/src/types/agent-session";
+import { AGENT_SESSION_VIEWER_SCOPE_OPTIONS } from "@repo/api/src/types/agent-session";
 import { AGENT_SESSION_COMPARISON_MODES } from "@repo/api/src/types/agent-session-usage-comparison";
 import { z } from "zod";
 
@@ -94,7 +91,6 @@ const baseAgentSessionQueryShape = {
   // still serialize this field. Not implemented server-side (AGENTS.md L87-96).
   search: optionalNonEmptyStringSchema,
   viewerScope: z.enum(AGENT_SESSION_VIEWER_SCOPE_OPTIONS).optional(),
-  teamId: optionalUuidSchema,
   projectId: optionalUuidSchema,
   // ISS-5355: multi-select Project facet. These are two DIFFERENT dimensions,
   // not two spellings of one — sending both ANDs them (see
@@ -129,24 +125,11 @@ const rawAgentSessionListQuerySchema = rawBaseAgentSessionQuerySchema.extend({
 const rawAgentSessionUsageQuerySchema = rawBaseAgentSessionQuerySchema.extend({
   comparison: z.enum(AGENT_SESSION_COMPARISON_MODES).optional(),
 });
-const legacyTeamIdQueryPreprocessor = z
-  .object({
-    viewerScope: z.enum(AGENT_SESSION_VIEWER_SCOPE_OPTIONS).optional(),
-    teamId: optionalUuidSchema,
-  })
-  .passthrough();
+export const baseAgentSessionQuerySchema = rawBaseAgentSessionQuerySchema;
 
-export const baseAgentSessionQuerySchema = z
-  .preprocess(applyLegacyTeamIdScope, rawBaseAgentSessionQuerySchema)
-  .superRefine(refineTeamScopeQuery);
+export const agentSessionListQuerySchema = rawAgentSessionListQuerySchema;
 
-export const agentSessionListQuerySchema = z
-  .preprocess(applyLegacyTeamIdScope, rawAgentSessionListQuerySchema)
-  .superRefine(refineTeamScopeQuery);
-
-export const agentSessionUsageQuerySchema = z
-  .preprocess(applyLegacyTeamIdScope, rawAgentSessionUsageQuerySchema)
-  .superRefine(refineTeamScopeQuery);
+export const agentSessionUsageQuerySchema = rawAgentSessionUsageQuerySchema;
 
 export type AgentSessionListQuery = z.infer<typeof agentSessionListQuerySchema>;
 // The usage query is the base shape PLUS the comparison opt-in. The
@@ -155,47 +138,6 @@ export type AgentSessionListQuery = z.infer<typeof agentSessionListQuerySchema>;
 export type AgentSessionUsageQuery = z.infer<
   typeof agentSessionUsageQuerySchema
 >;
-
-function applyLegacyTeamIdScope(value: unknown): unknown {
-  const parsed = legacyTeamIdQueryPreprocessor.safeParse(value);
-  if (
-    !parsed.success ||
-    parsed.data.teamId === undefined ||
-    parsed.data.viewerScope !== undefined
-  ) {
-    return value;
-  }
-  return { ...parsed.data, viewerScope: AgentSessionViewerScope.Team };
-}
-
-function refineTeamScopeQuery(
-  params: {
-    viewerScope?: AgentSessionViewerScope;
-    teamId?: string;
-  },
-  ctx: z.RefinementCtx
-): void {
-  if (
-    params.viewerScope === AgentSessionViewerScope.Team &&
-    params.teamId === undefined
-  ) {
-    ctx.addIssue({
-      code: "custom",
-      message: "teamId is required when viewerScope is team",
-      path: ["teamId"],
-    });
-  }
-  if (
-    params.viewerScope !== AgentSessionViewerScope.Team &&
-    params.teamId !== undefined
-  ) {
-    ctx.addIssue({
-      code: "custom",
-      message: "teamId requires viewerScope team",
-      path: ["teamId"],
-    });
-  }
-}
 
 /**
  * ISS-6039: the exact query params `GET /agent-sessions` accepts, derived from

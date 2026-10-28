@@ -5,13 +5,19 @@ import {
   projectProcessSchema,
 } from "@repo/api/src/types/project-process";
 import {
-  type Document,
+  unknownYamlKeyProblems,
+  type YamlProblem,
+  YamlProblemSeverity,
+  yamlErrorMessage,
+  yamlNodeRange,
+  yamlProblemAt,
+} from "@repo/app/shared/lib/yaml-problems";
+import {
   isMap,
-  isPair,
-  isScalar,
   LineCounter,
   parseDocument,
   stringify,
+  type YAMLMap,
 } from "yaml";
 
 /**
@@ -21,48 +27,50 @@ import {
  * text so the editor can underline it.
  */
 
-export const ProcessYamlSeverity = {
-  Error: "error",
-  Warning: "warning",
-} as const;
-export type ProcessYamlSeverity =
-  (typeof ProcessYamlSeverity)[keyof typeof ProcessYamlSeverity];
-
-/** A problem of the YAML, at offsets of the text. */
-export type ProcessYamlProblem = {
-  from: number;
-  to: number;
-  /** 1-based line of `from`. */
-  line: number;
-  message: string;
-  severity: ProcessYamlSeverity;
-};
-
 export type ParsedProcessYaml =
   /** The draft the YAML describes, `source` set to the text. */
   | { ok: true; draft: ProjectProcessInput }
   /** The text is not YAML (or not a mapping): its first problem. */
-  | { ok: false; problem: ProcessYamlProblem };
+  | { ok: false; problem: YamlProblem };
 
 /** Keys of each kind of mapping, in the order generated YAML writes them. */
 export const PROCESS_YAML_KEYS = {
   process: ["toolkit", "steps"],
   toolkit: ["repository", "mounts", "instructions"],
   document: ["type", "path", "title"],
+  /** An agent step's review (AgentProcessStep.review). */
+  review: [
+    "approve",
+    "complete",
+    "feedback",
+    "instruction",
+    "session",
+    "consumeLabels",
+  ],
+  reviewFeedback: ["labels", "mention"],
+  /** An agent step's automatic retry (AgentProcessStep.retry). */
+  retry: ["attempts"],
+  /** review.approve, review.complete and an approval step's approve. */
+  signal: ["labels"],
   steps: {
     [ProcessStepType.Agent]: [
       "type",
       "id",
       "name",
+      "role",
       "instruction",
       "questions",
       "artifacts",
       "reply",
       "document",
       "finish",
+      "releaseNotes",
       "timeoutMinutes",
+      "connections",
+      "review",
+      "retry",
     ],
-    [ProcessStepType.Approval]: ["type", "id", "name", "show"],
+    [ProcessStepType.Approval]: ["type", "id", "name", "show", "approve"],
     [ProcessStepType.AgentFlowPlan]: [
       "type",
       "id",
@@ -70,12 +78,29 @@ export const PROCESS_YAML_KEYS = {
       "questions",
       "recommendations",
     ],
-    [ProcessStepType.AgentFlowExecute]: ["type", "id", "name", "review"],
+    [ProcessStepType.AgentFlowExecute]: [
+      "type",
+      "id",
+      "name",
+      "review",
+      "releaseNotes",
+    ],
   },
 } as const;
 
 /** The draft as YAML: defaults and empty values left out, long text as blocks. */
 export function processToYaml(draft: ProjectProcessInput): string {
+  return stringify(processYamlValue(draft), {
+    lineWidth: 0,
+    blockQuote: "literal",
+  });
+}
+
+/**
+ * The draft as the plain value `processToYaml` writes, its keys in YAML order:
+ * also what a workflow's own process is nested as in the workflow YAML.
+ */
+export function processYamlValue(draft: ProjectProcessInput): PlainRecord {
   const toolkit = draft.toolkit
     ? ordered(draft.toolkit, PROCESS_YAML_KEYS.toolkit, ["instructions"])
     : null;
@@ -89,10 +114,7 @@ export function processToYaml(draft: ProjectProcessInput): string {
     }
     return plain;
   });
-  return stringify(toolkit ? { toolkit, steps } : { steps }, {
-    lineWidth: 0,
-    blockQuote: "literal",
-  });
+  return toolkit ? { toolkit, steps } : { steps };
 }
 
 /** The YAML as a draft (`source` = the text), or why it is not one. */
@@ -103,12 +125,12 @@ export function parseProcessYaml(text: string): ParsedProcessYaml {
   if (error) {
     return {
       ok: false,
-      problem: problemAt(
+      problem: yamlProblemAt(
         lineCounter,
         error.pos[0],
         error.pos[1],
-        cleanMessage(error.message),
-        ProcessYamlSeverity.Error
+        yamlErrorMessage(error.message),
+        YamlProblemSeverity.Error
       ),
     };
   }
@@ -116,12 +138,12 @@ export function parseProcessYaml(text: string): ParsedProcessYaml {
   if (!isRecord(value)) {
     return {
       ok: false,
-      problem: problemAt(
+      problem: yamlProblemAt(
         lineCounter,
         0,
         Math.max(text.length, 1),
         "Write the process as a mapping with steps: (and optionally toolkit:)",
-        ProcessYamlSeverity.Error
+        YamlProblemSeverity.Error
       ),
     };
   }
@@ -132,17 +154,17 @@ export function parseProcessYaml(text: string): ParsedProcessYaml {
 }
 
 /** Every problem of the YAML: syntax, then the schema's, then unknown keys. */
-export function processYamlProblems(text: string): ProcessYamlProblem[] {
+export function processYamlProblems(text: string): YamlProblem[] {
   const lineCounter = new LineCounter();
   const document = parseDocument(text, { lineCounter, uniqueKeys: true });
   if (document.errors.length > 0) {
     return document.errors.map((error) =>
-      problemAt(
+      yamlProblemAt(
         lineCounter,
         error.pos[0],
         error.pos[1],
-        cleanMessage(error.message),
-        ProcessYamlSeverity.Error
+        yamlErrorMessage(error.message),
+        YamlProblemSeverity.Error
       )
     );
   }
@@ -155,16 +177,19 @@ export function processYamlProblems(text: string): ProcessYamlProblem[] {
   const schemaProblems = result.success
     ? []
     : result.error.issues.map((issue) => {
-        const [from, to] = rangeOf(document, issue.path, text);
-        return problemAt(
+        const [from, to] = yamlNodeRange(document, issue.path, text);
+        return yamlProblemAt(
           lineCounter,
           from,
           to,
           issue.message,
-          ProcessYamlSeverity.Error
+          YamlProblemSeverity.Error
         );
       });
-  return [...schemaProblems, ...unknownKeyProblems(document, lineCounter)];
+  return [
+    ...schemaProblems,
+    ...processUnknownKeyProblems(document.contents, lineCounter),
+  ];
 }
 
 /**
@@ -191,9 +216,7 @@ export function withoutProcessSource(
 }
 
 /** The YAML syntax problem of a draft's text, if it has one (validateProcessDraft). */
-export function processYamlSyntaxProblem(
-  text: string
-): ProcessYamlProblem | null {
+export function processYamlSyntaxProblem(text: string): YamlProblem | null {
   const parsed = parseProcessYaml(text);
   return parsed.ok ? null : parsed.problem;
 }
@@ -246,168 +269,106 @@ function normalized(draft: ProjectProcessInput): unknown {
 }
 
 /**
- * Offsets of the node at `path` (a value or a key's mapping); for a
- * missing key, the first line of the closest node that exists.
+ * Keys the process mapping `node` does not know, which the schema would
+ * silently drop. Also used for a workflow's own process, nested in its YAML.
  */
-function rangeOf(
-  document: Document,
-  path: readonly PropertyKey[],
-  text: string
-): [number, number] {
-  for (let length = path.length; length >= 0; length--) {
-    const node =
-      length === 0
-        ? document.contents
-        : document.getIn(path.slice(0, length) as unknown[], true);
-    const range = (node as { range?: [number, number, number] } | null)?.range;
-    if (!range) {
-      continue;
-    }
-    if (length === path.length) {
-      return [range[0], Math.max(range[1], range[0] + 1)];
-    }
-    const lineEnd = text.indexOf("\n", range[0]);
-    return [range[0], lineEnd < 0 ? Math.max(range[1], range[0] + 1) : lineEnd];
-  }
-  return [0, Math.min(text.length, 1)];
-}
-
-/** Keys the process does not know, which the schema would silently drop. */
-function unknownKeyProblems(
-  document: Document,
+export function processUnknownKeyProblems(
+  node: unknown,
   lineCounter: LineCounter
-): ProcessYamlProblem[] {
-  const problems: ProcessYamlProblem[] = [];
-  const check = (node: unknown, known: readonly string[], where: string) => {
-    if (!isMap(node)) {
-      return;
-    }
-    for (const pair of node.items) {
-      if (!(isPair(pair) && isScalar(pair.key))) {
-        continue;
-      }
-      const key = String(pair.key.value);
-      const range = pair.key.range;
-      if (!known.includes(key) && range) {
-        const hint = closestKey(key, known);
-        problems.push(
-          problemAt(
-            lineCounter,
-            range[0],
-            range[1],
-            `Unknown key "${key}" in ${where}${hint ? ` - did you mean "${hint}"?` : ""}`,
-            ProcessYamlSeverity.Warning
-          )
-        );
-      }
-    }
-  };
-  check(document.contents, PROCESS_YAML_KEYS.process, "the process");
-  check(
-    document.getIn(["toolkit"], true),
-    PROCESS_YAML_KEYS.toolkit,
-    "toolkit"
+): YamlProblem[] {
+  if (!isMap(node)) {
+    return [];
+  }
+  const problems = unknownYamlKeyProblems(
+    node,
+    PROCESS_YAML_KEYS.process,
+    "the process",
+    lineCounter
   );
-  const steps = document.getIn(["steps"], true);
+  problems.push(
+    ...unknownYamlKeyProblems(
+      node.get("toolkit", true),
+      PROCESS_YAML_KEYS.toolkit,
+      "toolkit",
+      lineCounter
+    )
+  );
+  const steps = node.get("steps", true);
   const items = (steps as { items?: unknown[] } | null)?.items ?? [];
   items.forEach((item, index) => {
     const type = isMap(item) ? item.get("type") : undefined;
-    check(
-      item,
-      stepKeys(String(type ?? ProcessStepType.Agent)),
-      `step ${index + 1}`
+    problems.push(
+      ...unknownYamlKeyProblems(
+        item,
+        stepKeys(String(type ?? ProcessStepType.Agent)),
+        `step ${index + 1}`,
+        lineCounter
+      )
     );
     if (isMap(item)) {
-      check(
-        item.get("document", true),
-        PROCESS_YAML_KEYS.document,
-        `the document of step ${index + 1}`
+      problems.push(
+        ...unknownYamlKeyProblems(
+          item.get("document", true),
+          PROCESS_YAML_KEYS.document,
+          `the document of step ${index + 1}`,
+          lineCounter
+        ),
+        ...unknownYamlKeyProblems(
+          item.get("retry", true),
+          PROCESS_YAML_KEYS.retry,
+          `the retry of step ${index + 1}`,
+          lineCounter
+        ),
+        ...signalKeyProblems(item, String(type ?? ""), index, lineCounter)
       );
     }
   });
   return problems;
 }
 
-/**
- * A known key a typo is closest to: at most one edit per three letters
- * (a swap of two letters is one edit), so "instrcution" hints "instruction"
- * but "file" does not hint "title".
- */
-function closestKey(key: string, known: readonly string[]): string | null {
-  const limit = Math.min(3, Math.max(1, Math.floor(key.length / 3)));
-  let best: { key: string; distance: number } | null = null;
-  for (const candidate of known) {
-    const distance = editDistance(key.toLowerCase(), candidate.toLowerCase());
-    if (distance <= limit && (!best || distance < best.distance)) {
-      best = { key: candidate, distance };
-    }
+/** Unknown keys of an agent step's review, or of an approval step's approve. */
+function signalKeyProblems(
+  item: YAMLMap,
+  type: string,
+  index: number,
+  lineCounter: LineCounter
+): YamlProblem[] {
+  const where = `step ${index + 1}`;
+  if (type === ProcessStepType.Approval) {
+    return unknownYamlKeyProblems(
+      item.get("approve", true),
+      PROCESS_YAML_KEYS.signal,
+      `approve of ${where}`,
+      lineCounter
+    );
   }
-  return best?.key ?? null;
-}
-
-/** Edit distance with adjacent swaps (optimal string alignment). */
-function editDistance(a: string, b: string): number {
-  const rows = a.length + 1;
-  const columns = b.length + 1;
-  const table: number[][] = Array.from({ length: rows }, () =>
-    Array.from({ length: columns }, () => 0)
-  );
-  for (let i = 0; i < rows; i++) {
-    const row = table[i];
-    if (row) {
-      row[0] = i;
-    }
+  const review = item.get("review", true);
+  if (type === ProcessStepType.AgentFlowExecute || !isMap(review)) {
+    return [];
   }
-  for (let j = 0; j < columns; j++) {
-    const row = table[0];
-    if (row) {
-      row[j] = j;
-    }
-  }
-  const cell = (i: number, j: number) => table[i]?.[j] ?? 0;
-  for (let i = 1; i < rows; i++) {
-    for (let j = 1; j < columns; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      let value = Math.min(
-        cell(i - 1, j) + 1,
-        cell(i, j - 1) + 1,
-        cell(i - 1, j - 1) + cost
-      );
-      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
-        value = Math.min(value, cell(i - 2, j - 2) + 1);
-      }
-      const row = table[i];
-      if (row) {
-        row[j] = value;
-      }
-    }
-  }
-  return cell(a.length, b.length);
+  return [
+    ...unknownYamlKeyProblems(
+      review,
+      PROCESS_YAML_KEYS.review,
+      `the review of ${where}`,
+      lineCounter
+    ),
+    ...unknownYamlKeyProblems(
+      review.get("feedback", true),
+      PROCESS_YAML_KEYS.reviewFeedback,
+      `review.feedback of ${where}`,
+      lineCounter
+    ),
+    ...["approve", "complete"].flatMap((key) =>
+      unknownYamlKeyProblems(
+        review.get(key, true),
+        PROCESS_YAML_KEYS.signal,
+        `review.${key} of ${where}`,
+        lineCounter
+      )
+    ),
+  ];
 }
-
-function problemAt(
-  lineCounter: LineCounter,
-  from: number,
-  to: number,
-  message: string,
-  severity: ProcessYamlSeverity
-): ProcessYamlProblem {
-  return {
-    from,
-    to: Math.max(to, from + 1),
-    line: lineCounter.linePos(from).line,
-    message,
-    severity,
-  };
-}
-
-/** The yaml library's message without its "at line N, column M:" tail (the editor marks the place). */
-function cleanMessage(message: string): string {
-  const [first = message] = message.split("\n");
-  return first.replace(TRAILING_POSITION_RE, "").trim();
-}
-
-const TRAILING_POSITION_RE = /\s+at line \d+, column \d+:?\s*$/;
 
 function isRecord(value: unknown): value is PlainRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);

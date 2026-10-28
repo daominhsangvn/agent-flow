@@ -122,16 +122,12 @@ vi.mock("../search", () => ({
   Search: () => <div data-testid="search">Search</div>,
 }));
 
-vi.mock("../sidebar-teams", () => ({
-  SidebarTeams: () => <div data-testid="sidebar-teams">Teams</div>,
+vi.mock("../sidebar-projects", () => ({
+  SidebarProjects: () => <div data-testid="sidebar-projects">Projects</div>,
 }));
 
 vi.mock("../account-menu", () => ({
   AccountMenu: () => <div data-testid="account-menu">Account Menu</div>,
-}));
-
-vi.mock("../inbox-badge", () => ({
-  InboxBadge: () => null,
 }));
 
 // The Agents activity badge reads live session data through the auth/API stack;
@@ -139,12 +135,6 @@ vi.mock("../inbox-badge", () => ({
 // (its own behavior is covered in agents/components/__tests__/agents-nav-badge).
 vi.mock("@repo/app/agents/components/agents-nav-badge", () => ({
   AgentsNavBadge: () => null,
-}));
-
-vi.mock("@/components/compute-target-popover", () => ({
-  ComputeTargetPopover: () => (
-    <div data-testid="compute-target-popover">Compute Target</div>
-  ),
 }));
 
 // Mock organization object matching Clerk's OrganizationResource shape
@@ -247,6 +237,19 @@ describe("GlobalSidebar - Account Menu", () => {
 
     expect(getByTestId("account-menu")).not.toBeNull();
   });
+
+  // Loops run on the project's runners, else the organization's, so the
+  // footer no longer offers a per-user compute target picker.
+  test("does not offer a compute target picker", () => {
+    const { queryByRole, queryByText } = render(
+      <GlobalSidebar>
+        <div>Content</div>
+      </GlobalSidebar>
+    );
+
+    expect(queryByRole("button", { name: COMPUTE_PICKER_NAME })).toBeNull();
+    expect(queryByText(COMPUTE_PICKER_NAME)).toBeNull();
+  });
 });
 
 describe("GlobalSidebar - Feature Flag Hydration", () => {
@@ -268,7 +271,8 @@ describe("GlobalSidebar - Feature Flag Hydration", () => {
     );
 
     expect(markup).not.toContain("Agent Management");
-    expect(markup).toContain("Teams");
+    expect(markup).not.toContain("Your Teams");
+    expect(markup).toContain("Projects");
   });
 
   test("uses canonical browser QA routes for insights and agent sessions", () => {
@@ -648,3 +652,5 @@ describe("GlobalSidebar - Artifacts section flag gating", () => {
     );
   });
 });
+
+const COMPUTE_PICKER_NAME = /^(Compute:|Select target)/u;

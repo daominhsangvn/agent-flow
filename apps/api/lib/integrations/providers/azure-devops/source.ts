@@ -1,3 +1,4 @@
+import { Result } from "@repo/api/src/types/result";
 import { htmlToMarkdown } from "../../markdown";
 import {
   HttpMethod,
@@ -6,6 +7,7 @@ import {
   type SourceItem,
   type SourceItemAttachment,
   type SourceItemComment,
+  type SourceItemLink,
   type SourceItemRef,
 } from "../../types";
 import {
@@ -17,9 +19,14 @@ import {
   adoRequest,
   projectSegment,
 } from "./client";
-import { ADO_ATTACHMENT_RELATION, AdoField, AdoTextFormat } from "./constants";
+import {
+  ADO_ATTACHMENT_RELATION,
+  ADO_HYPERLINK_RELATION,
+  AdoField,
+  AdoTextFormat,
+} from "./constants";
 import { splitAdoTags, workItemAttributes, workItemRef } from "./events";
-import { adoIdentityLabel } from "./identity";
+import { adoIdentityEmail, adoIdentityLabel } from "./identity";
 import {
   type AdoComment,
   type AdoRelation,
@@ -77,9 +84,12 @@ export async function fetchAdoSourceItem(
     labels: splitAdoTags(fields[AdoField.Tags]),
     reporter: adoIdentityLabel(fields[AdoField.CreatedBy]),
     assignee: adoIdentityLabel(fields[AdoField.AssignedTo]),
+    reporterEmail: adoIdentityEmail(fields[AdoField.CreatedBy]),
+    assigneeEmail: adoIdentityEmail(fields[AdoField.AssignedTo]),
     sections: buildSections(workItem, fields),
     comments,
     attachments: buildAttachments(workItem.relations),
+    links: buildLinks(workItem.relations),
   };
 }
 
@@ -274,6 +284,21 @@ function describeFetchError(workItemId: number, error: AdoError): string {
   return `Could not load Azure DevOps work item #${workItemId}: ${error.message}`;
 }
 
+/** A work item from its id (`123`, `#123`) or link (an agent's connection_get_item). */
+export function parseAdoItemReference(
+  config: { organizationUrl: string },
+  input: string
+): Result<{ externalId: string; key: string }, string> {
+  try {
+    const workItemId = parseManualInput(input, config.organizationUrl);
+    return Result.ok({ externalId: String(workItemId), key: `#${workItemId}` });
+  } catch (error) {
+    return Result.err(
+      error instanceof Error ? error.message : MANUAL_INPUT_HINT
+    );
+  }
+}
+
 function parseManualInput(input: string, organizationUrl: string): number {
   const value = input.trim();
   const direct = WORK_ITEM_ID_RE.exec(value);
@@ -307,4 +332,14 @@ function fetchFailure(workItemId: number, error: AdoError): Error {
   return error.retryable
     ? new RetryableSourceError(message)
     : new Error(message);
+}
+
+function buildLinks(
+  relations: AdoRelation[] | null | undefined
+): SourceItemLink[] {
+  return (relations ?? []).flatMap((relation) =>
+    relation.rel === ADO_HYPERLINK_RELATION && relation.url
+      ? [{ url: relation.url, title: relation.attributes?.comment ?? null }]
+      : []
+  );
 }

@@ -1,3 +1,7 @@
+import {
+  ReviewDecisionKind,
+  ReviewSignalVia,
+} from "@repo/api/src/types/project-process";
 import { Status } from "@repo/api/src/types/result";
 import { WorkflowRunStatus } from "@repo/api/src/types/workflow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -296,6 +300,102 @@ describe("decideApproval", () => {
     );
 
     expect(!result.ok && result.error.status).toBe(Status.Conflict);
+    expect(mocks.db.workflowRun.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+const AWAITING_REVIEW = {
+  waiting: null,
+  approval: null,
+  review: {
+    stepId: "plan",
+    loopId: "loop-1",
+    round: 2,
+    requestedAt: "2026-10-01T00:00:00.000Z",
+    decision: null,
+    history: [],
+  },
+};
+
+describe("decideReview", () => {
+  it("records the decision in AgentFlow while the run still waits, then advances it", async () => {
+    storedRun(WorkflowRunStatus.NeedsApproval, AWAITING_REVIEW);
+
+    const result = await workflowRunStepInputService.decideReview(
+      ORG_ID,
+      USER_ID,
+      RUN_ID,
+      { decision: ReviewDecisionKind.Feedback, comment: "Split the task" }
+    );
+
+    expect(result).toEqual({ ok: true, value: { id: RUN_ID } });
+    expect(updateArgs()).toMatchObject({
+      where: {
+        id: RUN_ID,
+        organizationId: ORG_ID,
+        status: WorkflowRunStatus.NeedsApproval,
+        stepState: { equals: AWAITING_REVIEW },
+      },
+      data: {
+        stepState: {
+          review: {
+            round: 2,
+            decision: {
+              kind: ReviewDecisionKind.Feedback,
+              via: ReviewSignalVia.App,
+              text: "Split the task",
+              by: USER_ID,
+              author: null,
+              label: null,
+            },
+          },
+        },
+      },
+    });
+    expect(mocks.waitUntil).toHaveBeenCalled();
+  });
+
+  it("refuses a run that does not wait for a review, or one decided already", async () => {
+    storedRun(WorkflowRunStatus.NeedsApproval, AWAITING_APPROVAL);
+    const notWaiting = await workflowRunStepInputService.decideReview(
+      ORG_ID,
+      USER_ID,
+      RUN_ID,
+      { decision: ReviewDecisionKind.Approve, comment: "" }
+    );
+    storedRun(WorkflowRunStatus.NeedsApproval, {
+      ...AWAITING_REVIEW,
+      review: {
+        ...AWAITING_REVIEW.review,
+        decision: {
+          kind: ReviewDecisionKind.Approve,
+          via: ReviewSignalVia.Label,
+          text: "",
+          by: null,
+          author: "Bea",
+          label: "plan-approved",
+          at: "2026-10-01T00:05:00.000Z",
+        },
+      },
+    });
+    const decided = await workflowRunStepInputService.decideReview(
+      ORG_ID,
+      USER_ID,
+      RUN_ID,
+      { decision: ReviewDecisionKind.Reject, comment: "" }
+    );
+
+    expect(notWaiting).toMatchObject({
+      ok: false,
+      error: { status: Status.Conflict },
+    });
+    expect(decided).toMatchObject({
+      ok: false,
+      error: {
+        status: Status.Conflict,
+        message: "The review was already decided.",
+      },
+    });
     expect(mocks.db.workflowRun.updateMany).not.toHaveBeenCalled();
   });
 });

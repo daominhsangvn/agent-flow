@@ -22,6 +22,7 @@ const PROCESS: RunProcessView = {
   stepId: "review",
   waiting: null,
   approval: null,
+  review: null,
   stepFiles: [
     {
       stepId: "specify",

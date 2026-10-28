@@ -12,6 +12,7 @@ import type {
   OperationDispatcher,
   OperationRequestContext,
 } from "../operation-dispatcher.js";
+import { killProcessTree } from "../platform-shell.js";
 import { resolveRepoFullName } from "./git-helpers.js";
 import { parseBody } from "./parse-body.js";
 import { json } from "./response-utils.js";
@@ -426,7 +427,7 @@ export function registerSymphonyPlanLoopRoutes(
 
       // Attempt to kill the process
       try {
-        process.kill(-pid, "SIGTERM");
+        killProcessTree(pid, "SIGTERM");
 
         // Brief wait to allow graceful exit before liveness check
         await new Promise<void>((resolve) => setTimeout(resolve, 500));
@@ -437,7 +438,7 @@ export function registerSymphonyPlanLoopRoutes(
           process.kill(pid, 0);
           // Still alive after SIGTERM
           try {
-            process.kill(-pid, "SIGKILL");
+            killProcessTree(pid, "SIGKILL");
           } catch {
             // Already gone
           }

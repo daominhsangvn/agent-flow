@@ -8,7 +8,7 @@ import { githubService } from "../../service";
 /**
  * POST /integrations/github/connect/confirm-reset
  *
- * Confirm the admin's decision to clear team repositories and project repo
+ * Confirm the admin's decision to clear project repo
  * settings before claiming a GitHub installation from a different account
  * (PLN-634). The installation to claim is read from `pendingNewInstallationId`
  * on the prior UNINSTALLED row (pinned by the OAuth callback), so an

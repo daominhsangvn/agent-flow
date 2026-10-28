@@ -15,6 +15,10 @@ export const JiraTriggerType = {
   IssueAssigned: "jira.issue_assigned",
   IssueLabeled: "jira.issue_labeled",
   IssueMentioned: "jira.issue_mentioned",
+  /** A person moved the issue to another status. */
+  IssueStatusChanged: "jira.issue_status_changed",
+  /** Assigned to the bot, labeled and/or mentioned, combined with AND or OR. */
+  IssueConditions: "jira.issue_conditions",
 } as const;
 export type JiraTriggerType =
   (typeof JiraTriggerType)[keyof typeof JiraTriggerType];
@@ -22,6 +26,9 @@ export type JiraTriggerType =
 export const JiraActionType = {
   AddComment: "jira.add_comment",
   TransitionIssue: "jira.transition_issue",
+  UpdateLabels: "jira.update_labels",
+  AddLink: "jira.add_link",
+  CreateIssue: "jira.create_issue",
 } as const;
 export type JiraActionType =
   (typeof JiraActionType)[keyof typeof JiraActionType];
@@ -46,6 +53,7 @@ export const JIRA_AUTOMATION_EVENT_TYPE = "jira:automation_work_item";
 export const JiraChangelogField = {
   Assignee: "assignee",
   Labels: "labels",
+  Status: "status",
 } as const;
 export type JiraChangelogField =
   (typeof JiraChangelogField)[keyof typeof JiraChangelogField];
@@ -56,8 +64,22 @@ export const JiraEventAttribute = {
   IssueType: "issueType",
   Labels: "labels",
   Status: "status",
-  /** Labels added by the change (jira.issue_labeled events only). */
+  /** Labels added by the change (jira.issue_labeled and jira.issue_conditions events). */
   AddedLabels: "addedLabels",
+  /** Status the change moved the issue from (jira.issue_status_changed events). */
+  FromStatus: "fromStatus",
+  /** Status the change moved the issue to (jira.issue_status_changed events). */
+  ToStatus: "toStatus",
+  /** Labels removed by the change (jira.issue_labeled events). */
+  RemovedLabels: "removedLabels",
+  /** The issue is assigned to the bot after the change (jira.issue_conditions events). */
+  AssignedToBot: "assignedToBot",
+  /** The change assigned the issue to the bot, or it was created assigned to it. */
+  BecameAssigned: "becameAssigned",
+  /** The occurrence is a mention of the bot (a comment, or the description). */
+  Mentioned: "mentioned",
+  /** The comment the new comment replies to (jira.comment_reply events). */
+  RepliedTo: "repliedTo",
 } as const;
 export type JiraEventAttribute =
   (typeof JiraEventAttribute)[keyof typeof JiraEventAttribute];
@@ -84,3 +106,22 @@ export type JiraCommentTarget =
 export const JIRA_WEBHOOK_IDENTIFIER_HEADER = "x-atlassian-webhook-identifier";
 /** WebSub-style signature header of Jira admin webhooks with a secret. */
 export const JIRA_HUB_SIGNATURE_HEADER = "x-hub-signature";
+
+/**
+ * Event types no trigger takes: a reply in the thread of a comment reaches the
+ * run waiting for answers that posted the comment (engine/answer-replies.ts).
+ */
+export const JiraSignalType = {
+  CommentReply: "jira.comment_reply",
+} as const;
+export type JiraSignalType =
+  (typeof JiraSignalType)[keyof typeof JiraSignalType];
+
+/** Which label changes a jira.issue_labeled trigger reacts to. */
+export const JiraLabelChange = {
+  Added: "added",
+  Removed: "removed",
+  Both: "both",
+} as const;
+export type JiraLabelChange =
+  (typeof JiraLabelChange)[keyof typeof JiraLabelChange];

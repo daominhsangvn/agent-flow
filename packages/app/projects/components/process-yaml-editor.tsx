@@ -1,44 +1,13 @@
 "use client";
 
-import {
-  autocompletion,
-  type Completion,
-  type CompletionContext,
-  type CompletionResult,
-  completionKeymap,
-  snippetCompletion,
-  startCompletion,
-} from "@codemirror/autocomplete";
-import {
-  defaultKeymap,
-  history,
-  historyKeymap,
-  indentWithTab,
-} from "@codemirror/commands";
-import { yaml } from "@codemirror/lang-yaml";
-import {
-  HighlightStyle,
-  indentUnit,
-  syntaxHighlighting,
-} from "@codemirror/language";
-import { type Diagnostic, linter, lintGutter } from "@codemirror/lint";
-import { EditorState } from "@codemirror/state";
-import {
-  EditorView,
-  highlightActiveLine,
-  highlightActiveLineGutter,
-  keymap,
-  lineNumbers,
-} from "@codemirror/view";
-import { tags } from "@lezer/highlight";
-import { useEffect, useRef } from "react";
+import { YamlCodeEditor } from "@repo/app/shared/components/yaml-code-editor";
+import type { YamlCompletionResult } from "@repo/app/shared/lib/yaml-completion";
+import { YamlCursorKind } from "@repo/app/shared/lib/yaml-cursor";
+import { useRef } from "react";
 import { processYamlProblems } from "../lib/process-yaml";
 import {
-  type ProcessCompletion,
   type ProcessCompletionData,
-  ProcessCompletionKind,
   processYamlCompletions,
-  YamlCursorKind,
   yamlCursorContext,
 } from "../lib/process-yaml-completions";
 
@@ -64,224 +33,31 @@ export function ProcessYamlEditor({
   completionData,
   readOnly = false,
 }: Readonly<ProcessYamlEditorProps>) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<EditorView | null>(null);
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
   const dataRef = useRef(completionData);
   dataRef.current = completionData;
-  const initialValue = useRef(value);
-
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) {
-      return;
+  const complete = useRef(
+    (text: string, pos: number): YamlCompletionResult | null => {
+      const cursor = yamlCursorContext(text, pos);
+      if (!cursor) {
+        return null;
+      }
+      return {
+        from: cursor.from,
+        options: processYamlCompletions(cursor, dataRef.current),
+        variable: cursor.kind === YamlCursorKind.Variable,
+      };
     }
-    const view = new EditorView({
-      parent: host,
-      state: EditorState.create({
-        doc: initialValue.current,
-        extensions: [
-          lineNumbers(),
-          highlightActiveLineGutter(),
-          highlightActiveLine(),
-          history(),
-          indentUnit.of("  "),
-          EditorState.tabSize.of(2),
-          yaml(),
-          syntaxHighlighting(PROCESS_YAML_HIGHLIGHT),
-          autocompletion({
-            override: [(context) => completionSource(context, dataRef.current)],
-            activateOnTyping: true,
-            icons: false,
-          }),
-          linter((editor) => diagnosticsOf(editor.state.doc.toString()), {
-            delay: 250,
-          }),
-          lintGutter(),
-          keymap.of([
-            ...completionKeymap,
-            ...defaultKeymap,
-            ...historyKeymap,
-            indentWithTab,
-          ]),
-          EditorView.lineWrapping,
-          EditorState.readOnly.of(readOnly),
-          EditorView.contentAttributes.of({
-            "aria-label": "Process YAML",
-            "data-testid": "process-yaml-content",
-          }),
-          EditorView.updateListener.of((update) => {
-            if (update.docChanged) {
-              onChangeRef.current(update.state.doc.toString());
-            }
-            // A new line or a fresh "- " list item: show what fits there
-            // (after this update: an update cannot start another one).
-            if (update.docChanged && insertedLineStart(update.state)) {
-              setTimeout(() => startCompletion(update.view), 0);
-            }
-          }),
-          EDITOR_THEME,
-        ],
-      }),
-    });
-    viewRef.current = view;
-    return () => {
-      view.destroy();
-      viewRef.current = null;
-    };
-  }, [readOnly]);
-
-  useEffect(() => {
-    const view = viewRef.current;
-    if (view && view.state.doc.toString() !== value) {
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: value },
-      });
-    }
-  }, [value]);
+  ).current;
 
   return (
-    <div
-      className="overflow-hidden rounded-md border"
-      data-testid="process-yaml-editor"
-      ref={hostRef}
+    <YamlCodeEditor
+      ariaLabel="Process YAML"
+      complete={complete}
+      lint={processYamlProblems}
+      onChange={onChange}
+      readOnly={readOnly}
+      testIdPrefix="process-yaml"
+      value={value}
     />
   );
 }
-
-function completionSource(
-  context: CompletionContext,
-  data: ProcessCompletionData
-): CompletionResult | null {
-  const text = context.state.doc.toString();
-  const cursor = yamlCursorContext(text, context.pos);
-  if (!cursor) {
-    return null;
-  }
-  // Keys and values appear while typing; an empty position needs a reason
-  // (a new line, "- ", "key: ", Ctrl+Space).
-  const options = processYamlCompletions(cursor, data);
-  if (options.length === 0) {
-    return null;
-  }
-  return {
-    from: cursor.from,
-    options: options.map(toCodeMirrorCompletion),
-    validFor:
-      cursor.kind === YamlCursorKind.Variable ? VARIABLE_WORD_RE : WORD_RE,
-  };
-}
-
-function toCodeMirrorCompletion(completion: ProcessCompletion): Completion {
-  const base: Completion = {
-    label: completion.label,
-    detail: completion.detail,
-    info: completion.info,
-    type: completion.kind,
-    boost: completion.kind === ProcessCompletionKind.Snippet ? 10 : 0,
-  };
-  if (completion.kind === ProcessCompletionKind.Snippet) {
-    return snippetCompletion(completion.insert, base);
-  }
-  return { ...base, apply: indentedApply(completion.insert) };
-}
-
-/** Inserts `insert`, indenting its later lines like the line it lands on. */
-function indentedApply(insert: string): Completion["apply"] {
-  if (!insert.includes("\n")) {
-    return insert;
-  }
-  return (view, _completion, from, to) => {
-    const line = view.state.doc.lineAt(from);
-    const lineIndent = LEADING_SPACE_RE.exec(line.text)?.[0] ?? "";
-    const itemIndent = ITEM_PREFIX_RE.exec(line.text) ? "  " : "";
-    const text = insert.replaceAll("\n", `\n${lineIndent}${itemIndent}`);
-    view.dispatch({
-      changes: { from, to, insert: text },
-      selection: { anchor: from + text.length },
-    });
-  };
-}
-
-function diagnosticsOf(text: string): Diagnostic[] {
-  return processYamlProblems(text).map((problem) => ({
-    from: Math.min(problem.from, text.length),
-    to: Math.min(problem.to, text.length),
-    severity: problem.severity,
-    message: problem.message,
-  }));
-}
-
-/** The cursor sits at the start of a fresh line or right after "- ". */
-function insertedLineStart(state: EditorState): boolean {
-  const head = state.selection.main.head;
-  const line = state.doc.lineAt(head);
-  const before = line.text.slice(0, head - line.from);
-  return FRESH_LINE_RE.test(before) && before.length > 0;
-}
-
-const WORD_RE = /^[\w./-]*$/;
-const VARIABLE_WORD_RE = /^[\w.]*$/;
-const LEADING_SPACE_RE = /^\s*/;
-const ITEM_PREFIX_RE = /^\s*-\s/;
-const FRESH_LINE_RE = /^\s+$|^\s*-\s$/;
-
-const EDITOR_THEME = EditorView.theme({
-  "&": {
-    fontSize: "13px",
-    backgroundColor: "var(--background)",
-    color: "var(--foreground)",
-  },
-  ".cm-content": {
-    fontFamily: "var(--font-mono, ui-monospace, monospace)",
-    minHeight: "18rem",
-    caretColor: "var(--foreground)",
-  },
-  ".cm-scroller": { maxHeight: "36rem", overflow: "auto" },
-  "&.cm-focused": { outline: "2px solid var(--ring)", outlineOffset: "-1px" },
-  ".cm-gutters": {
-    backgroundColor: "var(--muted)",
-    color: "var(--muted-foreground)",
-    borderRight: "1px solid var(--border)",
-  },
-  ".cm-activeLine, .cm-activeLineGutter": {
-    backgroundColor: "color-mix(in srgb, var(--accent) 45%, transparent)",
-  },
-  ".cm-tooltip": {
-    backgroundColor: "var(--popover)",
-    color: "var(--popover-foreground)",
-    border: "1px solid var(--border)",
-    borderRadius: "6px",
-  },
-  ".cm-tooltip-autocomplete > ul > li[aria-selected]": {
-    backgroundColor: "var(--accent)",
-    color: "var(--accent-foreground)",
-  },
-  ".cm-completionDetail": {
-    color: "var(--muted-foreground)",
-    fontStyle: "normal",
-    marginLeft: "0.75em",
-  },
-  ".cm-completionInfo": { maxWidth: "24rem", padding: "6px 8px" },
-  ".cm-diagnostic-error": { borderLeftColor: "var(--destructive)" },
-  ".cm-diagnostic-warning": { borderLeftColor: "var(--warning)" },
-});
-
-/**
- * Token colours from the design system's text tokens, so keys, comments and
- * strings stay readable on the light and the dark background alike
- * (CodeMirror's default style is made for a light one).
- */
-const PROCESS_YAML_HIGHLIGHT = HighlightStyle.define([
-  { tag: tags.definition(tags.propertyName), color: "var(--link)" },
-  { tag: tags.comment, color: "var(--muted-foreground)", fontStyle: "italic" },
-  { tag: tags.separator, color: "var(--muted-foreground)" },
-  { tag: tags.string, color: "var(--success-foreground)" },
-  { tag: tags.special(tags.string), color: "var(--warning-foreground)" },
-  {
-    tag: [tags.labelName, tags.typeName, tags.keyword, tags.meta],
-    color: "var(--ai-foreground)",
-  },
-  { tag: tags.invalid, color: "var(--destructive)" },
-]);

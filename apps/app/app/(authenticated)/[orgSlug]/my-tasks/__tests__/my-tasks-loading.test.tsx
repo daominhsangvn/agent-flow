@@ -35,7 +35,7 @@ const mocks = vi.hoisted(() => ({
 
 // Presentational markers so the test asserts branch selection, not child guts.
 vi.mock(
-  "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/documents-view",
+  "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/documents-view",
   () => ({
     DocumentsView: ({ isLoading }: { isLoading?: boolean }) => (
       <div

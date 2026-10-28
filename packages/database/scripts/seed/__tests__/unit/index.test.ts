@@ -16,7 +16,6 @@ const PROFILE_AUDIT_FAILED_RE = /Profile target audit failed/;
 // Mock all domain seed modules BEFORE importing runSeed so vi.mock() hoisting works.
 vi.mock("../../core", () => ({
   seedCoreEntities: vi.fn().mockResolvedValue({
-    teamId: "mock-team-id",
     projectIds: ["mock-project-0", "mock-project-1"],
     artifactIds: ["mock-artifact-0"],
     githubInstallationId: "mock-github-installation",
@@ -71,8 +70,6 @@ function buildRunSeedMock() {
 
   // Every model in the summary section must have count() return >= 1.
   const countModels = [
-    "team",
-    "teamMember",
     "project",
     "artifact",
     "documentVersion",
@@ -125,7 +122,6 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
     vi.clearAllMocks();
     // Re-establish return values after clearAllMocks() resets implementations.
     vi.mocked(seedCoreEntities).mockResolvedValue({
-      teamId: "mock-team-id",
       projectIds: ["mock-project-0", "mock-project-1"],
       artifactIds: ["mock-artifact-0"],
       githubInstallationId: "mock-github-installation",
@@ -177,7 +173,6 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
 
   it("passes the coreResult from seedCoreEntities to downstream modules", async () => {
     const mockCoreResult = {
-      teamId: "mock-team-id",
       projectIds: ["mock-project-0", "mock-project-1"],
       artifactIds: ["mock-artifact-0"],
       githubInstallationId: "mock-github-installation",

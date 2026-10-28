@@ -95,16 +95,15 @@ describe("searchHitOrgRelativeRoute", () => {
     ).toBe("/prds/my-prd");
   });
 
-  it("builds a team-scoped project route", () => {
+  it("builds an org-level project route", () => {
     expect(
       searchHitOrgRelativeRoute(
         hit({
           entityType: SearchEntityType.Project,
           entityId: "p1",
-          teamId: "t1",
         })
       )
-    ).toBe("/teams/t1/projects/p1");
+    ).toBe("/projects/p1");
   });
 
   it("builds a loop route by id", () => {
@@ -134,12 +133,12 @@ describe("searchHitOrgRelativeRoute", () => {
     ).toBeNull();
   });
 
-  it("returns null (non-link) when a project lacks its owning team", () => {
+  it("builds the project route even without a team", () => {
     expect(
       searchHitOrgRelativeRoute(
         hit({ entityType: SearchEntityType.Project, entityId: "p1" })
       )
-    ).toBeNull();
+    ).toBe("/projects/p1");
   });
 
   it("builds a branch route by id and a PR route to its branch anchor (FEA-3930)", () => {

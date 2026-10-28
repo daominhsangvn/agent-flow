@@ -28,7 +28,6 @@ const {
   mockHandleDesktopAnalyticsEvent,
   mockHeartbeat,
   mockIngestCommandEvent,
-  mockIsAgentSessionSyncSupportedForUser,
   mockIsDirectDesktopAuthSigningEligible,
   mockListNonTerminal,
   mockRegister,
@@ -41,7 +40,6 @@ const {
   mockHandleDesktopAnalyticsEvent: vi.fn(),
   mockHeartbeat: vi.fn(),
   mockIngestCommandEvent: vi.fn(),
-  mockIsAgentSessionSyncSupportedForUser: vi.fn(),
   mockIsDirectDesktopAuthSigningEligible: vi.fn(),
   mockListNonTerminal: vi.fn(),
   mockRegister: vi.fn(),
@@ -97,10 +95,6 @@ vi.mock("../compute-target-signing-eligibility", async (importOriginal) => ({
     typeof import("../compute-target-signing-eligibility")
   >()),
   isDirectDesktopAuthSigningEligible: mockIsDirectDesktopAuthSigningEligible,
-}));
-
-vi.mock("../agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: mockIsAgentSessionSyncSupportedForUser,
 }));
 
 vi.mock("../desktop-agent-sessions-handler", () => ({
@@ -348,7 +342,6 @@ function resetGatewayMocks(): void {
     status: CommandSigningEligibilityStatus.Ineligible,
     reason: "missing_gateway",
   });
-  mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(false);
   mockGetCommandById.mockResolvedValue(null);
   mockHandleDesktopAgentSessionsEvent.mockResolvedValue({ accepted: true });
   mockHandleDesktopAnalyticsEvent.mockResolvedValue({ accepted: true });

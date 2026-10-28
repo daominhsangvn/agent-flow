@@ -41,7 +41,6 @@ function buildCoreSeedResult(): CoreSeedResult {
     deterministicUuid(`artifact:fixture:${i}`)
   );
   return {
-    teamId: deterministicUuid("team:fixture"),
     projectIds: [
       deterministicUuid("project:fixture:0"),
       deterministicUuid("project:fixture:1"),

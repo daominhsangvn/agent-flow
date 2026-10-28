@@ -131,7 +131,7 @@ function supportsDeliveryMode(
   return Boolean(inbound.poll);
 }
 
-function parseWithSchema(
+export function parseWithSchema(
   schema: z.ZodType<JsonObject>,
   value: unknown,
   label: string

@@ -14,7 +14,6 @@ import { DB_FANOUT_MAX_CONCURRENCY } from "@/lib/db-fanout";
 const mocks = vi.hoisted(() => ({
   isDesktopManagedPopEnforcementEnabled: vi.fn(),
   loadActiveDesktopManagedGatewayIds: vi.fn(),
-  isAgentSessionSyncSupportedForUser: vi.fn(),
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   deleteTranscriptObjects: vi.fn(),
   logError: vi.fn(),
@@ -48,10 +47,6 @@ vi.mock("@/lib/compute-target-signing-eligibility", () => ({
     Unknown: "unknown",
   },
   loadActiveDesktopManagedGatewayIds: mocks.loadActiveDesktopManagedGatewayIds,
-}));
-
-vi.mock("@/lib/agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: mocks.isAgentSessionSyncSupportedForUser,
 }));
 
 import {
@@ -106,7 +101,6 @@ describe("computeTargetsService security status", () => {
       gatewayIds: new Set<string>(),
       reason: "feature_disabled",
     });
-    mocks.isAgentSessionSyncSupportedForUser.mockResolvedValue(false);
   });
 
   // FEA-3299: `listAvailableForOrg` reads every target in the org shared with
@@ -366,9 +360,6 @@ describe("computeTargetsService security status", () => {
               gatewayIds: new Set<string>(),
             }
     );
-    mocks.isAgentSessionSyncSupportedForUser.mockImplementation(
-      async (identity) => identity.userId === "owner-2"
-    );
     installDb({
       computeTarget: {
         findMany: vi.fn().mockResolvedValue(targets),
@@ -385,7 +376,10 @@ describe("computeTargetsService security status", () => {
     );
     const byId = new Map(result.map((target) => [target.id, target]));
 
-    expect(byId.get("viewer-target")?.serverCapabilities).toBeUndefined();
+    // Agent-session sync is always on; signing follows each target's owner.
+    expect(byId.get("viewer-target")?.serverCapabilities).toEqual({
+      agentSessionSync: true,
+    });
     expect(byId.get("shared-target")?.serverCapabilities).toEqual({
       computeTargetSigning: true,
       agentSessionSync: true,
@@ -401,14 +395,6 @@ describe("computeTargetsService security status", () => {
       userId: "owner-2",
       clerkUserId: "clerk-owner-2",
       gatewayIds: ["gateway-shared"],
-    });
-    expect(mocks.isAgentSessionSyncSupportedForUser).toHaveBeenCalledWith({
-      userId: "user-1",
-      clerkUserId: "clerk-user-1",
-    });
-    expect(mocks.isAgentSessionSyncSupportedForUser).toHaveBeenCalledWith({
-      userId: "owner-2",
-      clerkUserId: "clerk-owner-2",
     });
   });
 

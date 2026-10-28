@@ -5,7 +5,6 @@ import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { onboardingService } from "../service";
 
 const completeWizardValidator = z.object({
-  createdTeamId: z.string().optional(),
   createdProjectId: z.string().optional(),
 });
 
@@ -27,7 +26,6 @@ export const PUT = withAnyAuth<OnboardingStatus, "/onboarding/complete-wizard">(
       const status = await onboardingService.completeWizard(
         user.organizationId,
         user.id,
-        body.createdTeamId,
         body.createdProjectId
       );
 

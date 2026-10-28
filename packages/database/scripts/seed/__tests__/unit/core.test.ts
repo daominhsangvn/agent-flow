@@ -2,7 +2,7 @@
  * TS-U.3, TS-U.5: Unit tests for seed/core.ts
  *
  * Covers:
- *  TS-U.3  seedCoreEntities — upserts one Team, at least 2 Projects,
+ *  TS-U.3  seedCoreEntities — upserts at least 2 Projects,
  *          and one SlugCounter per prefix (PRO, PRD, PLN, FEA)
  *  TS-U.5  seedArtifacts (called internally) — covers all ArtifactType values
  *          (DOCUMENT, BRANCH, DEPLOYMENT) and all DocumentStatus values
@@ -39,18 +39,12 @@ function buildReadyMock() {
   const prisma = createMockPrisma();
   const p = prisma as AnyDelegate;
 
-  p.team.findUnique.mockResolvedValue(null);
-  p.teamMember.findUnique.mockResolvedValue(null);
   p.project.findUnique.mockResolvedValue(null);
   p.slugCounter.findUnique.mockResolvedValue(null);
   p.artifact.findUnique.mockResolvedValue(null);
   p.gitHubInstallation.findUnique.mockResolvedValue(null);
   p.gitHubInstallationRepository.findUnique.mockResolvedValue(null);
 
-  p.team.upsert.mockImplementation((args: AnyDelegate) =>
-    Promise.resolve({ id: args.create.id as string })
-  );
-  p.teamMember.upsert.mockResolvedValue({ id: "tm1" });
   p.project.upsert.mockImplementation((args: AnyDelegate) =>
     Promise.resolve({ id: args.create.id as string })
   );
@@ -64,14 +58,8 @@ function buildReadyMock() {
   return { prisma, p };
 }
 
-// TS-U.3: Team, Projects, SlugCounters
-describe("seedCoreEntities — Team, Projects, SlugCounters (TS-U.3)", () => {
-  it("upserts exactly one Team row", async () => {
-    const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
-    expect(p.team.upsert).toHaveBeenCalledOnce();
-  });
-
+// TS-U.3: Projects, SlugCounters
+describe("seedCoreEntities — Projects, SlugCounters (TS-U.3)", () => {
   it("upserts at least 2 Project rows", async () => {
     const { prisma, p } = buildReadyMock();
     await seedCoreEntities(prisma as any, baselineContext);
@@ -92,15 +80,10 @@ describe("seedCoreEntities — Team, Projects, SlugCounters (TS-U.3)", () => {
     }
   });
 
-  it("scopes all Team and Project rows to the baseline organizationId", async () => {
+  it("scopes all Project rows to the baseline organizationId", async () => {
     const { prisma, p } = buildReadyMock();
     await seedCoreEntities(prisma as any, baselineContext);
 
-    for (const call of p.team.upsert.mock.calls as AnyDelegate[]) {
-      expect(call[0].create.organizationId).toBe(
-        baselineContext.organizationId
-      );
-    }
     for (const call of p.project.upsert.mock.calls as AnyDelegate[]) {
       expect(call[0].create.organizationId).toBe(
         baselineContext.organizationId
@@ -108,10 +91,9 @@ describe("seedCoreEntities — Team, Projects, SlugCounters (TS-U.3)", () => {
     }
   });
 
-  it("returns teamId and local profile projectIds by default", async () => {
+  it("returns local profile projectIds by default", async () => {
     const { prisma } = buildReadyMock();
     const result = await seedCoreEntities(prisma as any, baselineContext);
-    expect(result.teamId).toBeDefined();
     expect(result.projectIds).toHaveLength(
       SEED_PROFILES[DEFAULT_SEED_PROFILE].projects
     );

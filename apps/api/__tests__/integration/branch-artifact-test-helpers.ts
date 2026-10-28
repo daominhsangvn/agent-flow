@@ -93,27 +93,32 @@ export async function seedBranchTestContext(
 
   const projectId = await createTestProject(organizationId, user.id);
 
-  // Single-team inheritance is the supported way a project resolves its
-  // primary repository (FEA-1058 removed the legacy project-settings repo
-  // pointer). Curate the seeded repo as the team's primary and attach the
-  // project to that team so `loadProjectRepoDefaults` /
-  // `loadProjectPrLinkRepositories` resolve it.
-  await withDb((db) =>
-    db.team.create({
+  // Project repositories (integration connections) are the source
+  // `loadProjectRepoDefaults` / `loadProjectPrLinkRepositories` resolve.
+  const connection = await withDb((db) =>
+    db.integrationConnection.create({
       data: {
         organizationId,
-        name: `Team ${suffix}`,
-        slug: `team-${suffix}`,
-        repositories: {
-          create: {
-            installationRepositoryId: repository.id,
-            isDefaultSelected: true,
-            isPrimary: true,
-          },
-        },
-        projects: {
-          create: { projectId },
-        },
+        provider: "github",
+        name: `GitHub ${suffix}`,
+        inboundKey: `ik-${suffix}`,
+      },
+    })
+  );
+  await withDb((db) =>
+    db.projectRepository.create({
+      data: {
+        organizationId,
+        projectId,
+        connectionId: connection.id,
+        provider: "github",
+        externalId: repository.githubRepoId,
+        fullName: repository.fullName,
+        name: repository.name,
+        defaultBranch: "main",
+        webUrl: `https://github.com/${repository.fullName}`,
+        cloneUrl: `https://github.com/${repository.fullName}.git`,
+        isPrimary: true,
       },
     })
   );

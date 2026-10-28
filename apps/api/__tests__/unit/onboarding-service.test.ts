@@ -1,8 +1,8 @@
 /**
  * Unit tests for onboardingService.getStatus.
  *
- * Verifies that the checklist does not include a ConnectLinear item and that
- * all seven expected checklist items are returned with correct ids.
+ * Verifies the checklist returns the five expected items, in order, and that
+ * each one's completion follows the data it keys off.
  */
 
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
@@ -18,36 +18,29 @@ import { onboardingService } from "@/app/onboarding/service";
 const mockWithDb = withDb as unknown as Mock;
 
 const ORG_ID = "org-1";
-const USER_ID = "user-1";
 
 /**
- * Set up the seven sequential withDb calls that getStatus makes:
- *   1. organization.findUnique (org settings + claudeApiKeyEncrypted)
- *   2. team.count
- *   3. project.count
- *   4. computeTarget.findFirst (ISS-5490 — desktop install signal)
- *   5. gitHubInstallation.findFirst
- *   6. googleIntegration.findUnique
- *   7. user.count
+ * Set up the five sequential withDb calls that getStatus makes:
+ *   1. organization.findUnique (org settings)
+ *   2. project.count
+ *   3. computeTarget.findFirst (any runner of the organization)
+ *   4. googleIntegration.findUnique
+ *   5. user.count
  *
  * The mocks are positional, so a call added to the service's `Promise.all` has
  * to be added here at the same index or every later stub answers the wrong
  * query.
  */
 function mockGetStatusCalls({
-  org = { settings: {}, claudeApiKeyEncrypted: null },
-  teamCount = 0,
+  org = { settings: {} },
   projectCount = 0,
   computeTarget = null,
-  githubInstallation = null,
   googleIntegration = null,
   userCount = 1,
 }: {
-  org?: { settings: object; claudeApiKeyEncrypted: string | null };
-  teamCount?: number;
+  org?: { settings: object };
   projectCount?: number;
   computeTarget?: { id: string } | null;
-  githubInstallation?: { id: string } | null;
   googleIntegration?: { id: string } | null;
   userCount?: number;
 } = {}) {
@@ -60,22 +53,12 @@ function mockGetStatusCalls({
       })
     )
     .mockImplementationOnce((fn: (db: unknown) => unknown) =>
-      fn({ team: { count: vi.fn().mockResolvedValue(teamCount) } })
-    )
-    .mockImplementationOnce((fn: (db: unknown) => unknown) =>
       fn({ project: { count: vi.fn().mockResolvedValue(projectCount) } })
     )
     .mockImplementationOnce((fn: (db: unknown) => unknown) =>
       fn({
         computeTarget: {
           findFirst: vi.fn().mockResolvedValue(computeTarget),
-        },
-      })
-    )
-    .mockImplementationOnce((fn: (db: unknown) => unknown) =>
-      fn({
-        gitHubInstallation: {
-          findFirst: vi.fn().mockResolvedValue(githubInstallation),
         },
       })
     )
@@ -99,73 +82,70 @@ describe("onboardingService.getStatus", () => {
   it("does not include a ConnectLinear item in the checklist", async () => {
     mockGetStatusCalls();
 
-    const status = await onboardingService.getStatus(ORG_ID, USER_ID);
+    const status = await onboardingService.getStatus(ORG_ID);
 
     const ids = status.checklist.map((item) => item.id);
     expect(ids).not.toContain("CONNECT_LINEAR");
   });
 
-  // ISS-5490: DownloadDesktop sits between the project and GitHub rows, where
-  // the wizard used to ask for it. The client hides it unless the wizard-trim
-  // flag is on, so the service returning it unconditionally is what lets one
-  // response serve both rollout states.
-  it("returns exactly the seven expected checklist items in order", async () => {
+  it("returns exactly the four expected checklist items in order", async () => {
     mockGetStatusCalls();
 
-    const status = await onboardingService.getStatus(ORG_ID, USER_ID);
+    const status = await onboardingService.getStatus(ORG_ID);
 
-    expect(status.checklist).toHaveLength(7);
     expect(status.checklist.map((item) => item.id)).toEqual([
-      ChecklistItemId.CreateTeam,
       ChecklistItemId.CreateProject,
-      ChecklistItemId.DownloadDesktop,
-      ChecklistItemId.ConnectGitHub,
-      ChecklistItemId.AddAnthropicKey,
+      ChecklistItemId.InstallRunner,
       ChecklistItemId.ConnectGoogle,
       ChecklistItemId.InviteMembers,
     ]);
   });
 
-  it("marks CreateTeam complete when teamCount is greater than zero", async () => {
-    mockGetStatusCalls({ teamCount: 1 });
+  it("no longer asks to connect GitHub or add an Anthropic API key", async () => {
+    mockGetStatusCalls();
 
-    const status = await onboardingService.getStatus(ORG_ID, USER_ID);
+    const status = await onboardingService.getStatus(ORG_ID);
+
+    const labels = status.checklist.map((item) => item.label);
+    expect(labels).not.toContain("Connect GitHub");
+    expect(labels).not.toContain("Add Anthropic API key");
+    expect(labels).not.toContain("Download the desktop app");
+  });
+
+  it("treats a legacy org with a project and no wizard record as completed", async () => {
+    mockGetStatusCalls({ projectCount: 1 });
+
+    const status = await onboardingService.getStatus(ORG_ID);
+
+    expect(status.wizardCompleted).toBe(true);
+  });
+
+  it("does not treat an org without a project or wizard record as completed", async () => {
+    mockGetStatusCalls({ projectCount: 0 });
+
+    const status = await onboardingService.getStatus(ORG_ID);
+
+    expect(status.wizardCompleted).toBe(false);
+  });
+
+  it("marks InstallRunner complete when the organization has a runner", async () => {
+    mockGetStatusCalls({ computeTarget: { id: "runner-1" } });
+
+    const status = await onboardingService.getStatus(ORG_ID);
 
     const item = status.checklist.find(
-      (c) => c.id === ChecklistItemId.CreateTeam
+      (c) => c.id === ChecklistItemId.InstallRunner
     );
     expect(item?.completed).toBe(true);
   });
 
-  it("marks CreateTeam incomplete when teamCount is zero", async () => {
-    mockGetStatusCalls({ teamCount: 0 });
+  it("marks InstallRunner incomplete when the organization has no runner", async () => {
+    mockGetStatusCalls({ computeTarget: null });
 
-    const status = await onboardingService.getStatus(ORG_ID, USER_ID);
-
-    const item = status.checklist.find(
-      (c) => c.id === ChecklistItemId.CreateTeam
-    );
-    expect(item?.completed).toBe(false);
-  });
-
-  it("marks ConnectGitHub complete when a GitHub installation exists", async () => {
-    mockGetStatusCalls({ githubInstallation: { id: "install-1" } });
-
-    const status = await onboardingService.getStatus(ORG_ID, USER_ID);
+    const status = await onboardingService.getStatus(ORG_ID);
 
     const item = status.checklist.find(
-      (c) => c.id === ChecklistItemId.ConnectGitHub
-    );
-    expect(item?.completed).toBe(true);
-  });
-
-  it("marks ConnectGitHub incomplete when no GitHub installation exists", async () => {
-    mockGetStatusCalls({ githubInstallation: null });
-
-    const status = await onboardingService.getStatus(ORG_ID, USER_ID);
-
-    const item = status.checklist.find(
-      (c) => c.id === ChecklistItemId.ConnectGitHub
+      (c) => c.id === ChecklistItemId.InstallRunner
     );
     expect(item?.completed).toBe(false);
   });
@@ -173,7 +153,7 @@ describe("onboardingService.getStatus", () => {
   it("marks ConnectGoogle complete when a Google integration exists", async () => {
     mockGetStatusCalls({ googleIntegration: { id: "google-1" } });
 
-    const status = await onboardingService.getStatus(ORG_ID, USER_ID);
+    const status = await onboardingService.getStatus(ORG_ID);
 
     const item = status.checklist.find(
       (c) => c.id === ChecklistItemId.ConnectGoogle
@@ -181,23 +161,10 @@ describe("onboardingService.getStatus", () => {
     expect(item?.completed).toBe(true);
   });
 
-  it("marks AddAnthropicKey complete when claudeApiKeyEncrypted is set", async () => {
-    mockGetStatusCalls({
-      org: { settings: {}, claudeApiKeyEncrypted: "encrypted-value" },
-    });
-
-    const status = await onboardingService.getStatus(ORG_ID, USER_ID);
-
-    const item = status.checklist.find(
-      (c) => c.id === ChecklistItemId.AddAnthropicKey
-    );
-    expect(item?.completed).toBe(true);
-  });
-
   it("marks InviteMembers complete when userCount is greater than one", async () => {
     mockGetStatusCalls({ userCount: 2 });
 
-    const status = await onboardingService.getStatus(ORG_ID, USER_ID);
+    const status = await onboardingService.getStatus(ORG_ID);
 
     const item = status.checklist.find(
       (c) => c.id === ChecklistItemId.InviteMembers
@@ -208,7 +175,7 @@ describe("onboardingService.getStatus", () => {
   it("marks InviteMembers incomplete when userCount is one", async () => {
     mockGetStatusCalls({ userCount: 1 });
 
-    const status = await onboardingService.getStatus(ORG_ID, USER_ID);
+    const status = await onboardingService.getStatus(ORG_ID);
 
     const item = status.checklist.find(
       (c) => c.id === ChecklistItemId.InviteMembers

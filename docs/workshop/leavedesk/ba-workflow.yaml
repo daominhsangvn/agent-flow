@@ -1,0 +1,131 @@
+name: LeaveDesk · BA analysis
+description: >-
+  A raw requirement in Jira LD gets the label ba-analyze and is analysed
+  against the knowledge base by the BA agent team (generated with
+  revfactory/harness): questions on the ticket, a PRD reviewed with Jira
+  labels, then archived in leavedesk-knowledge through a pull request and
+  handed over on the ticket: a comment summarizing the PRD, with the full
+  PRD attached.
+project: LeaveDesk
+triggers:
+  - connection: jira                   # the one Jira bot
+    type: jira.issue_conditions
+    config:
+      labels: [ba-analyze]             # adding the label starts the analysis (or resumes it)
+      projectKeys: [LD]
+agent:
+  runAs: admin@agentflow.local
+  runner: runner-1
+  process:
+    toolkit:
+      repository: workshop/leavedesk-knowledge
+      mounts:
+        - .claude/agents
+        - .claude/skills
+      instructions: |
+        ## LeaveDesk BA team
+
+        The BA agent team of `leavedesk-knowledge/` (generated with revfactory/harness) is
+        linked into this workspace's `.claude/agents` and `.claude/skills`. Its orchestrator is
+        the `ba-requirement` skill; follow it exactly and delegate to the agents it names.
+
+        - The knowledge base is `leavedesk-knowledge/`; its README rules apply (the policy is
+          the source of truth). The app as built is `leavedesk-app/` (read only).
+        - The ticket is `.agentflow-ai/work/issue.md`. Outputs of the analysis go to
+          `.agentflow-ai/work/ba/` (prd.md, analysis.md, jira-reply.md); questions to
+          `.agentflow-ai/work/questions.json`.
+        - Change no repository except `leavedesk-knowledge/` in the archive step. Create no
+          git branches or commits: AgentFlow commits, pushes and opens the pull request.
+    steps:
+      - type: agent
+        id: analyze
+        name: Analyse and write the PRD
+        instruction: /ba-requirement analyze {{issue.key}}
+        questions: ask                 # open points stop the run; answered on the ticket
+        artifacts:
+          - .agentflow-ai/work/ba/analysis.md
+          - .agentflow-ai/work/ba/prd.md
+        reply: .agentflow-ai/work/ba/jira-reply.md
+        document:                      # the PRD becomes a document of the project
+          type: PRD
+          path: .agentflow-ai/work/ba/prd.md
+          title: "{{issue.key}}: {{issue.title}}"
+        review:                        # the BA lead reviews the PRD on the ticket
+          complete: { labels: [prd-approved] }
+          feedback: { labels: [prd-revise] }
+          instruction: |
+            Revise the analysis and the PRD with this feedback from {{feedback.author}}
+            (round {{review.round}}): {{feedback.text}}
+            Run `/ba-requirement analyze {{issue.key}}` again in revise mode: keep what was not
+            questioned, rewrite .agentflow-ai/work/ba/prd.md and jira-reply.md, and say in
+            jira-reply.md what changed.
+      - type: agent
+        id: archive
+        name: Archive in the knowledge base
+        finish: push                   # commits and pushes leavedesk-knowledge
+        connections:
+          source: [comment]            # the PRD summary comment with the full PRD attached
+        instruction: |
+          /ba-requirement archive {{issue.key}}
+
+          Then hand the approved PRD over on the ticket, once:
+          1. Copy .agentflow-ai/work/ba/prd.md to .agentflow-ai/work/ba/PRD-{{issue.key}}.md and
+             upload it with `"$AGENTFLOW_ATTACH" .agentflow-ai/work/ba/PRD-{{issue.key}}.md text/markdown`;
+             keep the printed id.
+          2. Write a summary of the PRD in .agentflow-ai/work/ba/prd-summary.md, in Markdown, at
+             most about 400 words: the goal, the scope and what is out of scope, the functional
+             requirements in one line each (keep their numbers), the key rules, the decisions
+             taken from the answers. End it with: "Full PRD attached: PRD-{{issue.key}}.md."
+          3. Call the source_item_comment tool once, with the text of prd-summary.md and that id
+             as attachment.
+        reply: .agentflow-ai/work/ba/prd-summary.md
+        artifacts:
+          - leavedesk-knowledge/requirements/*/prd.md
+          - leavedesk-knowledge/requirements/*/questions.md
+actions:
+  - on: workflow.triggered
+    type: jira.add_link                # a fixed URL: typed links do not render templates
+    continueOnError: true
+    config:
+      url: http://localhost:3300/workshop/leavedesk-knowledge
+      title: LeaveDesk knowledge base
+  - on: workflow.triggered
+    type: jira.transition_issue
+    continueOnError: true
+    config:
+      transitionName: In Progress
+  - on: workflow.triggered
+    type: jira.add_comment             # {{summary}}: picked up + run link
+    continueOnError: true
+  - on: input.needed
+    instruction: |
+      The BA run of {{source.key}} waits for people: {{run.url}}
+      If the "{{step.name}}" step has open questions, post one comment that lists them numbered, each with its options labelled a, b, c… and the recommended one marked "(recommended)" with its reason (the questions are in the run; the step's files are in .agentflow-ai/work/ba/). End with: answer by replying to this comment (Reply on the comment, so the answer stays in its thread; e.g. "1a, 2c", or in your own words) in one reply: the reply continues the run.
+      If the step waits for a review, post one comment made of: the content of .agentflow-ai/work/ba/jira-reply.md, the PRD link {{steps.analyze.document.url}}, and how to decide: add the label "prd-approved" to accept the PRD, or write the changes in a comment and add the label "prd-revise" to get a revised PRD.
+    connections:
+      source: [comment]
+  - on: execute.completed              # the archive step pushed leavedesk-knowledge
+    type: local_git.create_pull_request
+    config:
+      title: "{{source.key}}: PRD {{source.title}}"
+      description: |-
+        Knowledge base update for {{source.key}}: {{source.title}} ({{source.url}})
+
+        PRD: {{steps.analyze.document.url}}
+        AgentFlow run: {{run.url}}
+  - on: workflow.failed
+    type: jira.add_comment             # {{summary}}: why it stopped + run link
+  - on: [workflow.started, plan.started, plan.completed, input.needed, execute.started, execute.completed, workflow.completed, workflow.failed]
+    connection: http                   # every run event to the event feed (docs/workshop/event-feed.py)
+    type: webhook.post
+    enabled: false                     # off: queued behind a stopped feed, it delayed the later actions
+    config:
+      url: http://localhost:4545/agentflow
+  - on: [input.needed, workflow.failed]
+    type: agentflow.email              # Mailpit: http://localhost:8025; default subject names the event and item
+    config:
+      to: [admin@agentflow.local]
+  - on: [workflow.completed, workflow.failed]
+    type: jira.update_labels           # the label stays until the run ends; a reply to its question continues it
+    config:
+      remove: [ba-analyze]

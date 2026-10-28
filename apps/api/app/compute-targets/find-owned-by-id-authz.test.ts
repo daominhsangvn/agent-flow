@@ -14,7 +14,6 @@ const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   isDesktopManagedPopEnforcementEnabled: vi.fn(),
   loadActiveDesktopManagedGatewayIds: vi.fn(),
-  isAgentSessionSyncSupportedForUser: vi.fn(),
   deleteTranscriptObjects: vi.fn(),
 }));
 
@@ -46,10 +45,6 @@ vi.mock("@/lib/compute-target-signing-eligibility", () => ({
     Unknown: "unknown",
   },
   loadActiveDesktopManagedGatewayIds: mocks.loadActiveDesktopManagedGatewayIds,
-}));
-
-vi.mock("@/lib/agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: mocks.isAgentSessionSyncSupportedForUser,
 }));
 
 import { computeTargetsService } from "./service";

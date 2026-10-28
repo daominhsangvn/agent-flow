@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   GitHubFetchCredentialType,
   GitHubFetchMechanism,
@@ -18,15 +16,6 @@ import {
   persistPullRequestHeadRepositoryAuthority,
   pullRequestHeadRepositoryObservation,
 } from "./pull-request-head-authority";
-
-const HEAD_REF_GUARD_FUNCTION_REGEX =
-  /CREATE FUNCTION "guard_pull_request_head_ref_pair"\(\)[\s\S]*?\$\$ LANGUAGE plpgsql;/;
-const HEAD_REF_GUARD_TRIGGER_REGEX =
-  /CREATE TRIGGER "pull_request_detail_head_ref_pair_guard"[\s\S]*?EXECUTE FUNCTION "guard_pull_request_head_ref_pair"\(\);/;
-const HEAD_REF_MIGRATION_PATH = resolve(
-  process.cwd(),
-  "../../packages/database/prisma/migrations/20260814173000_iss6541_pull_request_head_ref_name/migration.sql"
-);
 
 const { createMany, findFirst, logError, logWarn, updateMany } = vi.hoisted(
   () => ({
@@ -802,45 +791,6 @@ describe("persistPullRequestHeadRepositoryAuthority", () => {
     expect(changed).toBe(false);
     expect(findFirst).not.toHaveBeenCalled();
     expect(updateMany).not.toHaveBeenCalled();
-  });
-});
-
-describe("pull-request head-ref rolling-deploy migration guard", () => {
-  const migrationSql = readFileSync(HEAD_REF_MIGRATION_PATH, "utf8");
-  const guardFunction = migrationSql.match(HEAD_REF_GUARD_FUNCTION_REGEX)?.[0];
-  const guardTrigger = migrationSql.match(HEAD_REF_GUARD_TRIGGER_REGEX)?.[0];
-
-  it("clears only the new pair member when an old writer changes oid without authority advancement", () => {
-    expect(guardFunction).toContain('OLD."head_ref_name" IS NOT NULL');
-    expect(guardFunction).toContain('OLD."head_ref_oid" IS NOT NULL');
-    expect(guardFunction).toContain(
-      'NEW."head_ref_oid" IS DISTINCT FROM OLD."head_ref_oid"'
-    );
-    expect(guardFunction).toContain(
-      'NEW."head_ref_name" IS NOT DISTINCT FROM OLD."head_ref_name"'
-    );
-    expect(guardFunction).toContain(
-      'NEW."head_repository_default_branch_source"'
-    );
-    expect(guardFunction).toContain(
-      'NEW."head_repository_default_branch_observation_key"'
-    );
-    expect(guardFunction).toContain(
-      'NEW."head_repository_default_branch_observed_at"'
-    );
-    expect(guardFunction).toContain(
-      'NEW."head_repository_default_branch_event_at"'
-    );
-    expect(guardFunction).toContain('NEW."head_ref_name" := NULL');
-  });
-
-  it("runs before every oid update", () => {
-    expect(guardTrigger).toContain(
-      'BEFORE UPDATE OF "head_ref_oid" ON "pull_request_detail"'
-    );
-    expect(guardTrigger).toContain(
-      'EXECUTE FUNCTION "guard_pull_request_head_ref_pair"()'
-    );
   });
 });
 

@@ -26,7 +26,6 @@ import {
   isComputeTargetGatewayConflictResult,
 } from "@/app/compute-targets/service";
 import { githubDirtyScopeService } from "@/app/integrations/github/dirty-scope-service";
-import { isAgentSessionSyncSupportedForUser } from "@/lib/agent-session-sync-feature";
 import {
   CommandSigningEligibilityStatus,
   isComputeTargetSigningEligible,
@@ -399,7 +398,6 @@ type HelloStageTimings = {
   pendingCommandsMs?: number;
   onlineStateMs?: number;
   featureFlagSigningMs?: number;
-  featureFlagSyncMs?: number;
 };
 
 function logRelayHello(
@@ -465,7 +463,7 @@ async function handleHello(
   }
   const { targetId, targetCreated, targetGatewayId } = resolvedTarget;
 
-  const [pendingCommandsResult, onlineStateResult, signingResult, syncResult] =
+  const [pendingCommandsResult, onlineStateResult, signingResult] =
     await Promise.all([
       timeStage(stageTimings, "pendingCommandsMs", () =>
         runStage(
@@ -503,17 +501,6 @@ async function handleHello(
           DesktopHelloNackReason.InternalError
         )
       ),
-      timeStage(stageTimings, "featureFlagSyncMs", () =>
-        runStage(
-          isAgentSessionSyncSupportedForUser({
-            userId: auth.userId,
-            clerkUserId: auth.clerkUserId,
-          }),
-          HELLO_OPERATION_TIMEOUT_MS,
-          "isAgentSessionSyncSupportedForUser",
-          DesktopHelloNackReason.InternalError
-        )
-      ),
     ]);
 
   if (!pendingCommandsResult.ok) {
@@ -537,9 +524,7 @@ async function handleHello(
   const commandSigningSupported =
     signingResult.ok &&
     signingResult.value.status === CommandSigningEligibilityStatus.Eligible;
-  const agentSessionSyncSupported = syncResult.ok ? syncResult.value : false;
   const serverCapabilities = buildDesktopServerCapabilities({
-    agentSessionSyncSupported,
     commandSigningSupported,
   });
 
@@ -748,23 +733,12 @@ async function loadSequenceGapServerCapabilities(
   if (!auth) {
     return undefined;
   }
-  const [targetResult, syncResult] = await Promise.all([
-    runStage(
-      computeTargetsService.findById(computeTargetId),
-      HELLO_OPERATION_TIMEOUT_MS,
-      "computeTargetsService.findById",
-      DesktopHelloNackReason.InternalError
-    ),
-    runStage(
-      isAgentSessionSyncSupportedForUser({
-        userId: auth.userId,
-        clerkUserId: auth.clerkUserId,
-      }),
-      HELLO_OPERATION_TIMEOUT_MS,
-      "isAgentSessionSyncSupportedForUser",
-      DesktopHelloNackReason.InternalError
-    ),
-  ]);
+  const targetResult = await runStage(
+    computeTargetsService.findById(computeTargetId),
+    HELLO_OPERATION_TIMEOUT_MS,
+    "computeTargetsService.findById",
+    DesktopHelloNackReason.InternalError
+  );
   const targetGatewayId = targetResult.ok
     ? targetResult.value?.gatewayId
     : null;
@@ -782,7 +756,6 @@ async function loadSequenceGapServerCapabilities(
       )
     : null;
   return buildDesktopServerCapabilities({
-    agentSessionSyncSupported: syncResult.ok ? syncResult.value : false,
     commandSigningSupported:
       signingResult?.ok === true &&
       signingResult.value.status === CommandSigningEligibilityStatus.Eligible,

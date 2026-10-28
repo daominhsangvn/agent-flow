@@ -63,7 +63,7 @@ export async function POST(
       headers: request.headers,
       url: new URL(request.url),
     };
-    const verification = verifyInboundRequest(connection, inboundRequest);
+    const verification = await verifyInboundRequest(connection, inboundRequest);
     if (!verification.ok) {
       return completeIngress({
         status: 401,

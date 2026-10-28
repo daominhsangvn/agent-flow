@@ -1,0 +1,85 @@
+name: Calculator delivery (Jira CALC)
+description: >-
+  A CALC issue assigned to the AgentFlow bot, or a comment that mentions it,
+  starts a run: plan, people decide and approve, implement, release notes and
+  a pull request on Local Git. Every step is reported on the Jira issue.
+project: Calculator
+triggers:
+  - connection: jira                   # project connection "Jira CALC"
+    type: jira.issue_conditions
+    config:
+      match: any                       # either condition starts (or resumes) a run
+      assigned: true                   # the issue is assigned to the bot
+      mentioned: true                  # a comment mentions the bot (e.g. answers to the plan's questions)
+      projectKeys: [CALC]
+agent:
+  runAs: admin@agentflow.local
+  runner: runner-1
+  prd:
+    instruction: >-
+      PRD when the issue has the label "prd", or when its description is a
+      product requirements document: it states goals, functional requirements
+      and acceptance criteria. A bug report, a small task or a question is an
+      Issue.
+actions:
+  # Before the agent team (pre actions, in order)
+  - on: workflow.triggered
+    type: jira.transition_issue
+    continueOnError: true
+    config:
+      transitionName: In Progress
+  - on: workflow.triggered
+    continueOnError: true
+    instruction: |
+      Triage {{source.key}} for the team. Read the issue: title, description, labels and latest comments.
+      If AgentFlow already posted a triage comment on this issue, post one short comment that says the work resumes with the new comments, and stop.
+      Otherwise post one comment that says AgentFlow picked the issue up, whether it was imported as a PRD or an Issue ({{feature.url}}), and lists at most three points the requirement leaves unclear, each with a suggested answer and a one-line reason, or "Nothing unclear". Say that the plan will ask again about points that stay open.
+    connections:
+      source: [comment]
+  # Every later run event to the event feed (docs/workshop/event-feed.py)
+  - on: [workflow.started, plan.started, plan.completed, input.needed, execute.started, execute.completed, workflow.completed, workflow.failed]
+    connection: http
+    type: webhook.post
+    config:
+      url: http://localhost:4545/agentflow
+  - on: plan.completed
+    type: jira.add_comment             # {{summary}}: the plan link and an excerpt
+  - on: input.needed
+    instruction: |
+      The run of {{source.key}} waits for people: {{run.url}}
+      If the plan has open questions, post one comment that lists them numbered. Under each question list 2-4 options labelled a, b, c..., each with a one-line reason (what it means and its trade-off). Mark the plan's recommended answer as "(recommended)". End with: reply in one comment that mentions the AgentFlow bot, using the letters (for example "1a, 2c") or your own answer for any question.
+      If the run waits for an approval ("{{step.name}}"), post one comment saying that the plan waits for an approval in AgentFlow, with the run link.
+    connections:
+      source: [comment]
+  - on: execute.completed
+    type: local_git.create_pull_request
+    config:
+      title: "{{source.key}}: {{source.title}}"
+      description: |-
+        Implements {{source.key}}: {{source.title}} ({{source.url}})
+
+        Requirement: {{feature.url}}
+        Implementation plan: {{plan.url}}
+        AgentFlow run: {{run.url}}
+  - on: execute.completed              # after the pull request action, so it sees {{pr.url}}
+    instruction: |
+      Summarize what was implemented for {{source.key}}: the main files that changed, the tests that cover it and the pull request ({{pr.url}}).
+      Post it as one comment on the issue (at most 10 lines), then move the issue to "In Review".
+    connections:
+      source: [comment, transition]
+  - on: workflow.completed
+    type: jira.add_comment
+    config:
+      message: |-
+        📦 Release notes for {{source.key}}
+
+        {{steps.release-notes.reply}}
+
+        Pull request: {{pr.url}}
+        AgentFlow run: {{run.url}}
+  - on: workflow.failed
+    type: jira.add_comment             # {{summary}}: why the run stopped + the run link
+  - on: workflow.failed
+    type: jira.transition_issue
+    config:
+      transitionName: To Do

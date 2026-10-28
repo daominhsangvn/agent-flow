@@ -76,6 +76,8 @@ describe("fetchAdoSourceItem", () => {
       labels: ["Checkout", "Backend"],
       reporter: "Jamal Hartnett",
       assignee: "AgentFlow Bot",
+      reporterEmail: "jamal@contoso.com",
+      assigneeEmail: "agentflow-bot@contoso.com",
       sections: [
         {
           title: "Acceptance Criteria",
@@ -102,9 +104,37 @@ describe("fetchAdoSourceItem", () => {
           size: 2048,
         },
       ],
+      links: [],
     });
     expect(item.bodyMarkdown).toContain("CSV with one row per order");
     expect(item.bodyMarkdown).not.toContain("<div>");
+  });
+
+  it("reads the work item's web links with their titles", async () => {
+    const workItem = restWorkItem();
+    const fake = createFakeAdo(
+      routes({
+        ...workItem,
+        relations: [
+          {
+            rel: "Hyperlink",
+            url: "https://acme.atlassian.net/wiki/spaces/ENG/pages/123",
+            attributes: { comment: "Implementation plan" },
+          },
+          { rel: "Hyperlink", url: "https://example.com/notes" },
+        ],
+      })
+    );
+
+    const item = await fetchAdoSourceItem(createAdoContext(fake), ref);
+
+    expect(item.links).toEqual([
+      {
+        url: "https://acme.atlassian.net/wiki/spaces/ENG/pages/123",
+        title: "Implementation plan",
+      },
+      { url: "https://example.com/notes", title: null },
+    ]);
   });
 
   it("expands everything without a fields filter and reads the latest comments", async () => {

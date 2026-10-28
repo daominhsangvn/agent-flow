@@ -71,8 +71,6 @@ The default (legacy) response is a JSON payload with the echoed query, per-colle
       "slug": "PRO-26",
       "status": "IN_PROGRESS",
       "priority": "HIGH",
-      "teamName": "Platform",
-      "teamId": "...",
       "assignee": null,
       "updatedAt": "2026-01-15T12:00:00.000Z"
     }
@@ -110,8 +108,6 @@ Each entry in `projects` describes a matching project:
 | `slug` | User-facing handle (`PRO-*`), or `null` — pass to `get-project` |
 | `status` | `NOT_STARTED`, `IN_PROGRESS`, or `COMPLETED` |
 | `priority` | `LOW`, `MEDIUM`, `HIGH`, `URGENT`, or `null` |
-| `teamName` | Owning team's name, or `null` |
-| `teamId` | Owning team's UUID, or `null` |
 | `assignee` | Assigned user, or `null` when unassigned |
 | `updatedAt` | Last-updated timestamp |
 

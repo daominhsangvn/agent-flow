@@ -21,9 +21,9 @@ import {
  * ONE component rather than a copy per route. Two sibling screens that hand-roll
  * the same control drift immediately — these two shipped with their scope
  * dropdown in opposite orders, which a reader notices without being able to say
- * why. The scope list is FILTERED from the canonical `INSIGHTS_SCOPE_OPTIONS`
- * rather than re-listed, so its order is the app's order by construction and a
- * scope added there can never be silently missed here.
+ * why. The scope list is the canonical `INSIGHTS_SCOPE_OPTIONS` rather than
+ * a re-listed copy, so its order is the app's order by construction and a scope
+ * added there can never be silently missed here.
  */
 
 const PERIOD_LABELS: Record<InsightsPeriod, string> = {
@@ -36,17 +36,14 @@ const PERIOD_LABELS: Record<InsightsPeriod, string> = {
 const SCOPE_LABELS: Record<InsightsScope, string> = {
   [InsightsScope.Me]: "Me",
   [InsightsScope.Org]: "Organization",
-  [InsightsScope.Team]: "Team",
 };
 
 /**
- * The scopes these two reads actually honor, in the canonical order.
- *
- * `InsightsScope.Team` needs a team id neither route takes, and a fully-styled
- * control that silently ignores the choice is worse than not offering it.
+ * The scopes these two reads honor, in the canonical order: every Insights
+ * scope.
  */
 export const SESSION_ANALYTICS_SCOPES: readonly InsightsScope[] =
-  INSIGHTS_SCOPE_OPTIONS.filter((scope) => scope !== InsightsScope.Team);
+  INSIGHTS_SCOPE_OPTIONS;
 
 export const DEFAULT_SESSION_ANALYTICS_PERIOD: InsightsPeriod =
   InsightsPeriod.Month;

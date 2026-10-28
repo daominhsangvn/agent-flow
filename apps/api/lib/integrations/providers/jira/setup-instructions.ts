@@ -50,13 +50,13 @@ function webhookInstructions(
     "1. In Jira open **Settings (⚙) > System > WebHooks** and choose **Create a WebHook**.",
     `2. **URL**: \`${context.inboundUrl}\``,
     `3. **Secret**: \`${context.inboundSecret}\``,
-    "4. **Events**: under *Issue* select **created** and **updated**. For **Bot mentioned** triggers also select *Comment* **created** and **updated**.",
-    `5. **JQL filter**: \`assignee = "${bot.jql}"\` so only issues assigned to the bot account (${bot.label}) are sent. For **Issue labeled** or **Bot mentioned** triggers on issues that are not assigned to the bot, widen the filter (e.g. \`assignee = "${bot.jql}" OR labels = ai-ready\`) or leave it empty.`,
+    "4. **Events**: under *Issue* select **created** and **updated**. For **Bot mentioned** triggers, and **Issue matches conditions** triggers that use mentions, also select *Comment* **created** and **updated**.",
+    `5. **JQL filter**: \`assignee = "${bot.jql}"\` so only issues assigned to the bot account (${bot.label}) are sent. For **Issue labeled**, **Bot mentioned** or **Issue matches conditions** triggers that react to issues not (yet) assigned to the bot, widen the filter (e.g. \`assignee = "${bot.jql}" OR labels = ai-ready\`) or leave it empty.`,
     "6. Leave **Exclude body** unchecked and save.",
     "",
     "### Option 2: Jira Automation rule",
     "",
-    "Works without the Jira administrator role (project administrators can create rules). It covers **Issue assigned** triggers only.",
+    "Works without the Jira administrator role (project administrators can create rules). It covers assignments only: **Issue assigned** triggers, and **Issue matches conditions** triggers on the assignment.",
     "",
     "1. Open **Project settings > Automation** and create a rule.",
     "2. Trigger: **Work item assigned**.",
@@ -82,7 +82,7 @@ function pollInstructions(
     `AgentFlow polls Jira on every poll interval for issues assigned to the bot account (${bot.label}) that changed recently (JQL \`assignee = currentUser() AND updated >= …\`, signed in with the connection's credentials). No configuration is needed in Jira and this server does not need a public URL.`,
     ...missingBotNote(context.connection.account),
     "",
-    "Polling detects **Issue assigned** triggers (an issue created with, or changed to, the bot as assignee). **Issue labeled** and **Bot mentioned** triggers need **Webhook** delivery: Jira search cannot tell when a label was added or who was mentioned.",
+    "Polling detects **Issue assigned** triggers (an issue created with, or changed to, the bot as assignee) and **Issue matches conditions** triggers on issues assigned to the bot (their assignment and label changes). **Issue labeled** and **Bot mentioned** triggers, and mentions in conditions, need **Webhook** delivery: Jira search cannot tell when a label was added or who was mentioned.",
   ].join("\n");
 }
 

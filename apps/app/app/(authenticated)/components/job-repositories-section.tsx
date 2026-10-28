@@ -3,11 +3,11 @@
 import type { GitHubBranch } from "@repo/api/src/types/github";
 import { useDefaultBranches } from "@repo/app/github/hooks/use-default-branches";
 import {
+  type JobRepoPoolEntry,
   RepoSource,
   type ResolvedRepo,
   type UseResolvedJobReposResult,
 } from "@repo/app/loops/hooks/use-resolved-job-repos";
-import type { TeamRepoWithTeamId } from "@repo/app/teams/hooks/use-team-repositories-union";
 import {
   Alert,
   AlertDescription,
@@ -69,8 +69,7 @@ export type JobRepositoriesSectionProps = {
 
 const SOURCE_LABELS: Record<RepoSource, string> = {
   [RepoSource.PriorLoop]: "from previous job",
-  [RepoSource.ProjectOverride]: "project override",
-  [RepoSource.TeamDefault]: "from team defaults",
+  [RepoSource.ProjectDefault]: "project default",
   [RepoSource.UserAdded]: "added manually",
 };
 
@@ -92,8 +91,8 @@ export function JobRepositoriesSection(
 
   // A failed read is not an empty pool. Ordered before the empty branch on
   // purpose: on failure `pool` is also `[]`, and the empty copy would state as
-  // fact that the team has curated nothing and send the user to a settings page
-  // — for a team a non-member cannot edit anyway (ISS-5095).
+  // fact that the project has no repositories and send the user to a settings
+  // page (ISS-5095).
   if (resolved.poolError) {
     return (
       <Alert variant="error">
@@ -105,8 +104,8 @@ export function JobRepositoriesSection(
   if (pool.length === 0) {
     return (
       <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
-        No repositories curated on this project's team. Add repositories on the
-        team configuration page first.
+        No repositories on this project. Add repositories in the project's
+        Repositories settings first.
       </div>
     );
   }
@@ -129,7 +128,7 @@ export function JobRepositoriesSection(
 }
 
 type InnerProps = Readonly<JobRepositoriesSectionProps> & {
-  pool: TeamRepoWithTeamId[];
+  pool: JobRepoPoolEntry[];
   seedPrimary: ResolvedRepo | null;
   seedAdditional: ResolvedRepo[];
 };
@@ -176,7 +175,7 @@ function JobRepositoriesSectionInner({
   // Selected ids in the pool drive the per-repo branch lookups. Repos outside
   // the pool can't be submitted (AC-002).
   const selectedPoolIds = useMemo(() => {
-    const poolIdSet = new Set(pool.map((r) => r.installationRepositoryId));
+    const poolIdSet = new Set(pool.map((r) => r.id));
     return Array.from(selectedIds).filter((id) => poolIdSet.has(id));
   }, [pool, selectedIds]);
 
@@ -186,9 +185,10 @@ function JobRepositoriesSectionInner({
   // `branchesByRepoId[id]` being undefined; submit gating uses the per-id
   // branch presence check inside `computeIncomplete` (no global flag), so
   // an all-seeded selection unblocks immediately on first render.
-  const { branchByRepoId, branchesByRepoId } = useDefaultBranches({
-    repoIds: selectedPoolIds,
-  });
+  const { branchByRepoId, branchesByRepoId } = useJobRepoBranches(
+    pool,
+    selectedPoolIds
+  );
 
   const effectiveBranchByRepoId = useMemo<Record<string, string>>(
     () => ({ ...branchByRepoId, ...seedBranchById, ...userBranchById }),
@@ -303,8 +303,8 @@ function JobRepositoriesSectionInner({
         {droppedSeedPrimary && seedPrimary ? (
           <Alert variant="warning">
             <AlertDescription>
-              <strong>{seedPrimary.fullName}</strong> isn't in this team's
-              repositories. Pick a primary below to launch.
+              <strong>{seedPrimary.fullName}</strong> isn't one of this
+              project's repositories. Pick a primary below to launch.
             </AlertDescription>
           </Alert>
         ) : null}
@@ -312,22 +312,18 @@ function JobRepositoriesSectionInner({
           <ul className="space-y-2">
             {pool.map((repo) => (
               <RepoRow
-                branch={
-                  effectiveBranchByRepoId[repo.installationRepositoryId] ?? ""
-                }
-                branches={branchesByRepoId[repo.installationRepositoryId]}
+                branch={effectiveBranchByRepoId[repo.id] ?? ""}
+                branches={branchesByRepoId[repo.id]}
                 disabled={disabled}
-                isLockedPrimary={
-                  lockPrimary && repo.installationRepositoryId === primaryId
-                }
-                key={repo.installationRepositoryId}
+                isLockedPrimary={lockPrimary && repo.id === primaryId}
+                key={repo.id}
                 lockPrimary={lockPrimary}
                 onBranchChange={handleBranchChange}
                 onToggle={handleToggleSelected}
                 primaryId={primaryId}
                 repo={repo}
-                selected={selectedIds.has(repo.installationRepositoryId)}
-                source={sourceById[repo.installationRepositoryId]}
+                selected={selectedIds.has(repo.id)}
+                source={sourceById[repo.id]}
               />
             ))}
           </ul>
@@ -348,7 +344,7 @@ function JobRepositoriesSectionInner({
 }
 
 type RepoRowProps = Readonly<{
-  repo: TeamRepoWithTeamId;
+  repo: JobRepoPoolEntry;
   selected: boolean;
   primaryId: string | null;
   source: RepoSource | undefined;
@@ -382,10 +378,10 @@ function RepoRow({
   onToggle,
   onBranchChange,
 }: RepoRowProps) {
-  const isPrimary = primaryId === repo.installationRepositoryId;
-  const checkboxId = `job-repo-select-${repo.installationRepositoryId}`;
-  const radioId = `job-repo-primary-${repo.installationRepositoryId}`;
-  const branchId = `job-repo-branch-${repo.installationRepositoryId}`;
+  const isPrimary = primaryId === repo.id;
+  const checkboxId = `job-repo-select-${repo.id}`;
+  const radioId = `job-repo-primary-${repo.id}`;
+  const branchId = `job-repo-branch-${repo.id}`;
   return (
     <li
       className={`flex flex-col gap-2 rounded-md border p-2 ${
@@ -395,13 +391,11 @@ function RepoRow({
       <div className="flex items-center gap-3">
         <div className="flex shrink-0 items-center gap-1.5">
           <Checkbox
-            aria-label={`Include ${repo.repository.fullName}`}
+            aria-label={`Include ${repo.fullName}`}
             checked={selected}
             disabled={disabled || isLockedPrimary}
             id={checkboxId}
-            onCheckedChange={(checked) =>
-              onToggle(repo.installationRepositoryId, checked === true)
-            }
+            onCheckedChange={(checked) => onToggle(repo.id, checked === true)}
           />
           <Label className="text-muted-foreground text-xs" htmlFor={checkboxId}>
             Include
@@ -409,10 +403,10 @@ function RepoRow({
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <RadioGroupItem
-            aria-label={`Set ${repo.repository.fullName} as primary`}
+            aria-label={`Set ${repo.fullName} as primary`}
             disabled={disabled || lockPrimary}
             id={radioId}
-            value={repo.installationRepositoryId}
+            value={repo.id}
           />
           <Label className="text-muted-foreground text-xs" htmlFor={radioId}>
             Primary
@@ -426,9 +420,9 @@ function RepoRow({
             className={`min-w-0 flex-1 truncate text-sm ${
               isPrimary ? "font-semibold" : ""
             }`}
-            title={repo.repository.fullName}
+            title={repo.fullName}
           >
-            {repo.repository.fullName}
+            {repo.fullName}
           </span>
           {selected && source ? (
             <span className="shrink-0 text-muted-foreground text-xs">
@@ -443,10 +437,8 @@ function RepoRow({
           branches={branches}
           disabled={disabled}
           id={branchId}
-          onBranchChange={(value) =>
-            onBranchChange(repo.installationRepositoryId, value)
-          }
-          repoFullName={repo.repository.fullName}
+          onBranchChange={(value) => onBranchChange(repo.id, value)}
+          repoFullName={repo.fullName}
         />
       ) : null}
     </li>
@@ -528,4 +520,64 @@ function buildBranchOptions(
     return [{ name: current, isDefault: false }, ...list];
   }
   return list;
+}
+
+// Branch lookups keyed by pool id. GitHub repositories use the branch list of
+// the matching installation repo; every other repository offers only its
+// recorded default branch. Results are memoized because the section's effects
+// depend on their identity.
+function useJobRepoBranches(
+  pool: JobRepoPoolEntry[],
+  selectedPoolIds: string[]
+) {
+  const selectedEntries = useMemo(
+    () => pool.filter((r) => selectedPoolIds.includes(r.id)),
+    [pool, selectedPoolIds]
+  );
+  const githubRepoIds = useMemo(
+    () =>
+      selectedEntries
+        .map((e) => e.githubRepositoryId)
+        .filter((id): id is string => id !== null),
+    [selectedEntries]
+  );
+  const github = useDefaultBranches({ repoIds: githubRepoIds });
+
+  return useMemo(
+    () =>
+      mapBranchesToPoolIds(
+        selectedEntries,
+        github.branchByRepoId,
+        github.branchesByRepoId
+      ),
+    [selectedEntries, github.branchByRepoId, github.branchesByRepoId]
+  );
+}
+
+function mapBranchesToPoolIds(
+  entries: JobRepoPoolEntry[],
+  githubBranchById: Record<string, string>,
+  githubBranchesById: Record<string, GitHubBranch[]>
+) {
+  const branchByRepoId: Record<string, string> = {};
+  const branchesByRepoId: Record<string, GitHubBranch[]> = {};
+  for (const entry of entries) {
+    if (entry.githubRepositoryId) {
+      const branch = githubBranchById[entry.githubRepositoryId];
+      const branches = githubBranchesById[entry.githubRepositoryId];
+      if (branch) {
+        branchByRepoId[entry.id] = branch;
+      }
+      if (branches) {
+        branchesByRepoId[entry.id] = branches;
+      }
+      continue;
+    }
+    const branch = entry.defaultBranch ?? "main";
+    branchByRepoId[entry.id] = branch;
+    branchesByRepoId[entry.id] = [
+      { name: branch, isDefault: true, committedDate: "" },
+    ];
+  }
+  return { branchByRepoId, branchesByRepoId };
 }

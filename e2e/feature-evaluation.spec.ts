@@ -23,7 +23,6 @@ import {
   setComputePreference,
 } from "./helpers/compute-targets";
 import { createProject, deleteProject } from "./helpers/create-project";
-import { createTeam, deleteTeam } from "./helpers/create-team";
 import { createDocument, deleteDocument } from "./helpers/documents";
 import {
   completeFeatureEvaluationLoop,
@@ -74,13 +73,8 @@ test("Evaluate Feature dispatches evaluate_feature for the feature document", {
   await authenticateToApp(page);
   const token = await getSessionBearerToken(page);
 
-  const team = await createTeam(request, {
-    name: createUniqueName("e2e-feature-eval"),
-    token,
-  });
   const project = await createProject(request, {
     name: createUniqueName("e2e-feature-eval"),
-    teamIds: [team.id],
     token,
   });
   const feature = await createDocument(request, {
@@ -125,7 +119,6 @@ test("Evaluate Feature dispatches evaluate_feature for the feature document", {
   } finally {
     await deleteDocument(request, feature.id, token);
     await deleteProject(request, project.id, token);
-    await deleteTeam(request, team.id, token);
   }
 });
 
@@ -135,13 +128,8 @@ test("Feature judge results refetch after evaluation completes", {
   await authenticateToApp(page);
   const token = await getSessionBearerToken(page);
 
-  const team = await createTeam(request, {
-    name: createUniqueName("e2e-feature-eval"),
-    token,
-  });
   const project = await createProject(request, {
     name: createUniqueName("e2e-feature-eval"),
-    teamIds: [team.id],
     token,
   });
   const feature = await createDocument(request, {
@@ -209,7 +197,6 @@ test("Feature judge results refetch after evaluation completes", {
     await restoreComputePreference(request, previousPreference, token);
     await deleteDocument(request, feature.id, token);
     await deleteProject(request, project.id, token);
-    await deleteTeam(request, team.id, token);
     await deleteComputeTarget(request, target.id, token);
   }
 });

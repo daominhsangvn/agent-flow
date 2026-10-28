@@ -4,6 +4,12 @@ import {
 } from "@repo/api/src/types/integration";
 import { z } from "zod";
 import {
+  TRIGGER_CONDITION_MATCH_FIELD,
+  TRIGGER_CONDITIONS_REQUIRED_MESSAGE,
+  TriggerConditionMatch,
+  triggerConditionsMatch,
+} from "../../trigger-conditions";
+import {
   defineTrigger,
   type InboundEvent,
   type InboundEventAttributeValue,
@@ -210,4 +216,128 @@ function attribute(
   key: AdoEventAttribute
 ): InboundEventAttributeValue | undefined {
   return event.attributes[key];
+}
+
+export const workItemConditionsConfigSchema = z
+  .object({
+    match: z.enum(TriggerConditionMatch).default(TriggerConditionMatch.All),
+    assigned: z.boolean().default(false),
+    /** Any of these tags. */
+    tags: filterListSchema,
+    mentioned: z.boolean().default(false),
+    projects: filterListSchema,
+    workItemTypes: filterListSchema,
+    areaPathPrefix: z.string().trim().max(512).default(""),
+    states: filterListSchema,
+  })
+  .refine(
+    (config) => config.assigned || config.tags.length > 0 || config.mentioned,
+    {
+      message: `${TRIGGER_CONDITIONS_REQUIRED_MESSAGE}: assigned, tags or mentioned`,
+      path: ["assigned"],
+    }
+  );
+export type WorkItemConditionsConfig = z.infer<
+  typeof workItemConditionsConfigSchema
+>;
+
+/**
+ * Combines "assigned to the bot", "has one of the tags" and "the bot is
+ * mentioned" with AND (all) or OR (any), like Boards rules: e.g. assigned to
+ * the bot AND tagged agentflow, in either order. See trigger-conditions.ts.
+ */
+export const workItemConditionsTrigger = defineTrigger<
+  WorkItemConditionsConfig,
+  AdoConnectionConfig
+>({
+  key: AzureDevOpsTriggerType.WorkItemConditions,
+  displayName: "Work item matches conditions (assigned, tag, mention)",
+  description:
+    "Starts a run when a work item is assigned to the bot, gets one of the tags and/or mentions the bot, combined with AND (all) or OR (any): e.g. assigned to the bot AND tagged agentflow, in either order. In poll mode only work items assigned to the bot (and recent mentions) are seen.",
+  configSchema: workItemConditionsConfigSchema,
+  configFields: [
+    TRIGGER_CONDITION_MATCH_FIELD,
+    {
+      key: "assigned",
+      label: "Assigned to the bot",
+      kind: IntegrationFieldKind.Boolean,
+      defaultValue: false,
+      description:
+        "Assigned To is the connection's bot account. Assigning it is the moment this condition becomes true.",
+    },
+    {
+      key: "tags",
+      label: "Has a tag (any of)",
+      kind: IntegrationFieldKind.StringList,
+      defaultValue: [],
+      placeholder: "agentflow",
+      description:
+        "The work item has at least one of these tags (case-insensitive). Adding one is the moment this condition becomes true. Leave empty to not use tags.",
+    },
+    {
+      key: "mentioned",
+      label: "Bot mentioned",
+      kind: IntegrationFieldKind.Boolean,
+      defaultValue: false,
+      description:
+        "A comment (or the description of a new work item) mentions the bot with @. A mention is a moment: with all, the run starts on the mention while the other conditions hold.",
+    },
+    PROJECTS_FIELD,
+    WORK_ITEM_TYPES_FIELD,
+    {
+      key: "areaPathPrefix",
+      label: "Area path",
+      kind: IntegrationFieldKind.Text,
+      placeholder: "Contoso\\Web",
+      description:
+        "Only work items in this area path or below it. Leave empty to match every area.",
+    },
+    {
+      key: "states",
+      label: "States",
+      kind: IntegrationFieldKind.StringList,
+      defaultValue: [],
+      placeholder: "New",
+      description:
+        "e.g. New, Active. Leave empty to match every state (Boards column states are the work item's State).",
+    },
+  ],
+  manualRun: MANUAL_RUN,
+  matches: (event, config) =>
+    matchesProjectAndType(event, config) &&
+    isUnderAreaPath(
+      readText(event, AdoEventAttribute.AreaPath),
+      config.areaPathPrefix
+    ) &&
+    isOneOf(readText(event, AdoEventAttribute.State), config.states) &&
+    triggerConditionsMatch(
+      [
+        {
+          enabled: config.assigned,
+          holds: readFlag(event, AdoEventAttribute.AssignedToBot),
+          activated: readFlag(event, AdoEventAttribute.BecameAssigned),
+        },
+        {
+          enabled: config.tags.length > 0,
+          holds: hasAnyTag(
+            readList(event, AdoEventAttribute.Tags),
+            config.tags
+          ),
+          activated: hasAnyTag(
+            readList(event, AdoEventAttribute.AddedTags),
+            config.tags
+          ),
+        },
+        {
+          enabled: config.mentioned,
+          holds: readFlag(event, AdoEventAttribute.Mentioned),
+          activated: readFlag(event, AdoEventAttribute.Mentioned),
+        },
+      ],
+      config.match
+    ),
+});
+
+function readFlag(event: InboundEvent, key: AdoEventAttribute): boolean {
+  return attribute(event, key) === true;
 }

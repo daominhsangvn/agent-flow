@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
 import { Result } from "@repo/api/src/types/result";
 import { verifyHubSignature, verifyStaticToken } from "../../inbound-auth";
-import type {
-  InboundEvent,
-  InboundParseResult,
-  InboundRequest,
-  InboundSecretContext,
-  InboundVerification,
-  IntegrationAccount,
+import {
+  HttpMethod,
+  type InboundEvent,
+  type InboundMessage,
+  type InboundParseResult,
+  type InboundRequest,
+  type InboundSecretContext,
+  type InboundVerification,
+  type IntegrationAccount,
 } from "../../types";
-import type { JiraContext } from "./client";
+import { adfToPlainText } from "../atlassian/adf";
+import { type JiraContext, jiraIssuePath, jiraRequest } from "./client";
 import {
   JIRA_AUTOMATION_EVENT_TYPE,
   JIRA_HUB_SIGNATURE_HEADER,
@@ -21,15 +24,22 @@ import { parseEpochMillis } from "./dates";
 import { isJiraBotUser, jiraUserActor } from "./identity";
 import {
   isAssignedToBot,
+  itemChangeEvents,
   type JiraIssueOccurrence,
   jiraAssignedEvent,
   jiraChangeEvents,
   jiraCommentMentionEvents,
+  jiraCommentReplyEvent,
+  jiraConditionsEvent,
   jiraCreatedEvents,
+  jiraIssueState,
 } from "./issue-events";
+import { mentionsJiraBot } from "./mentions";
 import {
   type JiraConnectionConfig,
+  type JiraIssue,
   type JiraWebhookBody,
+  jiraIssueSchema,
   jiraWebhookBodySchema,
   jiraWebhookEnvelopeSchema,
 } from "./schemas";
@@ -46,6 +56,10 @@ import {
  * / `comment_created` / `comment_updated` and Automation "Work item data (Jira format)" bodies (no `webhookEvent`),
  * which are treated as "assigned" notifications checked against the current
  * assignee. Everything else is acknowledged with an ignored reason.
+ *
+ * The issue of a comment webhook carries only a few fields (no labels), so a
+ * comment that mentions the bot is followed by one read of the issue, for the
+ * triggers' label and status filters.
  */
 
 const SUPPORTED_WEBHOOK_EVENTS = new Set<string>(
@@ -74,7 +88,7 @@ export function parseJiraRequest(
   request: InboundRequest,
   ctx: JiraContext
 ): Promise<InboundParseResult> {
-  return Promise.resolve(parseJiraDelivery(request, ctx));
+  return parseJiraDelivery(request, ctx);
 }
 
 /** X-Atlassian-Webhook-Identifier (stable across Jira retries), else a hash of the body. */
@@ -88,10 +102,10 @@ export function resolveJiraDeliveryId(request: InboundRequest): string {
   return createHash("sha256").update(request.rawBody, "utf8").digest("hex");
 }
 
-function parseJiraDelivery(
+async function parseJiraDelivery(
   request: InboundRequest,
   ctx: JiraContext
-): InboundParseResult {
+): Promise<InboundParseResult> {
   const deliveryId = resolveJiraDeliveryId(request);
   const json = parseJson(request.rawBody);
   if (!json.ok) {
@@ -125,7 +139,8 @@ function parseJiraDelivery(
   ) {
     return ignored(deliveryId, eventType, JiraIgnoredReason.CausedByBot);
   }
-  const events = eventsFromBody(body.data, {
+  const events = await eventsFromBody(body.data, {
+    ctx,
     account,
     deliveryId,
     siteUrl: ctx.connection.config.siteUrl,
@@ -138,16 +153,17 @@ function parseJiraDelivery(
 }
 
 type BodyContext = {
+  ctx: JiraContext;
   account: IntegrationAccount;
   deliveryId: string;
   siteUrl: string;
   now: Date;
 };
 
-function eventsFromBody(
+async function eventsFromBody(
   body: JiraWebhookBody,
   context: BodyContext
-): InboundEvent[] {
+): Promise<InboundEvent[]> {
   const occurrence: JiraIssueOccurrence = {
     siteUrl: context.siteUrl,
     issue: body.issue,
@@ -158,13 +174,7 @@ function eventsFromBody(
     return jiraCreatedEvents(occurrence, context.account);
   }
   if (isCommentEvent(body.webhookEvent)) {
-    return body.comment
-      ? jiraCommentMentionEvents(
-          { ...occurrence, actor: jiraUserActor(commentAuthor(body)) },
-          body.comment,
-          context.account
-        )
-      : [];
+    return await commentEvents(body, occurrence, context);
   }
   if (body.webhookEvent === JiraWebhookEvent.IssueUpdated) {
     return jiraChangeEvents(
@@ -174,26 +184,38 @@ function eventsFromBody(
       context.account
     );
   }
-  return automationEvents(occurrence, context);
+  return automationEvents(body, occurrence, context);
 }
 
 /**
- * Automation bodies carry no changelog: the rule ("Work item assigned" with
- * an assignee condition) already decided, so only the current assignee is
- * checked. Each rule execution is its own occurrence.
+ * Automation bodies may carry a changelog: its status and label items yield
+ * their events whatever the assignee is. The rule ("Work item assigned" with
+ * an assignee condition) already decided the assignment, so only the current
+ * assignee is checked. Each rule execution is its own occurrence.
  */
 function automationEvents(
+  body: JiraWebhookBody,
   occurrence: JiraIssueOccurrence,
   context: BodyContext
 ): InboundEvent[] {
+  const changeId = `${AUTOMATION_CHANGE_PREFIX}${context.deliveryId}`;
+  const changeEvents = itemChangeEvents(
+    occurrence,
+    body.changelog?.items ?? [],
+    changeId
+  );
   if (!isAssignedToBot(occurrence.issue, context.account)) {
-    return [];
+    return changeEvents;
   }
   return [
-    jiraAssignedEvent(
+    ...changeEvents,
+    jiraAssignedEvent(occurrence, changeId),
+    jiraConditionsEvent({
       occurrence,
-      `${AUTOMATION_CHANGE_PREFIX}${context.deliveryId}`
-    ),
+      facts: { becameAssigned: true, addedLabels: [], mentioned: false },
+      state: jiraIssueState(occurrence.issue, context.account),
+      changeId,
+    }),
   ];
 }
 
@@ -223,4 +245,94 @@ function parseJson(rawBody: string): Result<unknown, string> {
   } catch {
     return Result.err("invalid_json");
   }
+}
+
+const COMMENTED_ISSUE_FIELDS =
+  "summary,issuetype,labels,status,assignee,project";
+
+/**
+ * The commented issue as REST returns it (with its labels); the webhook's
+ * trimmed issue when Jira cannot be read, so the mention still counts.
+ */
+async function loadCommentedIssue(
+  ctx: JiraContext,
+  issue: JiraIssue
+): Promise<JiraIssue> {
+  const fetched = await jiraRequest(
+    ctx,
+    {
+      method: HttpMethod.Get,
+      path: jiraIssuePath(issue.id),
+      query: { fields: COMMENTED_ISSUE_FIELDS },
+    },
+    jiraIssueSchema
+  );
+  if (fetched.ok) {
+    return fetched.value;
+  }
+  ctx.log.warn(
+    "Could not read the commented Jira issue; using the webhook's fields",
+    {
+      connectionId: ctx.connection.id,
+      issueKey: issue.key,
+      status: fetched.error.status,
+      kind: fetched.error.kind,
+    }
+  );
+  return issue;
+}
+
+/**
+ * A new reply in a comment thread (jira.comment_reply, first: it can resume
+ * the run that posted the comment), then the mention events when the comment
+ * mentions the bot. Jira's Reply mentions the replied comment's author, so a
+ * reply to the bot's comment is usually both.
+ */
+async function commentEvents(
+  body: JiraWebhookBody,
+  occurrence: JiraIssueOccurrence,
+  context: BodyContext
+): Promise<InboundEvent[]> {
+  const comment = body.comment;
+  if (!comment) {
+    return [];
+  }
+  const actor = jiraUserActor(commentAuthor(body));
+  const events: InboundEvent[] = [];
+  // An edited reply was answered (or not) when it was written.
+  if (
+    body.webhookEvent === JiraWebhookEvent.CommentCreated &&
+    comment.parentId
+  ) {
+    events.push(
+      jiraCommentReplyEvent(
+        { ...occurrence, actor },
+        { id: comment.id, parentId: comment.parentId }
+      )
+    );
+  }
+  if (mentionsJiraBot(comment.body, context.account)) {
+    events.push(
+      ...jiraCommentMentionEvents(
+        {
+          ...occurrence,
+          issue: await loadCommentedIssue(context.ctx, body.issue),
+          actor,
+        },
+        comment,
+        context.account
+      )
+    );
+  }
+  const message: InboundMessage = {
+    id: comment.id,
+    parentId: comment.parentId ?? null,
+    text: commentText(comment.body),
+  };
+  return events.map((event) => ({ ...event, message }));
+}
+
+/** A webhook comment's text: wiki markup as written, ADF as plain text. */
+function commentText(body: unknown): string {
+  return typeof body === "string" ? body : adfToPlainText(body);
 }

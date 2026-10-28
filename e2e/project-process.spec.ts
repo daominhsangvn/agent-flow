@@ -2,7 +2,6 @@ import type { Locator, Page } from "@playwright/test";
 import { getApiBaseUrl } from "./helpers/api-url";
 import { isOrgAdminRole, requireOrgClaims } from "./helpers/better-auth";
 import { createProject, deleteProject } from "./helpers/create-project";
-import { createTeam, deleteTeam } from "./helpers/create-team";
 import { E2ETag } from "./helpers/tags";
 import { createUniqueName } from "./helpers/utils";
 import { expect, test } from "./test";
@@ -26,17 +25,10 @@ test("project process: default, customize, save a version, reset", {
   const api = getApiBaseUrl();
   const headers = { Authorization: `Bearer ${token}` };
 
-  let teamId: string | null = null;
   let projectId: string | null = null;
   try {
-    const team = await createTeam(request, {
-      name: createUniqueName("e2e-process-team"),
-      token,
-    });
-    teamId = team.id;
     const project = await createProject(request, {
       name: createUniqueName("e2e-process-project"),
-      teamIds: [team.id],
       token,
     });
     projectId = project.id;
@@ -50,7 +42,7 @@ test("project process: default, customize, save a version, reset", {
       invalidVersion: null,
     });
 
-    await page.goto(`/${orgSlug}/teams/${team.id}/projects/${project.id}`);
+    await page.goto(`/${orgSlug}/projects/${project.id}`);
     await page.getByRole("radio", { name: "Process" }).click();
     await expect(page).toHaveURL(PROCESS_TAB_RE);
     const panel = page.getByTestId("project-process-panel");
@@ -152,9 +144,6 @@ test("project process: default, customize, save a version, reset", {
     if (projectId) {
       await deleteProject(request, projectId, token);
     }
-    if (teamId) {
-      await deleteTeam(request, teamId, token);
-    }
   }
 });
 
@@ -166,22 +155,15 @@ test("project process: write it as YAML with the suggestion popup, comments kept
   const api = getApiBaseUrl();
   const headers = { Authorization: `Bearer ${token}` };
 
-  let teamId: string | null = null;
   let projectId: string | null = null;
   try {
-    const team = await createTeam(request, {
-      name: createUniqueName("e2e-process-yaml-team"),
-      token,
-    });
-    teamId = team.id;
     const project = await createProject(request, {
       name: createUniqueName("e2e-process-yaml-project"),
-      teamIds: [team.id],
       token,
     });
     projectId = project.id;
 
-    await page.goto(`/${orgSlug}/teams/${team.id}/projects/${project.id}`);
+    await page.goto(`/${orgSlug}/projects/${project.id}`);
     await page.getByRole("radio", { name: "Process" }).click();
     const panel = page.getByTestId("project-process-panel");
     await panel.getByRole("button", { name: "Customize" }).click({
@@ -258,9 +240,6 @@ test("project process: write it as YAML with the suggestion popup, comments kept
   } finally {
     if (projectId) {
       await deleteProject(request, projectId, token);
-    }
-    if (teamId) {
-      await deleteTeam(request, teamId, token);
     }
   }
 });

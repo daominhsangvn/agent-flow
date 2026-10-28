@@ -112,7 +112,6 @@ function buildInput(components: Record<string, unknown>[]) {
       components,
     } as never,
     userId: USER_ID,
-    isOrgPolicyEnabled: async () => true,
   };
 }
 

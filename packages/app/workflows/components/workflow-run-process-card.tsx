@@ -3,6 +3,9 @@
 import type { LoopStepCollectedFile } from "@agentflow-ai/loops-api/loop-step";
 import {
   PROCESS_ANSWER_MAX,
+  type ReviewDecision,
+  ReviewDecisionKind,
+  ReviewSignalVia,
   RunProcessSource,
   type RunProcessView,
 } from "@repo/api/src/types/project-process";
@@ -36,6 +39,7 @@ import {
   CircleIcon,
   Loader2Icon,
   MessageCircleQuestionIcon,
+  MessagesSquareIcon,
   ShieldCheckIcon,
   XCircleIcon,
   XIcon,
@@ -44,6 +48,7 @@ import { type ReactNode, useState } from "react";
 import {
   useAnswerWorkflowRunQuestions,
   useDecideWorkflowRunApproval,
+  useDecideWorkflowRunReview,
 } from "../hooks/use-workflows";
 import {
   approvalFiles,
@@ -79,6 +84,7 @@ export function WorkflowRunProcessCard({
     process.approval && run.status === WorkflowRunStatus.NeedsApproval
       ? process.approval
       : null;
+  const review = process.review;
 
   return (
     <Card data-testid="workflow-run-process">
@@ -108,6 +114,17 @@ export function WorkflowRunProcessCard({
             isAdmin={isAdmin}
             runId={run.id}
             stepName={stepName(process, approval.stepId)}
+          />
+        ) : null}
+        {review ? (
+          <StepReview
+            isAdmin={isAdmin}
+            review={review}
+            runId={run.id}
+            stepName={stepName(process, review.stepId)}
+            waiting={
+              review.waiting && run.status === WorkflowRunStatus.NeedsApproval
+            }
           />
         ) : null}
         <StepFiles process={process} />
@@ -442,3 +459,202 @@ function stepName(process: RunProcessView, stepId: string): string {
 }
 
 const MARKDOWN_FILE = /\.(md|markdown)$/i;
+
+type ReviewView = NonNullable<RunProcessView["review"]>;
+
+/**
+ * A step under review: how to decide it on the source item, its earlier
+ * rounds, and the decisions in AgentFlow.
+ */
+function StepReview({
+  runId,
+  stepName: name,
+  review,
+  waiting,
+  isAdmin,
+}: Readonly<{
+  runId: string;
+  stepName: string;
+  review: ReviewView;
+  waiting: boolean;
+  isAdmin: boolean;
+}>) {
+  const decide = useDecideWorkflowRunReview();
+  const [comment, setComment] = useState("");
+  const submit = async (decision: ReviewDecisionKind) => {
+    await decide.mutateAsync({ runId, input: { decision, comment } });
+    setComment("");
+  };
+  return (
+    <div
+      className="space-y-4 rounded-md border p-4"
+      data-testid="run-step-review"
+    >
+      <p className="flex items-center gap-2 font-medium text-sm">
+        <MessagesSquareIcon className="size-4" />
+        {waiting
+          ? `"${name}" waits for review (round ${review.round})`
+          : `"${name}" is under review (round ${review.round})`}
+      </p>
+      <ReviewSignals review={review} />
+      <ReviewHistory history={review.history} />
+      {waiting ? (
+        <ReviewControls
+          comment={comment}
+          isAdmin={isAdmin}
+          isPending={decide.isPending}
+          onComment={setComment}
+          onDecide={submit}
+          planStep={review.planStep}
+        />
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          The step is working on the latest feedback.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** How people decide the review on the source item. */
+function ReviewSignals({ review }: Readonly<{ review: ReviewView }>) {
+  const hints: string[] = [];
+  if (review.goOnLabels.length > 0) {
+    hints.push(
+      `add ${labelList(review.goOnLabels)} to ${review.planStep ? "approve" : "finish the review"}`
+    );
+  }
+  if (review.feedbackLabels.length > 0) {
+    hints.push(`add ${labelList(review.feedbackLabels)} to ask for changes`);
+  }
+  if (review.mention) {
+    hints.push("mention the bot in a comment with the changes you want");
+  }
+  if (hints.length === 0) {
+    return null;
+  }
+  return (
+    <p className="text-muted-foreground text-sm">
+      {`On the ticket: ${hints.join("; ")}.`}
+    </p>
+  );
+}
+
+function ReviewHistory({
+  history,
+}: Readonly<{ history: readonly ReviewDecision[] }>) {
+  if (history.length === 0) {
+    return null;
+  }
+  return (
+    <ol className="space-y-2" data-testid="run-step-review-history">
+      {history.map((decision) => (
+        <li className="text-sm" key={`${decision.at}-${decision.kind}`}>
+          <span className="font-medium">{decisionLabel(decision)}</span>
+          <span className="text-muted-foreground">
+            {` · ${decisionSource(decision)}`}
+          </span>
+          {decision.text ? (
+            <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-muted-foreground">
+              {decision.text}
+            </p>
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function ReviewControls({
+  planStep,
+  isAdmin,
+  isPending,
+  comment,
+  onComment,
+  onDecide,
+}: Readonly<{
+  planStep: boolean;
+  isAdmin: boolean;
+  isPending: boolean;
+  comment: string;
+  onComment: (comment: string) => void;
+  onDecide: (decision: ReviewDecisionKind) => Promise<void>;
+}>): ReactNode {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="review-comment">Comment</Label>
+      <Textarea
+        id="review-comment"
+        maxLength={PROCESS_ANSWER_MAX}
+        onChange={(event) => onComment(event.target.value)}
+        placeholder="The changes you want, or a note for the run"
+        rows={3}
+        value={comment}
+      />
+      <div className="flex flex-wrap gap-2">
+        {isAdmin ? (
+          <Button
+            disabled={isPending}
+            onClick={() => onDecide(ReviewDecisionKind.Approve)}
+            type="button"
+          >
+            <CheckIcon className="size-4" />
+            {planStep ? "Approve" : "Done"}
+          </Button>
+        ) : null}
+        <Button
+          disabled={isPending}
+          onClick={() => onDecide(ReviewDecisionKind.Feedback)}
+          type="button"
+          variant="secondary"
+        >
+          <MessagesSquareIcon className="size-4" />
+          {planStep ? "Replan" : "Request changes"}
+        </Button>
+        {isAdmin ? (
+          <Button
+            disabled={isPending}
+            onClick={() => onDecide(ReviewDecisionKind.Reject)}
+            type="button"
+            variant="outline"
+          >
+            <XIcon className="size-4" />
+            Reject
+          </Button>
+        ) : null}
+      </div>
+      {isAdmin ? null : (
+        <p className="text-muted-foreground text-xs">
+          An org admin approves or rejects; you can ask for changes.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function labelList(labels: readonly string[]): string {
+  return labels.map((label) => `"${label}"`).join(" or ");
+}
+
+function decisionLabel(decision: ReviewDecision): string {
+  switch (decision.kind) {
+    case ReviewDecisionKind.Approve:
+      return "Approved";
+    case ReviewDecisionKind.Feedback:
+      return "Changes asked";
+    default:
+      return "Rejected";
+  }
+}
+
+function decisionSource(decision: ReviewDecision): string {
+  const who = decision.author ?? "a member";
+  switch (decision.via) {
+    case ReviewSignalVia.Label:
+      return `label "${decision.label ?? ""}" by ${who}`;
+    case ReviewSignalVia.Mention:
+      return `comment by ${who}`;
+    default:
+      return "in AgentFlow";
+  }
+}

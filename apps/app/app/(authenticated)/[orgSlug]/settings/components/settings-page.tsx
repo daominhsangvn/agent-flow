@@ -68,7 +68,6 @@ import { IntegrationConnectionsSection } from "./integration-connections-section
 import { LocalComputeTargetsCard } from "./local-compute-targets-card";
 import { OrganizationSlugSettings } from "./organization-slug-settings";
 import { SessionFrustrationCard } from "./session-frustration-card";
-import { SessionSyncPolicyCard } from "./session-sync-policy-card";
 import { TranscriptSearchCard } from "./transcript-search-card";
 
 export type SettingsPageProperties = {
@@ -315,7 +314,6 @@ export function SettingsPage({
           </Card>
           <OrganizationSlugSettings isAdmin={isAdmin} />
           <TranscriptSearchCard isAdmin={isAdmin} />
-          <SessionSyncPolicyCard isAdmin={isAdmin} />
           <SessionFrustrationCard isAdmin={isAdmin} />
           {isAdmin && SHOW_AGENTFLOW_ROLES && <AgentFlowRolesSection />}
         </TabsContent>

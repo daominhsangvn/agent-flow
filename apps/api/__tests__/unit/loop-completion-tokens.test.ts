@@ -61,6 +61,14 @@ vi.mock("@/app/settings/api-key-service", () => ({
   apiKeyService: { resolveApiKey: vi.fn() },
 }));
 
+const { mockResolveComputeTargetClaudeRuntime } = vi.hoisted(() => ({
+  mockResolveComputeTargetClaudeRuntime: vi.fn(),
+}));
+
+vi.mock("@/app/compute-targets/model-provider-service", () => ({
+  resolveComputeTargetClaudeRuntime: mockResolveComputeTargetClaudeRuntime,
+}));
+
 vi.mock("@repo/auth/loop-runner-jwt", async (importOriginal) => {
   const { createLoopRunnerJwtMockModule } = await import(
     "../fixtures/mock-modules"
@@ -851,7 +859,7 @@ describe("handleLoopCompleted EXECUTE 0-token guard", () => {
   });
 
   it("calculates non-zero estimatedCost when apiKeySource is not none", async () => {
-    setupLoop();
+    setupLoop({ computeTargetId: "target-1" });
 
     await handleLoopEvent("loop-1", "org-1", {
       type: "completed",
@@ -864,6 +872,8 @@ describe("handleLoopCompleted EXECUTE 0-token guard", () => {
     const call = mockLoopsService.updateStatus.mock.calls[0];
     const data = call[3] as { estimatedCost: number };
     expect(data.estimatedCost).toBeGreaterThan(0);
+    // Only "none" needs the compute target to decide.
+    expect(mockResolveComputeTargetClaudeRuntime).not.toHaveBeenCalled();
   });
 
   it("does not include metadata when apiKeySource is absent from event", async () => {

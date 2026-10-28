@@ -92,6 +92,8 @@ describe("webhookProvider definition", () => {
     const verification = inbound?.verify?.(request, {
       connection: context.connection,
       inboundSecret: secret,
+      http: context.http,
+      now: context.now,
     });
     const parsed = await inbound?.parse?.(request, context);
 

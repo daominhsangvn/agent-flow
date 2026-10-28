@@ -33,7 +33,6 @@ import type { InsightsTileAvailability } from "../lib/tile-availability";
 export type InsightsDataSource = {
   availableScopes: readonly InsightsScope[];
   availableSections: readonly InsightsSection[];
-  availableTeams?: readonly InsightsTeamOption[];
   getTileAvailability?: (
     input: InsightsTileAvailabilityInput
   ) => InsightsTileAvailability;
@@ -41,24 +40,16 @@ export type InsightsDataSource = {
   onConnectGitHub?: () => void | Promise<void>;
   getDelivery: (
     period: InsightsPeriod,
-    scope: InsightsScope,
-    teamId?: string
+    scope: InsightsScope
   ) => Promise<DeliveryInsightsResponse>;
   getUtilization: (
     period: InsightsPeriod,
-    scope: InsightsScope,
-    teamId?: string
+    scope: InsightsScope
   ) => Promise<UtilizationInsightsResponse>;
   getAgents: (
     period: InsightsPeriod,
-    scope: InsightsScope,
-    teamId?: string
+    scope: InsightsScope
   ) => Promise<AgentsInsightsResponse>;
-};
-
-export type InsightsTeamOption = {
-  id: string;
-  name: string;
 };
 
 export type InsightsTileAvailabilityInput = {

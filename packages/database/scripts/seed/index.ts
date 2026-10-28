@@ -92,13 +92,6 @@ export async function runSeed(
   // ---------------------------------------------------------------------------
 
   const modelQueries: Array<{ name: string; query: Promise<number> }> = [
-    { name: "Team", query: prisma.team.count({ where: { organizationId } }) },
-    {
-      name: "TeamMember",
-      query: prisma.teamMember.count({
-        where: { team: { organizationId } },
-      }),
-    },
     {
       name: "Project",
       query: prisma.project.count({ where: { organizationId } }),

@@ -42,9 +42,13 @@ const MEMBER_VIEWER = { isAdmin: false };
 const HOOK_URL = "https://hooks.example.com/hooks/catch/123/abc?token=secret";
 
 const TRIGGER_TYPE = FAKE_TRIGGER_TYPE;
-const POST_ACTION_1_MESSAGE_RE = /^Post action 1: message: /;
+const ACTION_3_MESSAGE_RE = /^Action 3: message: /;
 const NEW_TRIGGER_ID_RE = /^trigger-new-\d+$/;
 const ACTION_TYPE = FAKE_ACTION_TYPE;
+const KEY_BY_CONNECTION: Record<string, string> = {
+  [IDS.jira]: "jira",
+  [IDS.teams]: "teams",
+};
 
 const mocks = vi.hoisted(() => ({
   projectExists: true,
@@ -64,106 +68,17 @@ const mocks = vi.hoisted(() => ({
   writes: [] as string[],
 }));
 
-vi.mock("@repo/database", () => {
-  const db = {
-    project: {
-      findFirst: vi.fn(() =>
-        Promise.resolve(mocks.projectExists ? { id: "project" } : null)
-      ),
-    },
-    user: {
-      findFirst: vi.fn((args: { where: { id: string } }) =>
-        Promise.resolve(
-          mocks.activeUsers.has(args.where.id) ? { id: args.where.id } : null
-        )
-      ),
-    },
-    integrationConnection: {
-      findMany: vi.fn((args: { where: { id: { in: string[] } } }) =>
-        Promise.resolve(
-          mocks.connections.filter((row) => args.where.id.in.includes(row.id))
-        )
-      ),
-      deleteMany: vi.fn(() => Promise.resolve({ count: 0 })),
-    },
-    workflow: {
-      create: vi.fn((args: { data: Row }) => {
-        mocks.workflow = {
-          ...args.data,
-          id: "0199a5f0-0000-7000-8000-0000000000f1",
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          lastRunAt: null,
-        };
-        return Promise.resolve({ id: mocks.workflow.id });
-      }),
-      updateMany: vi.fn((args: { data: Row }) => {
-        mocks.writes.push("workflow.update");
-        Object.assign(mocks.workflow ?? {}, args.data);
-        return Promise.resolve({ count: 1 });
-      }),
-      deleteMany: vi.fn((args: { where: { id: string } }) =>
-        Promise.resolve({ count: mocks.workflow?.id === args.where.id ? 1 : 0 })
-      ),
-      findMany: vi.fn(() => Promise.resolve(mocks.workflow ? [record()] : [])),
-      findFirst: vi.fn((args: { where: { id: string } }) =>
-        Promise.resolve(mocks.workflow?.id === args.where.id ? record() : null)
-      ),
-    },
-    workflowTrigger: childDelegate(() => mocks.triggers, "trigger"),
-    workflowAction: childDelegate(() => mocks.actions, "action"),
-    workflowRun: {
-      groupBy: vi.fn(() => Promise.resolve(mocks.runGroups)),
-    },
-  };
+vi.mock("@repo/database", async () => {
+  const support = await import(
+    "@/lib/workflows/__tests__/support/workflow-service-db.test-fake"
+  );
+  const db = support.workflowServiceDelegates(mocks, () => ({
+    projectId: IDS.project,
+    keyByConnection: KEY_BY_CONNECTION,
+  }));
   const withDb = (fn: (client: unknown) => unknown) => fn(db);
   withDb.tx = (fn: (client: unknown) => unknown) => fn(db);
   return { withDb };
-
-  function record() {
-    return {
-      ...mocks.workflow,
-      project: { id: "project", name: "Platform" },
-      runAsUser: {
-        id: mocks.workflow?.runAsUserId,
-        firstName: "Bot",
-        lastName: null,
-        email: "bot@example.test",
-      },
-      triggers: [...mocks.triggers].sort(byPosition),
-      actions: [...mocks.actions].sort(byPosition),
-    };
-  }
-
-  function byPosition(left: Row, right: Row) {
-    return Number(left.position) - Number(right.position);
-  }
-
-  function childDelegate(rows: () => Row[], label: string) {
-    let next = 1;
-    return {
-      deleteMany: vi.fn((args: { where: { id: { notIn: string[] } } }) => {
-        const keep = rows().filter((row) =>
-          args.where.id.notIn.includes(row.id)
-        );
-        rows().splice(0, rows().length, ...keep);
-        mocks.writes.push(`${label}.delete`);
-        return Promise.resolve({ count: 0 });
-      }),
-      updateMany: vi.fn((args: { where: { id: string }; data: Row }) => {
-        const row = rows().find((entry) => entry.id === args.where.id);
-        Object.assign(row ?? {}, args.data);
-        mocks.writes.push(`${label}.update:${args.where.id}`);
-        return Promise.resolve({ count: row ? 1 : 0 });
-      }),
-      create: vi.fn((args: { data: Row }) => {
-        const row = { ...args.data, id: `${label}-new-${next++}` };
-        rows().push(row);
-        mocks.writes.push(`${label}.create`);
-        return Promise.resolve({ id: row.id });
-      }),
-    };
-  }
 });
 vi.mock("@/app/compute-targets/service", () => ({
   computeTargetsService: {
@@ -174,6 +89,7 @@ vi.mock("@/app/compute-targets/service", () => ({
 vi.mock("@/app/projects/project-process-service", () => ({
   checkProcessToolkit: mocks.checkProcessToolkit,
 }));
+
 vi.mock("@/lib/integrations/registry", async () => {
   const support = await import(
     "@/lib/workflows/__tests__/support/workflow-registry.test-fake"
@@ -188,12 +104,14 @@ beforeEach(() => {
   mocks.connections = [
     {
       id: IDS.jira,
+      key: "jira",
       name: "Jira",
       provider: "fake",
       status: IntegrationConnectionStatus.Active,
     },
     {
       id: IDS.teams,
+      key: "teams",
       name: "Teams",
       provider: "fake",
       status: IntegrationConnectionStatus.Active,
@@ -211,7 +129,7 @@ beforeEach(() => {
 
 function action(overrides: Record<string, unknown> = {}) {
   return {
-    connectionId: IDS.teams,
+    connectionKey: "teams",
     type: ACTION_TYPE,
     config: { message: "{{summary}}" },
     events: [WorkflowRunEvent.Succeeded],
@@ -224,10 +142,10 @@ function input(overrides: Record<string, unknown> = {}): SaveWorkflowInput {
     name: "Jira to PR",
     projectId: IDS.project,
     agent: { computeTargetId: IDS.target, mode: WorkflowAgentMode.Plan },
-    triggers: [{ connectionId: IDS.jira, type: TRIGGER_TYPE }],
+    triggers: [{ connectionKey: "jira", type: TRIGGER_TYPE }],
     actions: [
       {
-        connectionId: IDS.teams,
+        connectionKey: "teams",
         type: ACTION_TYPE,
         config: { message: "{{summary}}" },
         events: [WorkflowRunEvent.Succeeded, WorkflowRunEvent.Succeeded],
@@ -257,7 +175,7 @@ describe("workflowService.create", () => {
       },
       triggers: [
         {
-          connectionId: IDS.jira,
+          connectionKey: "jira",
           type: TRIGGER_TYPE,
           config: { projectKeys: [] },
           position: 0,
@@ -265,7 +183,7 @@ describe("workflowService.create", () => {
       ],
       actions: [
         {
-          connectionId: IDS.teams,
+          connectionKey: "teams",
           type: ACTION_TYPE,
           stage: WorkflowActionStage.Post,
           events: [WorkflowRunEvent.Succeeded],
@@ -278,7 +196,7 @@ describe("workflowService.create", () => {
     expect(mocks.workflow?.runAsUserId).toBe(IDS.caller);
   });
 
-  it("stores pre actions on run.triggered and counts positions per stage", async () => {
+  it("stores pre actions on workflow.triggered and keeps the list order as position", async () => {
     const result = await workflowService.create(
       IDS.org,
       IDS.caller,
@@ -322,21 +240,21 @@ describe("workflowService.create", () => {
       {
         message: "pre B",
         stage: WorkflowActionStage.Pre,
-        position: 0,
+        position: 1,
         events: [WorkflowRunEvent.Triggered],
         continueOnError: true,
       },
       {
         message: "post C",
         stage: WorkflowActionStage.Post,
-        position: 1,
+        position: 2,
         events: [WorkflowRunEvent.Failed],
         continueOnError: false,
       },
       {
         message: "pre D",
         stage: WorkflowActionStage.Pre,
-        position: 1,
+        position: 3,
         events: [WorkflowRunEvent.Triggered],
         continueOnError: false,
       },
@@ -360,11 +278,11 @@ describe("workflowService.create", () => {
   });
 
   it.each([
-    ["no event", [], "Post action 1: select at least one run event."],
+    ["no event", [], "Action 1: select at least one run event."],
     [
-      "run.triggered",
+      "workflow.triggered",
       [WorkflowRunEvent.Triggered, WorkflowRunEvent.Failed],
-      "Post action 1: run.triggered is reserved for pre actions.",
+      "Action 1: workflow.triggered is reserved for pre actions.",
     ],
   ])("rejects a post action with %s even when the schema was bypassed", async (_label, events, message) => {
     const unchecked = input();
@@ -379,7 +297,7 @@ describe("workflowService.create", () => {
     expect(mocks.workflow).toBeNull();
   });
 
-  it("names actions by stage and position within the stage, like the editor", async () => {
+  it("names actions by their place in the list, like the editor", async () => {
     const result = await workflowService.create(
       IDS.org,
       IDS.caller,
@@ -392,9 +310,7 @@ describe("workflowService.create", () => {
       })
     );
 
-    expect(result.ok ? "" : result.error.message).toMatch(
-      POST_ACTION_1_MESSAGE_RE
-    );
+    expect(result.ok ? "" : result.error.message).toMatch(ACTION_3_MESSAGE_RE);
 
     const pre = await workflowService.create(
       IDS.org,
@@ -409,7 +325,7 @@ describe("workflowService.create", () => {
     );
 
     expect(pre.ok ? "" : pre.error.message).toContain(
-      'Pre action 2: "fake.unknown" is not offered'
+      'Action 3: "fake.unknown" is not offered'
     );
   });
 
@@ -514,7 +430,7 @@ describe("workflowService.create", () => {
       () => {
         mocks.connections = mocks.connections.slice(1);
       },
-      "connection not found",
+      'has no connection "jira"',
     ],
   ])("rejects %s", async (_label, arrange, message) => {
     arrange();
@@ -533,7 +449,7 @@ describe("workflowService.create", () => {
     const result = await workflowService.create(
       IDS.org,
       IDS.caller,
-      input({ triggers: [{ connectionId: IDS.jira, type: "fake.unknown" }] })
+      input({ triggers: [{ connectionKey: "jira", type: "fake.unknown" }] })
     );
 
     expect(result.ok ? "" : result.error.message).toContain(
@@ -548,7 +464,7 @@ describe("workflowService.create", () => {
       input({
         actions: [
           {
-            connectionId: IDS.teams,
+            connectionKey: "teams",
             type: ACTION_TYPE,
             config: { message: "" },
             events: [WorkflowRunEvent.Failed],
@@ -558,7 +474,7 @@ describe("workflowService.create", () => {
     );
 
     expect(result.ok ? "" : result.error.message).toContain(
-      "Post action 1: message:"
+      "Action 1: message:"
     );
   });
 });
@@ -679,10 +595,10 @@ describe("workflowService.update", () => {
       input({
         name: "Renamed",
         triggers: [
-          { connectionId: IDS.jira, type: TRIGGER_TYPE },
+          { connectionKey: "jira", type: TRIGGER_TYPE },
           {
             id: IDS.trigger,
-            connectionId: IDS.jira,
+            connectionKey: "jira",
             type: TRIGGER_TYPE,
             config: { projectKeys: ["PROJ"] },
           },
@@ -773,7 +689,7 @@ describe("workflowService.update", () => {
       IDS.caller,
       input({
         triggers: [
-          { id: IDS.action, connectionId: IDS.jira, type: TRIGGER_TYPE },
+          { id: IDS.action, connectionKey: "jira", type: TRIGGER_TYPE },
         ],
       })
     );
@@ -820,7 +736,8 @@ describe("workflowService.setEnabled", () => {
       mocks.actions.length,
       {
         id: IDS.action,
-        connectionId: IDS.teams,
+        connectionId: null,
+        connectionKey: "teams",
         type: ACTION_TYPE,
         config: { message: "{{summary}}" },
         stage: WorkflowActionStage.Post,
@@ -831,7 +748,8 @@ describe("workflowService.setEnabled", () => {
       },
       {
         id: IDS.preAction,
-        connectionId: IDS.teams,
+        connectionId: null,
+        connectionKey: "teams",
         type: ACTION_TYPE,
         config: { message: "pre" },
         stage: WorkflowActionStage.Pre,
@@ -900,7 +818,8 @@ describe("workflowService.setEnabled", () => {
       ok: false,
       error: {
         status: Status.BadRequest,
-        message: "Pre action 1: integration connection not found.",
+        message:
+          'Action 1: project Platform has no connection "teams". Add it on the project\'s Integrations tab.',
       },
     });
     expect(mocks.workflow?.enabled).toBe(false);

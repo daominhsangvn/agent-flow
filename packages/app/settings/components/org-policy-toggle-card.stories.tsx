@@ -12,15 +12,15 @@ import {
   OrgPolicyUnavailableState,
 } from "./org-policy-toggle-card";
 
-const TITLE = "Session transcript sync";
+const TITLE = "Search session transcripts";
 
 const DESCRIPTION =
-  "Control whether desktop sessions sync their transcripts to the cloud.";
+  "Control whether unified search can look inside AI session transcript content.";
 
-const TOGGLE_LABEL = "Sync session transcripts";
+const TOGGLE_LABEL = "Include transcript content in search";
 
 const TOGGLE_HELP_TEXT =
-  "When on, transcripts captured on the desktop are stored in the cloud so they can be searched and reviewed.";
+  "When on, full-text search matches the text of session transcripts, not just their titles.";
 
 const idleSaveState = {
   requested: undefined,
@@ -37,7 +37,7 @@ const meta = {
     state: OrgPolicyFieldState.Enabled,
     title: TITLE,
     toggleHelpText: TOGGLE_HELP_TEXT,
-    toggleId: "session-sync-policy-enabled",
+    toggleId: "search-include-transcripts",
     toggleLabel: TOGGLE_LABEL,
     onToggle: fn(),
   },

@@ -17,7 +17,6 @@ import {
 import { mapTagRelations, TAG_RELATION_INCLUDE } from "@/app/tags/service";
 import { basicUserSelect } from "@/lib/db-utils";
 import { generateSlug } from "@/lib/slug-generator";
-import { waitUntil } from "@/lib/wait-until";
 
 /**
  * Projects service - handles database operations for project management
@@ -39,32 +38,6 @@ export const projectsService = {
         },
         include: PROJECT_DETAIL_INCLUDE,
         orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
-        ...(options?.limit && { take: options.limit }),
-      })
-    );
-    return projects.map((p) => toProjectWithDetails(p));
-  },
-
-  /**
-   * Find projects by team ID
-   */
-  async findByTeam(
-    teamId: string,
-    organizationId: string,
-    options?: ProjectListOptions
-  ): Promise<ProjectWithDetails[]> {
-    const statusFilter = buildProjectStatusFilter(options);
-    const projects = await withDb((db) =>
-      db.project.findMany({
-        where: {
-          organizationId,
-          teams: {
-            some: { teamId },
-          },
-          ...(statusFilter ? { status: statusFilter } : {}),
-        },
-        include: PROJECT_DETAIL_INCLUDE,
-        orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
         ...(options?.limit && { take: options.limit }),
       })
     );
@@ -111,44 +84,25 @@ export const projectsService = {
     userId: string,
     input: CreateProjectInput
   ) {
-    const { teamIds, ...projectData } = input;
     const slug = await generateSlug(organizationId, SlugPrefix.Project);
 
     return withDb
       .tx(async (tx) => {
         const project = await tx.project.create({
           data: {
-            ...projectData,
+            ...input,
             organizationId,
             slug,
             createdById: userId,
           },
         });
 
-        // Add project to teams if specified
-        if (teamIds && teamIds.length > 0) {
-          const resolvedTeamIds = await resolveOrgTeamIds(
-            tx,
-            teamIds,
-            organizationId
-          );
-
-          await tx.projectTeam.createMany({
-            data: resolvedTeamIds.map((teamId) => ({
-              projectId: project.id,
-              teamId,
-            })),
-            skipDuplicates: true,
-          });
-        }
-
         return project;
       })
       .then((project) => {
         // FEA-3863 / Phase-2: best-effort, post-commit, fail-open projection
-        // upsert. The owning team (for the team-scoped project route) is the
-        // first team the project was just added to, if any.
-        indexProjectProjection(project, teamIds?.[0] ?? null);
+        // upsert.
+        indexProjectProjection(project);
         return project;
       });
   },
@@ -161,70 +115,31 @@ export const projectsService = {
     organizationId: string,
     input: Omit<UpdateProjectInput, "id">
   ) {
-    // `teamIds` is the ProjectTeam relation, not a Project column: leaving it
-    // in `data` makes Prisma reject the whole update (ISS-6561).
-    const { teamIds, ...projectData } = input;
-
-    return withDb
-      .tx(async (tx) => {
-        const project = await tx.project.update({
-          where: { id, organizationId },
-          data: projectData,
-        });
-
-        // Update team associations if specified
-        if (project && teamIds !== undefined) {
-          const resolvedTeamIds = await resolveOrgTeamIds(
-            tx,
-            teamIds,
-            organizationId
-          );
-
-          await tx.projectTeam.deleteMany({ where: { projectId: id } });
-
-          if (resolvedTeamIds.length > 0) {
-            await tx.projectTeam.createMany({
-              data: resolvedTeamIds.map((teamId) => ({
-                projectId: id,
-                teamId,
-              })),
-              skipDuplicates: true,
-            });
-          }
-        }
-
-        return project;
-      })
-      .then((project) => {
-        // FEA-3863 / Phase-2: best-effort, post-commit, fail-open projection
-        // upsert. When this update set the teams, the owning team is the first
-        // of them; otherwise it is left unresolved (undefined) so the indexer
-        // reads the current owning team instead of clobbering it.
-        const teamId = teamIds === undefined ? undefined : (teamIds[0] ?? null);
-        indexProjectProjection(project, teamId);
-        return project;
-      });
+    return withDb((db) =>
+      db.project.update({ where: { id, organizationId }, data: input })
+    ).then((project) => {
+      // FEA-3863 / Phase-2: best-effort, post-commit, fail-open projection
+      // upsert.
+      indexProjectProjection(project);
+      return project;
+    });
   },
 
   /**
    * Delete a project
    */
   delete(id: string, organizationId: string) {
-    return withDb
-      .tx(async (tx) => {
-        // Remove team associations first
-        await tx.projectTeam.deleteMany({ where: { projectId: id } });
-        return tx.project.delete({ where: { id, organizationId } });
-      })
-      .then((project) => {
-        // FEA-3863: best-effort, post-commit, fail-open search projection removal.
-        searchIndexService.removeAfterCommit({
-          organizationId,
-          entityType: SearchEntityType.Project,
-          entityId: id,
-        });
-        return project;
+    return withDb((db) =>
+      db.project.delete({ where: { id, organizationId } })
+    ).then((project) => {
+      // FEA-3863: best-effort, post-commit, fail-open search projection removal.
+      searchIndexService.removeAfterCommit({
+        organizationId,
+        entityType: SearchEntityType.Project,
+        entityId: id,
       });
+      return project;
+    });
   },
 
   /**
@@ -415,20 +330,10 @@ type ProjectListOptions = {
 };
 
 /**
- * Standard include pattern for project queries with assignee, teams, and artifacts
+ * Standard include pattern for project queries with assignee, artifacts and tags
  */
 const PROJECT_DETAIL_INCLUDE = {
   assignee: basicUserSelect,
-  teams: {
-    include: {
-      team: {
-        select: {
-          id: true,
-          name: true,
-        },
-      },
-    },
-  },
   // The completion population (ISS-4636): documents only. Widening this filter
   // also widens what `completionPercentage` means, so the shared constant — and
   // the noun the UI renders next to it — must move with it.
@@ -460,10 +365,6 @@ function toProjectWithDetails(project: ProjectFromDb): ProjectWithDetails {
         }
       : undefined,
     ...toCompletionFields(projectsService.calculateStatus(project.artifacts)),
-    teams: project.teams.map((pt) => ({
-      id: pt.team.id,
-      name: pt.team.name,
-    })),
     tags: mapTagRelations(project.tagProjects ?? []),
   };
 }
@@ -513,111 +414,22 @@ function buildProjectStatusFilter(
 
 /**
  * FEA-3863 / Phase-2: index a project into the search projection with its
- * routing metadata. `teamId` is the owning team for the team-scoped project
- * route: the caller passes the just-set team (or `null` for none) when it knows
- * it, or `undefined` when a metadata-only update left the teams untouched — in
- * which case the current first team is read from the source of truth so a
- * non-team update does not clobber the projected team. Best-effort throughout:
- * the upsert already runs post-commit via `waitUntil` and swallows errors, and
- * the team read is scheduled the same way so a failed read never affects the
+ * routing metadata (slug). Best-effort throughout: the upsert runs post-commit
+ * via `indexAfterCommit` and swallows errors, so a failure never affects the
  * user's write.
  */
-function indexProjectProjection(
-  project: PrismaProject,
-  teamId: string | null | undefined
-): void {
-  const index = (resolvedTeamId: string | null) =>
-    searchIndexService.indexAfterCommit(
-      projectProjection({
-        id: project.id,
-        organizationId: project.organizationId,
-        name: project.name,
-        slug: project.slug,
-        teamId: resolvedTeamId,
-        description: project.description,
-        assigneeId: project.assigneeId,
-        status: project.status,
-        priority: project.priority,
-        updatedAt: project.updatedAt,
-      })
-    );
-
-  if (teamId !== undefined) {
-    index(teamId);
-    return;
-  }
-
-  waitUntil(
-    firstProjectTeamId(project.id)
-      .catch(() => null)
-      .then((resolvedTeamId) => index(resolvedTeamId))
+function indexProjectProjection(project: PrismaProject): void {
+  searchIndexService.indexAfterCommit(
+    projectProjection({
+      id: project.id,
+      organizationId: project.organizationId,
+      name: project.name,
+      slug: project.slug,
+      description: project.description,
+      assigneeId: project.assigneeId,
+      status: project.status,
+      priority: project.priority,
+      updatedAt: project.updatedAt,
+    })
   );
-}
-
-/**
- * The id of the first team a project belongs to, or null when it has none.
- * Read only by the best-effort search indexer, so a null (no team) is a safe
- * fallback rather than an error.
- */
-function firstProjectTeamId(projectId: string): Promise<string | null> {
-  return withDb(async (db) => {
-    const membership = await db.projectTeam.findFirst({
-      where: { projectId },
-      select: { teamId: true },
-    });
-    return membership?.teamId ?? null;
-  });
-}
-
-/** Matches the `customFields` array cap in this surface's validators. */
-export const MAX_PROJECT_TEAMS = 100;
-
-export class InvalidProjectTeamsError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "InvalidProjectTeamsError";
-  }
-}
-
-/**
- * Resolve the requested team IDs against the caller's own organization, inside
- * the caller's transaction, so a project can only ever be linked to teams the
- * caller can already see.
- *
- * Rejecting the whole write — rather than dropping the teams that did not
- * resolve — is deliberate: a partial apply would return a project whose `teams`
- * silently disagree with what the caller asked for. The message deliberately
- * does not distinguish "no such team" from "team in another organization", so a
- * caller cannot probe for foreign team IDs.
- */
-async function resolveOrgTeamIds(
-  tx: Prisma.TransactionClient,
-  teamIds: string[],
-  organizationId: string
-): Promise<string[]> {
-  // Bound the caller's input before doing any work with it; the unique
-  // (projectId, teamId) constraint makes duplicates a write error otherwise.
-  if (teamIds.length > MAX_PROJECT_TEAMS) {
-    throw new InvalidProjectTeamsError(
-      `A project can be linked to at most ${MAX_PROJECT_TEAMS} teams.`
-    );
-  }
-
-  const uniqueTeamIds = [...new Set(teamIds)];
-  if (uniqueTeamIds.length === 0) {
-    return uniqueTeamIds;
-  }
-
-  const teams = await tx.team.findMany({
-    where: { id: { in: uniqueTeamIds }, organizationId },
-    select: { id: true },
-  });
-
-  if (teams.length !== uniqueTeamIds.length) {
-    throw new InvalidProjectTeamsError(
-      "One or more teams were not found in this organization."
-    );
-  }
-
-  return uniqueTeamIds;
 }

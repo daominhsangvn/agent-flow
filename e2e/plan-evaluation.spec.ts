@@ -18,7 +18,6 @@ import { LoopCommand, RunLoopCommand } from "@repo/api/src/types/loop";
 import { createArtifactLink } from "./helpers/artifact-links";
 import { getSessionBearerToken } from "./helpers/better-auth";
 import { createProject, deleteProject } from "./helpers/create-project";
-import { createTeam, deleteTeam } from "./helpers/create-team";
 import {
   createDocument,
   type DocumentSummary,
@@ -45,13 +44,8 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
   await authenticateToApp(page);
   const token = await getSessionBearerToken(page);
 
-  const team = await createTeam(request, {
-    name: createUniqueName("e2e-plan-eval"),
-    token,
-  });
   const project = await createProject(request, {
     name: createUniqueName("e2e-plan-eval"),
-    teamIds: [team.id],
     // The Generate Plan submit button gates on project.settings.defaultRepository
     // when a source document is selected (NewPlanModal isCreateSubmitDisabled).
     // Stub a repository so the form is submittable in the test environment.
@@ -91,7 +85,7 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
 
   test.info().annotations.push({
     type: "cleanup",
-    description: `prd=${prd.id}, feature=${feature.id}, project=${project.id}, team=${team.id}`,
+    description: `prd=${prd.id}, feature=${feature.id}, project=${project.id}`,
   });
 
   let createdPlanId: string | null = null;
@@ -156,7 +150,7 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
           createdPlanId = body.data.id;
         }
       } catch {
-        // Ignore parse errors — cleanup will still drop project/team.
+        // Ignore parse errors — cleanup will still drop the project.
       }
     }
 
@@ -176,7 +170,6 @@ test("Generate Plan on a Feature sourced from a PRD does NOT create an EVALUATE_
     await deleteDocument(request, feature.id, token);
     await deleteDocument(request, prd.id, token);
     await deleteProject(request, project.id, token);
-    await deleteTeam(request, team.id, token);
   }
 });
 
@@ -187,13 +180,8 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
   await authenticateToApp(page);
   const token = await getSessionBearerToken(page);
 
-  const team = await createTeam(request, {
-    name: createUniqueName("e2e-plan-eval"),
-    token,
-  });
   const project = await createProject(request, {
     name: createUniqueName("e2e-plan-eval"),
-    teamIds: [team.id],
     token,
   });
 
@@ -207,7 +195,7 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
 
   test.info().annotations.push({
     type: "cleanup",
-    description: `prd=${prd.id}, project=${project.id}, team=${team.id}`,
+    description: `prd=${prd.id}, project=${project.id}`,
   });
 
   try {
@@ -254,6 +242,5 @@ test("Evaluate PRD on a PRD document DOES trigger an evaluate_prd run-loop reque
   } finally {
     await deleteDocument(request, prd.id, token);
     await deleteProject(request, project.id, token);
-    await deleteTeam(request, team.id, token);
   }
 });

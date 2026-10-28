@@ -10,7 +10,6 @@ const {
   mockSetOnlineState,
   mockClearOperationBacklog,
   mockIsComputeTargetSigningEligible,
-  mockIsAgentSessionSyncSupportedForUser,
 } = vi.hoisted(() => ({
   mockFindComputeTargetById: vi.fn(),
   mockGetCommandById: vi.fn(),
@@ -20,7 +19,6 @@ const {
   mockSetOnlineState: vi.fn(),
   mockClearOperationBacklog: vi.fn(),
   mockIsComputeTargetSigningEligible: vi.fn(),
-  mockIsAgentSessionSyncSupportedForUser: vi.fn(),
 }));
 
 vi.mock("@/lib/desktop-command-store", () => ({
@@ -61,10 +59,6 @@ vi.mock("@/lib/compute-target-signing-eligibility", () => ({
     Unknown: "unknown",
   },
   isComputeTargetSigningEligible: mockIsComputeTargetSigningEligible,
-}));
-
-vi.mock("@/lib/agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: mockIsAgentSessionSyncSupportedForUser,
 }));
 
 vi.mock("@repo/analytics/server", () => ({
@@ -203,9 +197,6 @@ const helloTimeoutCases: HelloTimeoutCase[] = [
       mockIsComputeTargetSigningEligible.mockReturnValue(
         new Promise<never>(() => {})
       );
-      mockIsAgentSessionSyncSupportedForUser.mockReturnValue(
-        new Promise<never>(() => {})
-      );
     },
     expectedDisconnect: undefined,
     expectAck: true,
@@ -248,7 +239,6 @@ describe("relay dispatchSocketEvent desktop.hello — timeout handling", () => {
       status: "ineligible",
       reason: "missing_gateway",
     });
-    mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(false);
     mockFindComputeTargetById.mockResolvedValue(null);
     mockGetCommandById.mockResolvedValue(null);
     mockIngestCommandEvent.mockResolvedValue({
@@ -324,7 +314,6 @@ describe("relay dispatchSocketEvent desktop.hello — command-signing capability
       status: "ineligible",
       reason: "missing_gateway",
     });
-    mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(false);
     mockFindComputeTargetById.mockResolvedValue(null);
     mockGetCommandById.mockResolvedValue(null);
     mockIngestCommandEvent.mockResolvedValue({
@@ -374,7 +363,10 @@ describe("relay dispatchSocketEvent desktop.hello — command-signing capability
       clerkUserId: "clerk-relay-test",
       gatewayId: "gateway-relay-test",
     });
-    expect(ack.serverCapabilities).toEqual({ computeTargetSigning: true });
+    expect(ack.serverCapabilities).toEqual({
+      ...SESSION_SYNC_CAPABILITIES,
+      computeTargetSigning: true,
+    });
   });
 
   it.each([
@@ -404,35 +396,14 @@ describe("relay dispatchSocketEvent desktop.hello — command-signing capability
 
     const ack = await dispatchHello(payload);
 
-    expect(ack.serverCapabilities).toBeUndefined();
-  });
-
-  it("keeps agentSessionSync independent when signing is omitted", async () => {
-    mockIsComputeTargetSigningEligible.mockResolvedValue({
-      status: "ineligible",
-      reason: "no_active_managed_key",
-    });
-    mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(true);
-
-    const ack = await dispatchHello();
-
-    expect(ack.serverCapabilities).toEqual({
-      agentSessionSync: true,
-      // FEA-4138: the sync lane advertises gzip decompression whenever sync
-      // itself is supported (a server-version capability, not a per-org gate).
-      agentSessionSyncCompression: true,
-      // ISS-4541/ISS-4578: the sync lane also advertises additive multi-part
-      // activity-tiling merge alongside sync (same server-version gate).
-      agentSessionSyncActivityChunking: true,
-      agentSessionSyncMonitoredActivity: true,
-    });
+    // Agent-session sync is always advertised, with or without signing.
+    expect(ack.serverCapabilities).toEqual(SESSION_SYNC_CAPABILITIES);
   });
 
   it("emits server capabilities on relay sequence-gap hello acks", async () => {
     mockIsComputeTargetSigningEligible.mockResolvedValue({
       status: "eligible",
     });
-    mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(true);
     mockFindComputeTargetById.mockResolvedValue({
       id: "target-relay-existing",
       gatewayId: "gateway-relay-test",
@@ -491,3 +462,11 @@ describe("relay dispatchSocketEvent desktop.hello — command-signing capability
     );
   });
 });
+
+/** What every hello ack advertises: agent-session sync is always on. */
+const SESSION_SYNC_CAPABILITIES = {
+  agentSessionSync: true,
+  agentSessionSyncCompression: true,
+  agentSessionSyncActivityChunking: true,
+  agentSessionSyncMonitoredActivity: true,
+};

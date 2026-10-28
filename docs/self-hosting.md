@@ -12,7 +12,7 @@ pnpm install
 cp .env.docker.example .env        # optional: change host ports / credentials
 docker compose up -d               # Postgres, RustFS (S3), Mailpit, Local Git
 pnpm storage:init                  # create the buckets + browser CORS (idempotent)
-pnpm local-git:init                # optional: Local Git account + token
+pnpm local-git:init                # optional: Local Git account + token, written to apps/api/.env.local
 cd packages/database && pnpm prisma migrate deploy && cd ../..
 pnpm dev
 ```
@@ -125,10 +125,11 @@ AGENTFLOW_FEATURE_FLAGS=desktop-agent-session-sync,emergent
 NEXT_PUBLIC_AGENTFLOW_FEATURE_FLAGS=desktop-agent-session-sync,emergent
 ```
 
-`desktop-agent-session-sync` lets desktops and headless runners sync their
-agent sessions and components (the Sessions and Agents pages; the
-organization must also turn on Settings → Organization → "Sync session data to the cloud");
-`emergent` turns on the live Active Runs view of Sessions.
+The Sessions and Agents pages need no flag or setting: desktops and headless
+runners always report their agent sessions and components, and the data stays
+in this deployment's database. `desktop-agent-session-sync` now only opens the
+Dashboard's insight metrics and golden candidates; `emergent` turns on the
+live Active Runs view of Sessions.
 
 ## What changed from the hosted product
 

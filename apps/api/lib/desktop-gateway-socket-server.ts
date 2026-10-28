@@ -17,7 +17,6 @@ import {
   isComputeTargetGatewayConflictResult,
 } from "../app/compute-targets/service";
 import { usersService } from "../app/users/service";
-import { isAgentSessionSyncSupportedForUser } from "./agent-session-sync-feature";
 import { getDesktopManagedPopRequestFailure } from "./auth/desktop-managed-pop";
 import {
   CommandSigningEligibilityStatus,
@@ -329,7 +328,6 @@ export async function handleSocketHello(
     pendingCommandsMs?: number;
     onlineStateMs?: number;
     featureFlagSigningMs?: number;
-    featureFlagSyncMs?: number;
     ackEmitMs?: number;
   } = {};
 
@@ -502,11 +500,11 @@ export async function handleSocketHello(
   socketIds.add(socket.id);
   socketIdsByTargetId.set(targetId, socketIds);
 
-  // Run all four post-target-resolution stages concurrently. Each stage
+  // Run all three post-target-resolution stages concurrently. Each stage
   // returns a typed result so per-stage nack reasons (and the timeout-vs-
   // failure distinction) are preserved without try/catch fan-out. Mirrors
   // the relay-path parallelism in `service.ts`.
-  const [pendingCommandsResult, onlineStateResult, signingResult, syncResult] =
+  const [pendingCommandsResult, onlineStateResult, signingResult] =
     await Promise.all([
       timeStage(stageTimings, "pendingCommandsMs", () =>
         runStage(
@@ -544,17 +542,6 @@ export async function handleSocketHello(
           }),
           HELLO_OPERATION_TIMEOUT_MS,
           "isDirectDesktopAuthSigningEligible",
-          DesktopHelloNackReason.InternalError
-        )
-      ),
-      timeStage(stageTimings, "featureFlagSyncMs", () =>
-        runStage(
-          isAgentSessionSyncSupportedForUser({
-            userId: authContext.userId,
-            clerkUserId: authContext.clerkUserId,
-          }),
-          HELLO_OPERATION_TIMEOUT_MS,
-          "isAgentSessionSyncSupportedForUser",
           DesktopHelloNackReason.InternalError
         )
       ),
@@ -614,9 +601,7 @@ export async function handleSocketHello(
   const commandSigningSupported =
     signingResult.ok &&
     signingResult.value.status === CommandSigningEligibilityStatus.Eligible;
-  const agentSessionSyncSupported = syncResult.ok ? syncResult.value : false;
   const serverCapabilities = buildDesktopServerCapabilities({
-    agentSessionSyncSupported,
     commandSigningSupported,
   });
 

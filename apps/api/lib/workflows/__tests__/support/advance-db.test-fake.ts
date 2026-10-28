@@ -1,8 +1,15 @@
 import { IntegrationProviderKey } from "@repo/api/src/types/integration";
-import type { WorkflowAgentConfig } from "@repo/api/src/types/workflow";
+import {
+  type WorkflowAgentConfig,
+  workflowPrdRuleSchema,
+} from "@repo/api/src/types/workflow";
 import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import { vi } from "vitest";
-import { createActionRunsDbFake } from "@/lib/workflows/__tests__/support/action-runs-db.test-fake";
+import {
+  createActionRunsDbFake,
+  type FakeRow,
+  matchesWhere,
+} from "@/lib/workflows/__tests__/support/action-runs-db.test-fake";
 
 /**
  * In-memory stand-in for the delegates lib/workflows/engine/advance.ts and
@@ -28,7 +35,9 @@ export const AGENT_CONFIG: WorkflowAgentConfig = {
   mode: WorkflowAgentMode.PlanAndExecute,
   stopOnOpenQuestions: true,
   computeTargetId: COMPUTE_TARGET_ID,
+  runners: [],
   repository: null,
+  prd: workflowPrdRuleSchema.parse({}),
   instructions: "",
   titleTemplate: "{{source.key}}: {{source.title}}",
   process: null,
@@ -40,7 +49,7 @@ export type FakeRun = Record<string, unknown> & {
 };
 
 type Where = Record<string, unknown> & {
-  status?: string | { notIn?: string[] };
+  status?: string | { notIn?: string[]; in?: string[] };
   leaseUntil?: Date;
   OR?: Array<{ leaseUntil: null | { lt: Date } }>;
   AND?: Array<{ OR: Array<{ nextStepAt: null | { lte: Date } }> }>;
@@ -62,6 +71,9 @@ export function createAdvanceDbFake() {
     loopEvents: [] as FakeLoopEvent[],
     /** The project's current process version; null: the built-in flow. */
     projectProcess: null as { version: number; definition: unknown } | null,
+    toolSessions: [] as { loopId: string; issuedAt: Date | null }[],
+    /** Integration tool calls of the run (the comments it posted, by ref). */
+    toolCalls: [] as FakeRow[],
   };
   const actionDb = createActionRunsDbFake();
 
@@ -117,6 +129,23 @@ export function createAdvanceDbFake() {
         return Promise.resolve(latest ? { data: latest.data } : null);
       }),
     },
+    integrationToolCall: {
+      findMany: vi.fn((args: { where: Record<string, unknown> }) =>
+        Promise.resolve(
+          state.toolCalls.filter((call) => matchesWhere(call, args.where))
+        )
+      ),
+    },
+    // Integration tool sessions of STEP loops: none unless a test adds one.
+    integrationToolSession: {
+      findUnique: vi.fn((args: { where: { loopId: string } }) =>
+        Promise.resolve(
+          state.toolSessions.find(
+            (session) => session.loopId === args.where.loopId
+          ) ?? null
+        )
+      ),
+    },
   };
 
   return {
@@ -147,6 +176,8 @@ export function createAdvanceDbFake() {
         agentConfig: AGENT_CONFIG,
         runAsUserId: RUN_AS_USER_ID,
         connectionId: CONNECTION_ID,
+        projectId: PROJECT_ID,
+        projectConnectionId: null,
         featureDocumentId: null,
         planDocumentId: null,
         phaseStartedAt: new Date("2026-10-01T00:00:00.000Z"),
@@ -154,7 +185,7 @@ export function createAdvanceDbFake() {
         nextStepAt: null,
         leaseUntil: null,
         error: null,
-        workflow: { name: "Jira to PR", enabled: true, projectId: PROJECT_ID },
+        workflow: { name: "Jira to PR", enabled: true },
         ...overrides,
       };
     },
@@ -214,6 +245,9 @@ function matchesStatus(status: string, filter: Where["status"]): boolean {
   }
   if (typeof filter === "string") {
     return status === filter;
+  }
+  if (filter.in && !filter.in.includes(status)) {
+    return false;
   }
   return !filter.notIn?.includes(status);
 }

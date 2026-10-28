@@ -70,7 +70,7 @@ export function useMemberSuggestions(enabled: boolean): SuggestionsResult {
  * open).
  */
 export function useProjectSuggestions(enabled: boolean): SuggestionsResult {
-  const { data, isLoading, isError } = useProjects(undefined, { enabled });
+  const { data, isLoading, isError } = useProjects({ enabled });
 
   const options = useMemo<SuggestionOption[]>(() => {
     if (!data) {

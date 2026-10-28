@@ -83,7 +83,6 @@ export type InsightsScopeContext = {
   organizationId: string;
   userId: string;
   scope: InsightsScope;
-  teamId?: string;
   // FEA-2745: IANA timezone the requester's daily buckets should be labelled
   // in, so the shared Insights charts bucket the same activity on the same
   // calendar day as the desktop shell (which buckets in the user's local
@@ -590,21 +589,6 @@ export function artifactScope(ctx: InsightsScopeContext): ArtifactScopeWhere {
   if (ctx.scope === InsightsScope.Me) {
     return { organizationId: ctx.organizationId, createdById: ctx.userId };
   }
-  if (ctx.scope === InsightsScope.Team && !ctx.teamId) {
-    return { organizationId: ctx.organizationId, id: { in: [] } };
-  }
-  if (ctx.scope === InsightsScope.Team && ctx.teamId) {
-    return {
-      organizationId: ctx.organizationId,
-      createdBy: {
-        teamMemberships: {
-          some: {
-            teamId: ctx.teamId,
-          },
-        },
-      },
-    };
-  }
   return { organizationId: ctx.organizationId };
 }
 
@@ -619,23 +603,6 @@ function sessionScope(
   if (ctx.scope === InsightsScope.Me) {
     return { artifact: { is: artifact }, userId: ctx.userId };
   }
-  if (ctx.scope === InsightsScope.Team && !ctx.teamId) {
-    return { artifact: { is: artifact }, artifactId: { in: [] } };
-  }
-  if (ctx.scope === InsightsScope.Team && ctx.teamId) {
-    return {
-      artifact: { is: artifact },
-      user: {
-        is: {
-          teamMemberships: {
-            some: {
-              teamId: ctx.teamId,
-            },
-          },
-        },
-      },
-    };
-  }
   return { artifact: { is: artifact } };
 }
 
@@ -649,15 +616,6 @@ export function sessionScopeSql(ctx: InsightsScopeContext): Prisma.Sql {
   const org = Prisma.sql`a.organization_id = ${ctx.organizationId}::uuid`;
   if (ctx.scope === InsightsScope.Me) {
     return Prisma.sql`${org} AND s.user_id = ${ctx.userId}::uuid`;
-  }
-  if (ctx.scope === InsightsScope.Team && !ctx.teamId) {
-    return Prisma.sql`false`;
-  }
-  if (ctx.scope === InsightsScope.Team && ctx.teamId) {
-    return Prisma.sql`${org} AND EXISTS (
-      SELECT 1 FROM team_members tm
-      WHERE tm.user_id = s.user_id AND tm.team_id = ${ctx.teamId}::uuid
-    )`;
   }
   return org;
 }
@@ -1060,13 +1018,13 @@ function fetchSessionActivity(
 
 type FrustrationDayRow = {
   day: string;
-  // Sum + count of the SCOPED (Me/Team/Org) scored sessions in this day's
+  // Sum + count of the SCOPED (Me/Org) scored sessions in this day's
   // bucket, so the per-day mean reflects the requested view. Null/0 when the
   // scope contributed no scored session on a day the org population still did.
   total: number;
   sessions: number;
   // The org population's MAX single-session raw within this day's bucket
-  // (UNSCOPED by Me/Team). MAX-of-per-day-orgDayMax over the window is the org
+  // (UNSCOPED by Me). MAX-of-per-day-orgDayMax over the window is the org
   // population's observed max raw signal (the [0, max] normalization basis) —
   // computed in the same grouped query so it can never disagree with the per-day
   // means.
@@ -1102,9 +1060,9 @@ async function fetchFrustrationTrend(
       ? Prisma.sql`date_trunc('day', (s.session_started_at AT TIME ZONE 'UTC') AT TIME ZONE ${timeZone})`
       : Prisma.sql`date_trunc('day', s.session_started_at)`;
     // FEA-4022 (T16): the per-day MEAN is scoped to the requested view (Me /
-    // Team / Org), but the normalization DENOMINATOR (`orgDayMax`) is the org
+    // Org), but the normalization DENOMINATOR (`orgDayMax`) is the org
     // population's max single-session raw over the same window, independent of
-    // the Me/Team scope — the contract normalizes every scope against the org
+    // the Me scope — the contract normalizes every scope against the org
     // population, so a user's raw of 5 reads the same whether viewed as Me or
     // Org. A per-day scoped mean can never exceed the org population max, so the
     // normalized value stays within [0, 100].
@@ -1133,7 +1091,7 @@ async function fetchFrustrationTrend(
     runQuery
   );
   // Population basis: the org's observed MAX single-session raw over the window
-  // (MAX of each day's org-wide MAX), independent of the Me/Team scope.
+  // (MAX of each day's org-wide MAX), independent of the Me scope.
   let populationMax = 0;
   // Only days with at least one SCOPED scored session get a mean; a day with no
   // scored sessions in the selected scope is a genuine gap.
@@ -1150,8 +1108,7 @@ async function fetchFrustrationTrend(
     meanByDay.set(row.day, Number(row.total) / sessions);
   }
   // Omit the chart when either (a) the org population has no scored session to
-  // normalize against, or (b) the SELECTED scope (Me / Team, incl. Team with no
-  // teamId → scope predicate is `false`) contributed no scored session — a chart
+  // normalize against, or (b) the SELECTED scope (Me) contributed no scored session — a chart
   // that is null on every day is "no data for your scope", not a curve, so omit
   // it rather than render an all-gap axis.
   if (populationMax <= 0 || meanByDay.size === 0) {
@@ -1362,7 +1319,7 @@ function countSessions(
  * (`percentile_cont`) has no Prisma `groupBy` expression.
  *
  * Org-scope only (the sole caller guards on {@link isOrgScope}), so the scope is
- * just the branch artifact's org — no per-user/team predicate like
+ * just the branch artifact's org — no per-user predicate like
  * {@link artifactScope}. The wait mirrors the prior JS `wait >= 0` guard with a
  * `FILTER (WHERE r.submitted_at >= a.created_at)`, so reviews submitted before
  * their branch's recorded open time are excluded from the median (and the median

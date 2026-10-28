@@ -39,11 +39,6 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
       handler(mocks.auth, request),
 }));
 
-vi.mock("@/lib/agent-session-sync-feature", () => ({
-  isAgentMonitoringEnabledForUser: vi.fn().mockResolvedValue(true),
-  isAgentSessionSyncSupportedForUser: vi.fn().mockResolvedValue(true),
-}));
-
 import { POST } from "./route";
 
 const env = keys();
@@ -62,9 +57,7 @@ describeIfDb(
     // alone would not catch.
     it("carries >2^31 token counts and >$10k cost without truncation", async () => {
       await autoRollbackTransaction(async () => {
-        const organizationId = await createTestOrganization({
-          sessionSyncPolicyEnabled: true,
-        });
+        const organizationId = await createTestOrganization();
         const user = await createTestUser(organizationId, {
           clerkId: mocks.auth.clerkUserId,
         });
@@ -129,9 +122,7 @@ describeIfDb(
   () => {
     it("ingests old-desktop payloads carrying removed issues / attribution.issueId", async () => {
       await autoRollbackTransaction(async () => {
-        const organizationId = await createTestOrganization({
-          sessionSyncPolicyEnabled: true,
-        });
+        const organizationId = await createTestOrganization();
         const user = await createTestUser(organizationId, {
           clerkId: mocks.auth.clerkUserId,
         });
@@ -197,12 +188,9 @@ describeIfDb(
   () => {
     it("rejects a sync that targets another org's compute target and never cross-writes", async () => {
       await autoRollbackTransaction(async () => {
-        // Org A is the authenticated caller. Its session-sync policy is ON so
-        // the positive-control sync to its OWN target succeeds; the FEA-4169
-        // org-policy gate keys off the authenticated org id (orgA).
-        const orgA = await createTestOrganization({
-          sessionSyncPolicyEnabled: true,
-        });
+        // Org A is the authenticated caller; the positive-control sync to its
+        // OWN target succeeds.
+        const orgA = await createTestOrganization();
         const userA = await createTestUser(orgA, {
           clerkId: mocks.auth.clerkUserId,
         });
@@ -257,9 +245,7 @@ describeIfDb(
   () => {
     it("returns 200 (not 500) when the same PR is synced under a second branch artifact", async () => {
       await autoRollbackTransaction(async () => {
-        const organizationId = await createTestOrganization({
-          sessionSyncPolicyEnabled: true,
-        });
+        const organizationId = await createTestOrganization();
         const user = await createTestUser(organizationId, {
           clerkId: mocks.auth.clerkUserId,
         });

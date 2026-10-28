@@ -14,7 +14,14 @@ import {
   adoRequest,
 } from "./client";
 import { AdoField } from "./constants";
-import { eventsFromWorkItemUpdate, parseAdoDate } from "./events";
+import {
+  type AdoWorkItemState,
+  adoWorkItemState,
+  eventsFromWorkItemUpdate,
+  parseAdoDate,
+  splitAdoTags,
+} from "./events";
+import { isAdoBotIdentity } from "./identity";
 import {
   type AdoWorkItem,
   type AdoWorkItemFields,
@@ -31,6 +38,9 @@ import {
  * same events, with the same dedupKeys, as the service hooks would:
  *   - an update whose System.AssignedTo became the bot -> work_item_assigned
  *   - an update that added tags                        -> work_item_tagged
+ *   - either, or a comment mentioning the bot           -> work_item_conditions,
+ *     with the assignee and tags right after that update, replayed back from
+ *     the current work item through the updates' old values
  * Tag triggers therefore only see items assigned to the bot in poll mode.
  *
  * Cursor: `{since}`. Each poll queries `[System.ChangedDate] >= since - 2 min`
@@ -97,6 +107,7 @@ const SUMMARY_FIELDS = [
   AdoField.AreaPath,
   AdoField.State,
   AdoField.Tags,
+  AdoField.AssignedTo,
   AdoField.ChangedDate,
 ].join(",");
 
@@ -227,37 +238,53 @@ async function collectItemEvents(
 ): Promise<InboundEvent[]> {
   const updates = await listRecentUpdates(ctx, item);
   const fields = readWorkItemFields(item.fields);
+  const states = replayWorkItemStates(
+    updates,
+    adoWorkItemState(fields, account),
+    account
+  );
   const events: InboundEvent[] = [];
-  for (const update of updates) {
+  updates.forEach((update, index) => {
     events.push(
-      ...eventsForUpdate(ctx, item.id, update, fields, account, windowStart)
+      ...eventsForUpdate(ctx, {
+        workItemId: item.id,
+        update,
+        fields,
+        state: states[index],
+        account,
+        windowStart,
+      })
     );
-  }
+  });
   return events;
 }
 
 function eventsForUpdate(
   ctx: AdoContext,
-  workItemId: number,
-  update: AdoWorkItemUpdate,
-  fields: AdoWorkItemFields,
-  account: IntegrationAccount,
-  windowStart: Date
+  input: {
+    workItemId: number;
+    update: AdoWorkItemUpdate;
+    fields: AdoWorkItemFields;
+    state: AdoWorkItemState | undefined;
+    account: IntegrationAccount;
+    windowStart: Date;
+  }
 ): InboundEvent[] {
   const changedAt = parseAdoDate(
-    update.fields?.[AdoField.ChangedDate]?.newValue
+    input.update.fields?.[AdoField.ChangedDate]?.newValue
   );
-  if (!changedAt || changedAt < windowStart) {
+  if (!changedAt || changedAt < input.windowStart) {
     return [];
   }
   return eventsFromWorkItemUpdate({
     organizationUrl: ctx.connection.config.organizationUrl,
-    workItemId,
-    update,
-    fields,
+    workItemId: input.workItemId,
+    update: input.update,
+    fields: input.fields,
     projectFallback: null,
-    account,
+    account: input.account,
     occurredAtFallback: changedAt,
+    state: input.state,
   }).events;
 }
 
@@ -324,4 +351,38 @@ function maxDate(dates: Array<Date | null>): Date | null {
     }
   }
   return latest;
+}
+
+/**
+ * The assignee and tags right after each update (same order as `updates`,
+ * oldest first), walked back from the current state: undoing an update
+ * restores the old values of the fields it changed.
+ */
+function replayWorkItemStates(
+  updates: readonly AdoWorkItemUpdate[],
+  current: AdoWorkItemState,
+  account: IntegrationAccount
+): AdoWorkItemState[] {
+  const after: AdoWorkItemState[] = [];
+  let state = current;
+  for (let index = updates.length - 1; index >= 0; index--) {
+    after[index] = state;
+    state = undoUpdate(state, updates[index], account);
+  }
+  return after;
+}
+
+function undoUpdate(
+  state: AdoWorkItemState,
+  update: AdoWorkItemUpdate | undefined,
+  account: IntegrationAccount
+): AdoWorkItemState {
+  const assignedTo = update?.fields?.[AdoField.AssignedTo];
+  const tags = update?.fields?.[AdoField.Tags];
+  return {
+    assignedToBot: assignedTo
+      ? isAdoBotIdentity(assignedTo.oldValue, account)
+      : state.assignedToBot,
+    tags: tags ? splitAdoTags(tags.oldValue) : state.tags,
+  };
 }

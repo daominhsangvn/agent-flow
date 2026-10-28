@@ -90,8 +90,9 @@ export function freshHeartbeats(ingestGroups: IngestGroup[]): PresenceGroup[] {
   );
 }
 
-export function policyRow(id: string, sessionSyncPolicyEnabled: boolean) {
-  return { id, sessionSyncPolicyEnabled };
+/** An active org row, as the active-org lookup selects it. */
+export function orgRow(id: string) {
+  return { id };
 }
 
 /**

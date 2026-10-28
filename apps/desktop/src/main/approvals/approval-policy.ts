@@ -1,4 +1,11 @@
 import { HEALTH_CHECK_REPAIR_OPERATION_ID } from "@repo/api/src/types/compute-target";
+import {
+  ORCHESTRATOR_TURN_CANCEL_OPERATION_ID,
+  ORCHESTRATOR_TURN_OPERATION_ID,
+} from "@repo/api/src/types/orchestrator";
+import { RUNNER_CAPABILITIES_REFRESH_OPERATION_ID } from "@repo/api/src/types/runner-capabilities";
+import { WORKFLOW_DECISION_OPERATION_ID } from "@repo/api/src/types/workflow-decision";
+import { WORKFLOW_INSTRUCTION_OPERATION_ID } from "@repo/api/src/types/workflow-instruction";
 import type { RiskTier } from "../../shared/contracts.js";
 import type { OperationId } from "./approval-operations.js";
 
@@ -57,6 +64,18 @@ export const OPERATION_RISK_TIERS: Record<
   // A member-dispatched pack install runs a vetted installer that modifies the
   // node's environment — treat it as high-risk, on par with deploy.
   member_pack_install: "high",
+  // A read-only agent in a workflow run's workspace, like the chats.
+  [WORKFLOW_INSTRUCTION_OPERATION_ID]: "medium",
+  // One answer from the model with every tool denied: it reads nothing on
+  // the computer and changes nothing.
+  [WORKFLOW_DECISION_OPERATION_ID]: "low",
+  // The project orchestrator's agent: its own tools only (no files, no
+  // shell, no web); its writes go through AgentFlow.
+  [ORCHESTRATOR_TURN_OPERATION_ID]: "low",
+  // Stops one of those turns.
+  [ORCHESTRATOR_TURN_CANCEL_OPERATION_ID]: "low",
+  // Reads the toolkit repository and uploads its AGENTFLOW.md through AgentFlow.
+  [RUNNER_CAPABILITIES_REFRESH_OPERATION_ID]: "low",
 };
 
 /**

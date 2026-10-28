@@ -1,5 +1,8 @@
 import { Result, Status } from "@repo/api/src/types/result";
-import { WorkflowRunStatus } from "@repo/api/src/types/workflow";
+import {
+  WorkflowRunRetryMode,
+  WorkflowRunStatus,
+} from "@repo/api/src/types/workflow";
 import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +27,7 @@ const mocks = vi.hoisted(() => ({
     list: vi.fn(),
     get: vi.fn(),
     cancel: vi.fn(),
+    retry: vi.fn(),
     retryActionRun: vi.fn(),
     startManualRun: vi.fn(),
   },
@@ -57,6 +61,7 @@ vi.mock("@repo/observability/log", () => ({
 
 import { POST as retryActionRun } from "@/app/workflow-runs/[runId]/action-runs/[actionRunId]/retry/route";
 import { POST as cancelRun } from "@/app/workflow-runs/[runId]/cancel/route";
+import { POST as retryRun } from "@/app/workflow-runs/[runId]/retry/route";
 import { GET as getRun } from "@/app/workflow-runs/[runId]/route";
 import { GET as listOrgRuns } from "@/app/workflow-runs/route";
 import {
@@ -88,7 +93,7 @@ const VALID_BODY = {
   },
   triggers: [
     {
-      connectionId: "0199a5f0-0000-7000-8000-0000000000e2",
+      connectionKey: "jira",
       type: JiraTriggerType.IssueAssigned,
     },
   ],
@@ -174,6 +179,14 @@ describe("admin gate", () => {
         ),
     ],
     [
+      "POST /workflow-runs/{id}/retry",
+      () =>
+        retryRun(
+          request(`/workflow-runs/${RUN_ID}/retry`, "POST"),
+          params({ runId: RUN_ID })
+        ),
+    ],
+    [
       "POST /workflow-runs/{id}/action-runs/{id}/retry",
       () =>
         retryActionRun(
@@ -194,6 +207,7 @@ describe("admin gate", () => {
     expect(mocks.workflowService.remove).not.toHaveBeenCalled();
     expect(mocks.runService.startManualRun).not.toHaveBeenCalled();
     expect(mocks.runService.cancel).not.toHaveBeenCalled();
+    expect(mocks.runService.retry).not.toHaveBeenCalled();
     expect(mocks.runService.retryActionRun).not.toHaveBeenCalled();
   });
 
@@ -444,5 +458,62 @@ describe("run routes", () => {
       RUN_ID,
       "ar-1"
     );
+  });
+
+  it("retries the failed step of a run", async () => {
+    mocks.runService.retry.mockResolvedValue(Result.ok({ id: RUN_ID }));
+
+    const response = await retryRun(
+      request(`/workflow-runs/${RUN_ID}/retry`, "POST"),
+      params({ runId: RUN_ID })
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.runService.retry).toHaveBeenCalledWith(
+      "org-1",
+      RUN_ID,
+      WorkflowRunRetryMode.Restart
+    );
+  });
+
+  it("resumes the failed step's session when asked, and rejects an unknown mode", async () => {
+    mocks.runService.retry.mockResolvedValue(Result.ok({ id: RUN_ID }));
+
+    const resumed = await retryRun(
+      request(`/workflow-runs/${RUN_ID}/retry`, "POST", {
+        mode: WorkflowRunRetryMode.Resume,
+      }),
+      params({ runId: RUN_ID })
+    );
+    const unknown = await retryRun(
+      request(`/workflow-runs/${RUN_ID}/retry`, "POST", { mode: "again" }),
+      params({ runId: RUN_ID })
+    );
+
+    expect(resumed.status).toBe(200);
+    expect(mocks.runService.retry).toHaveBeenCalledWith(
+      "org-1",
+      RUN_ID,
+      WorkflowRunRetryMode.Resume
+    );
+    expect(unknown.status).toBe(400);
+    expect(mocks.runService.retry).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a run that cannot be retried to 409", async () => {
+    mocks.runService.retry.mockResolvedValue(
+      Result.err({
+        status: Status.Conflict,
+        message:
+          "Only a run that failed in a plan, implement or agent step can be retried.",
+      })
+    );
+
+    const response = await retryRun(
+      request(`/workflow-runs/${RUN_ID}/retry`, "POST"),
+      params({ runId: RUN_ID })
+    );
+
+    expect(response.status).toBe(409);
   });
 });

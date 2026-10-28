@@ -33,7 +33,6 @@ import {
   CopyCheckIcon,
   FileTextIcon,
   HistoryIcon,
-  InboxIcon,
   LayoutDashboardIcon,
   type LucideIcon,
   SquareCheckIcon,
@@ -93,12 +92,11 @@ export const PRIMARY_NAV_DESTINATIONS: readonly PrimaryNavDestination[] = [
     icon: LayoutDashboardIcon,
     group: PrimaryNavGroup.TopLevel,
   },
-  {
-    title: "Inbox",
-    path: "/inbox",
-    icon: InboxIcon,
-    group: PrimaryNavGroup.TopLevel,
-  },
+  // Inbox is hidden in the self-hosted edition: its notifications are
+  // Liveblocks inbox notifications, and the deployment runs without Liveblocks
+  // (no LIVEBLOCKS_SECRET), so the page could only say they are unavailable.
+  // Workflows reach people through their actions instead (agentflow.email,
+  // comments, Teams). The /inbox route still exists for direct links.
   {
     title: "My Tasks",
     path: "/my-tasks",

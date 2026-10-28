@@ -67,7 +67,7 @@ export const pullRequestArtifactLinkService = {
           id: input.body.projectId,
           organizationId: input.organizationId,
         },
-        select: { id: true, settings: true },
+        select: { id: true },
       })
     );
     if (!project) {
@@ -77,7 +77,6 @@ export const pullRequestArtifactLinkService = {
     const allowedRepositories = await loadProjectPrLinkRepositories({
       projectId: project.id,
       organizationId: input.organizationId,
-      projectSettings: (project.settings ?? {}) as JsonObject,
     });
     if (allowedRepositories.length === 0) {
       return serviceError(
@@ -192,10 +191,7 @@ export const pullRequestArtifactLinkService = {
 };
 
 async function validateSelectedPullRequest(input: {
-  allowedRepositories: Array<{
-    installationRepositoryId: string;
-    fullName: string;
-  }>;
+  allowedRepositories: Array<{ fullName: string }>;
   body: CreatePrArtifactInput;
   organizationId: string;
 }): Promise<
@@ -237,8 +233,7 @@ async function validateSelectedPullRequest(input: {
   const repository = await withDb((db) =>
     db.gitHubInstallationRepository.findFirst({
       where: {
-        id: allowed.installationRepositoryId,
-        fullName: allowed.fullName,
+        fullName: { equals: allowed.fullName, mode: "insensitive" },
         removedAt: null,
         installation: {
           organizationId: input.organizationId,

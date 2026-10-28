@@ -231,6 +231,7 @@ describe("mutations", () => {
       inboundUrl: "https://api.acme.dev/webhooks/integrations/new-key",
       inboundSecret: "new-secret",
       setupInstructions: "Do this",
+      inboundUrlWarning: null,
     };
     mockApiClient.post.mockResolvedValue(details);
     const { wrapper, invalidate, setData } = setup();

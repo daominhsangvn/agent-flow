@@ -1,3 +1,4 @@
+import type { IntegrationProviderSummary } from "@repo/api/src/types/integration";
 import {
   PROCESS_INSTRUCTION_VARIABLES,
   ProcessDocumentType,
@@ -5,8 +6,26 @@ import {
   ProcessPlanRecommendations,
   ProcessQuestionsPolicy,
   ProcessStepFinish,
+  ProcessStepRole,
   ProcessStepType,
+  ReviewSession,
 } from "@repo/api/src/types/project-process";
+import {
+  CONNECTIONS_GRANT_DOC,
+  type GrantableConnection,
+  grantKeyCompletions,
+  grantValueCompletions,
+} from "@repo/app/integrations/lib/connection-grant-completions";
+import {
+  filterYamlCompletions,
+  type YamlCompletion,
+  YamlCompletionKind,
+} from "@repo/app/shared/lib/yaml-completion";
+import {
+  analyzeYamlCursor,
+  type YamlCursor,
+  YamlCursorKind,
+} from "@repo/app/shared/lib/yaml-cursor";
 import { PROCESS_YAML_KEYS } from "./process-yaml";
 
 /**
@@ -15,36 +34,10 @@ import { PROCESS_YAML_KEYS } from "./process-yaml";
  * fits there. Pure, so the editor only adapts them to its popup.
  */
 
-/** Container path of the cursor: keys, and "#" for a list item. */
-export type YamlPath = readonly string[];
-
-export const YamlCursorKind = {
-  /** Typing a key of the mapping at `path`. */
-  Key: "key",
-  /** Typing the value of `key` in the mapping at `path`. */
-  Value: "value",
-  /** Typing an item of the list `key` (show, artifacts, mounts). */
-  Item: "item",
-  /** Inside `{{` of an instruction or title. */
-  Variable: "variable",
-} as const;
-export type YamlCursorKind =
-  (typeof YamlCursorKind)[keyof typeof YamlCursorKind];
-
-export type YamlCursorContext = {
-  kind: YamlCursorKind;
-  path: YamlPath;
-  /** The key whose value or item is typed. */
-  key: string | null;
-  /** Offset where the typed word starts (replaced by a suggestion). */
-  from: number;
-  typed: string;
+/** Where the cursor is, plus the `type` of the step it is in. */
+export type YamlCursorContext = Omit<YamlCursor, "itemValues"> & {
   /** `type` of the step the cursor is in, if any. */
   stepType: string | null;
-  /** Keys the mapping already has (not suggested again). */
-  existingKeys: readonly string[];
-  /** The cursor's line starts a list item ("- "). */
-  itemStart: boolean;
 };
 
 export type ProcessCompletionData = {
@@ -52,112 +45,38 @@ export type ProcessCompletionData = {
   repositories: readonly string[];
   /** Ids of the process's steps (an approval's show). */
   stepIds: readonly string[];
-};
-
-export const ProcessCompletionKind = {
-  Key: "property",
-  Value: "enum",
-  Variable: "variable",
-  Snippet: "snippet",
-} as const;
-export type ProcessCompletionKind =
-  (typeof ProcessCompletionKind)[keyof typeof ProcessCompletionKind];
-
-export type ProcessCompletion = {
-  label: string;
-  /** Text inserted from `from`; a snippet uses #{placeholders}. */
-  insert: string;
-  kind: ProcessCompletionKind;
-  detail?: string;
-  info?: string;
+  /** The project's connections an agent step's `connections:` may grant. */
+  projectConnections: readonly GrantableConnection[];
+  providers: readonly IntegrationProviderSummary[];
 };
 
 export function yamlCursorContext(
   text: string,
   pos: number
 ): YamlCursorContext | null {
-  const lineStart = text.lastIndexOf("\n", pos - 1) + 1;
-  const before = text.slice(lineStart, pos);
-  const variable = VARIABLE_RE.exec(before);
-  if (variable) {
-    const typed = variable[1] ?? "";
-    return {
-      kind: YamlCursorKind.Variable,
-      path: [],
-      key: null,
-      from: pos - typed.length,
-      typed,
-      stepType: null,
-      existingKeys: [],
-      itemStart: false,
-    };
-  }
-  const lines = text.split("\n");
-  const lineIndex = text.slice(0, lineStart).split("\n").length - 1;
-  const valueMatch = VALUE_RE.exec(before);
-  if (valueMatch) {
-    const [, indent = "", dash = "", key = "", typed = ""] = valueMatch;
-    const scope = scopeOf(lines, lineIndex, indent.length, dash);
-    return {
-      kind: YamlCursorKind.Value,
-      path: scope.path,
-      key,
-      from: pos - typed.length,
-      typed,
-      stepType: scope.stepType,
-      existingKeys: scope.keys,
-      itemStart: dash !== "",
-    };
-  }
-  const keyMatch = KEY_RE.exec(before);
-  if (!keyMatch) {
+  const cursor = analyzeYamlCursor(text, pos, {
+    isScalarList: (_path, key) => LIST_KEYS.includes(key),
+  });
+  if (!cursor) {
     return null;
   }
-  const [, indent = "", dash = "", typed = ""] = keyMatch;
-  const scope = scopeOf(lines, lineIndex, indent.length, dash);
-  const parentKey = scope.path.at(-2) ?? null;
-  // "- an" under show: is an item of a list of values, not a key.
-  if (dash && parentKey && LIST_KEYS.includes(parentKey)) {
-    return {
-      kind: YamlCursorKind.Item,
-      path: scope.path,
-      key: parentKey,
-      from: pos - typed.length,
-      typed,
-      stepType: scope.stepType,
-      existingKeys: [],
-      itemStart: true,
-    };
-  }
-  return {
-    kind: YamlCursorKind.Key,
-    path: scope.path,
-    key: null,
-    from: pos - typed.length,
-    typed,
-    stepType: scope.stepType,
-    existingKeys: scope.keys,
-    itemStart: dash !== "",
-  };
+  const { itemValues, ...rest } = cursor;
+  return { ...rest, stepType: processStepTypeOf(cursor) };
 }
 
 /** What fits at the cursor, best first; filtered by what is typed. */
 export function processYamlCompletions(
   context: YamlCursorContext,
   data: ProcessCompletionData
-): ProcessCompletion[] {
-  const all = candidates(context, data);
-  const typed = context.typed.toLowerCase();
-  return typed
-    ? all.filter((completion) => completion.label.toLowerCase().includes(typed))
-    : all;
+): YamlCompletion[] {
+  return filterYamlCompletions(candidates(context, data), context.typed);
 }
 
 /** The step snippets offered on a new item of `steps:`. */
-export const PROCESS_STEP_SNIPPETS: readonly ProcessCompletion[] = [
+export const PROCESS_STEP_SNIPPETS: readonly YamlCompletion[] = [
   {
     label: "Agent step",
-    kind: ProcessCompletionKind.Snippet,
+    kind: YamlCompletionKind.Snippet,
     detail: "type: agent",
     info: "Runs one instruction (a toolkit command or plain text) in the workspace.",
     insert:
@@ -165,7 +84,7 @@ export const PROCESS_STEP_SNIPPETS: readonly ProcessCompletion[] = [
   },
   {
     label: "Approval step",
-    kind: ProcessCompletionKind.Snippet,
+    kind: YamlCompletionKind.Snippet,
     detail: "type: approval",
     info: "A person approves before the run goes on; `show` lists what they review.",
     insert:
@@ -173,7 +92,7 @@ export const PROCESS_STEP_SNIPPETS: readonly ProcessCompletion[] = [
   },
   {
     label: "AgentFlow plan",
-    kind: ProcessCompletionKind.Snippet,
+    kind: YamlCompletionKind.Snippet,
     detail: "type: agentflow.plan",
     info: "The built-in planning agents write the run's Implementation Plan.",
     insert:
@@ -181,7 +100,7 @@ export const PROCESS_STEP_SNIPPETS: readonly ProcessCompletion[] = [
   },
   {
     label: "AgentFlow implement",
-    kind: ProcessCompletionKind.Snippet,
+    kind: YamlCompletionKind.Snippet,
     detail: "type: agentflow.execute",
     info: "The built-in implementation agents; needs a AgentFlow plan step before it.",
     insert:
@@ -189,260 +108,34 @@ export const PROCESS_STEP_SNIPPETS: readonly ProcessCompletion[] = [
   },
 ];
 
-/** "key:" followed by the cursor's value: `- key: va`, `key: va`. */
-const VALUE_RE = /^(\s*)(-\s+)?([A-Za-z][\w-]*):\s+([^\s#][^#]*?|)$/;
-/** A key being typed: `  ke`, `- ke`, or an empty line. */
-const KEY_RE = /^(\s*)(-\s+)?([A-Za-z][\w-]*|)$/;
-const VARIABLE_RE = /\{\{\s*([\w.]*)$/;
 /** Keys whose values are lists of scalars. */
 const LIST_KEYS: readonly string[] = ["show", "artifacts", "mounts"];
+/** An agent step's grant map. */
+const GRANTS_PATH = "steps/#/connections";
 const STEP_LIST_KEY = "steps";
 
-type LineInfo = {
-  indent: number;
-  item: boolean;
-  /** Column of the line's key (after "- " for an item start). */
-  contentIndent: number;
-  key: string | null;
-  /** Text after "key:", trimmed ("" for a key that opens a block). */
-  value: string;
-  blank: boolean;
-};
-
-const LINE_RE = /^(\s*)(-\s+)?(?:([A-Za-z][\w-]*):(?:\s+|$))?(.*)$/;
-const TRAILING_COMMENT_RE = /\s+#.*$/;
-
-function lineInfo(line: string): LineInfo {
-  const trimmed = line.trim();
-  if (trimmed === "" || trimmed.startsWith("#")) {
-    return {
-      indent: 0,
-      item: false,
-      contentIndent: 0,
-      key: null,
-      value: "",
-      blank: true,
-    };
-  }
-  const match = LINE_RE.exec(line);
-  const indent = match?.[1]?.length ?? 0;
-  const dash = match?.[2] ?? "";
-  return {
-    indent,
-    item: dash !== "",
-    contentIndent: indent + dash.length,
-    key: match?.[3] ?? null,
-    value: (match?.[4] ?? "").replace(TRAILING_COMMENT_RE, "").trim(),
-    blank: false,
-  };
-}
-
-type Scope = {
-  path: string[];
-  stepType: string | null;
-  /** Keys of the cursor's mapping. */
-  keys: string[];
-};
-
-/**
- * The containers around a line whose key starts at `indent` (+ the dash):
- * walking up, an item start at the same column opens the mapping, a
- * shallower `key:` opens its parent.
- */
-function scopeOf(
-  lines: readonly string[],
-  lineIndex: number,
-  indent: number,
-  dash: string
-): Scope {
-  const infos = lines.map(lineInfo);
-  const mapLevel = indent + dash.length;
-  const climb: Climb = {
-    path: dash ? ["#"] : [],
-    level: dash ? indent : mapLevel,
-    mapLevel,
-    itemLine: dash ? lineIndex : null,
-  };
-  for (let index = lineIndex - 1; index >= 0; index--) {
-    const line = infos[index];
-    if (line && !climbLine(climb, line, index)) {
-      break;
-    }
-  }
-  return {
-    path: climb.path,
-    keys: mappingKeys(infos, lineIndex, mapLevel, dash !== ""),
-    stepType: stepTypeOf(infos, climb, lineIndex),
-  };
-}
-
-type Climb = {
-  /** Containers found so far, outermost first. */
-  path: string[];
-  /** Column a line must be left of to contain the ones found so far. */
-  level: number;
-  /** Column of the cursor's mapping keys. */
-  mapLevel: number;
-  /** Item start of the cursor's mapping, when it is a list item. */
-  itemLine: number | null;
-};
-
-/** Takes one line of the upward scan into account; false ends the scan. */
-function climbLine(climb: Climb, line: LineInfo, index: number): boolean {
-  if (line.blank || !isLeftOf(line, climb.level)) {
-    return true;
-  }
-  if (line.item && line.contentIndent === climb.level) {
-    // The item start of the mapping the scan is in.
-    climb.path.unshift("#");
-    if (climb.itemLine === null && climb.level === climb.mapLevel) {
-      climb.itemLine = index;
-    }
-    climb.level = line.indent;
-    return true;
-  }
-  if (line.key && line.value === "") {
-    climb.path.unshift(line.key);
-    climb.level = line.contentIndent;
-    if (line.item) {
-      climb.path.unshift("#");
-      climb.level = line.indent;
-    }
-    return true;
-  }
-  return false;
-}
-
-function isLeftOf(line: LineInfo, level: number): boolean {
-  return line.contentIndent < level || (line.item && line.indent < level);
-}
-
-/** Keys of the mapping whose keys sit at column `level` around `lineIndex`. */
-function mappingKeys(
-  infos: readonly LineInfo[],
-  lineIndex: number,
-  level: number,
-  itemStart: boolean
-): string[] {
-  const above = itemStart ? [] : keysAbove(infos, lineIndex, level);
-  return [...above, ...keysBelow(infos, lineIndex, level)];
-}
-
-/** Keys of the mapping above the line, up to its item start (included). */
-function keysAbove(
-  infos: readonly LineInfo[],
-  lineIndex: number,
-  level: number
-): string[] {
-  const keys: string[] = [];
-  for (let index = lineIndex - 1; index >= 0; index--) {
-    const line = infos[index];
-    if (!line || line.blank) {
-      continue;
-    }
-    if (line.contentIndent < level) {
-      break;
-    }
-    if (line.contentIndent === level && line.key) {
-      keys.push(line.key);
-    }
-    if (line.item && line.contentIndent === level) {
-      break;
-    }
-  }
-  return keys;
-}
-
-/** Keys of the mapping below the line, up to the next item of its list. */
-function keysBelow(
-  infos: readonly LineInfo[],
-  lineIndex: number,
-  level: number
-): string[] {
-  const keys: string[] = [];
-  for (let index = lineIndex + 1; index < infos.length; index++) {
-    const line = infos[index];
-    if (!line || line.blank) {
-      continue;
-    }
-    if (
-      line.contentIndent < level ||
-      (line.item && line.contentIndent === level)
-    ) {
-      break;
-    }
-    if (line.contentIndent === level && line.key) {
-      keys.push(line.key);
-    }
-  }
-  return keys;
-}
-
 /** `type:` of the step mapping the cursor is in (path steps/#/...). */
-function stepTypeOf(
-  infos: readonly LineInfo[],
-  climb: Climb,
-  lineIndex: number
-): string | null {
-  if (climb.path[0] !== STEP_LIST_KEY || climb.path[1] !== "#") {
+function processStepTypeOf(cursor: YamlCursor): string | null {
+  if (
+    cursor.kind === YamlCursorKind.Variable ||
+    cursor.path[0] !== STEP_LIST_KEY ||
+    cursor.path[1] !== "#"
+  ) {
     return null;
   }
-  const start =
-    climb.itemLine ?? stepItemStart(infos, lineIndex, climb.mapLevel);
-  return start === null ? null : typeOfItem(infos, start);
-}
-
-/** The item start of the step above a nested line (e.g. inside its document). */
-function stepItemStart(
-  infos: readonly LineInfo[],
-  lineIndex: number,
-  mapLevel: number
-): number | null {
-  for (let index = lineIndex; index >= 0; index--) {
-    const line = infos[index];
-    if (line?.item && !line.blank && line.contentIndent <= mapLevel) {
-      return index;
-    }
-  }
-  return null;
-}
-
-/** The `type:` value of the list item starting at `start`. */
-function typeOfItem(infos: readonly LineInfo[], start: number): string | null {
-  const stepLevel = infos[start]?.contentIndent ?? 0;
-  for (let index = start; index < infos.length; index++) {
-    const line = infos[index];
-    if (!line || line.blank) {
-      continue;
-    }
-    if (index > start && endsItem(line, stepLevel)) {
-      return null;
-    }
-    if (line.contentIndent === stepLevel && line.key === "type" && line.value) {
-      return line.value;
-    }
-  }
-  return null;
-}
-
-/** The line starts the next item of the list, or leaves it. */
-function endsItem(line: LineInfo, itemLevel: number): boolean {
-  return (
-    line.contentIndent < itemLevel ||
-    (line.item && line.contentIndent === itemLevel)
-  );
+  return cursor.itemValues.type ?? null;
 }
 
 function candidates(
   context: YamlCursorContext,
   data: ProcessCompletionData
-): ProcessCompletion[] {
+): YamlCompletion[] {
   switch (context.kind) {
     case YamlCursorKind.Variable:
       return PROCESS_INSTRUCTION_VARIABLES.map((variable) => ({
         label: variable.name,
         insert: `${variable.name}}}`,
-        kind: ProcessCompletionKind.Variable,
+        kind: YamlCompletionKind.Variable,
         info: variable.description,
       }));
     case YamlCursorKind.Item:
@@ -450,12 +143,20 @@ function candidates(
     case YamlCursorKind.Value:
       return valueCandidates(context, data);
     default:
-      return keyCandidates(context);
+      return keyCandidates(context, data);
   }
 }
 
-function keyCandidates(context: YamlCursorContext): ProcessCompletion[] {
+function keyCandidates(
+  context: YamlCursorContext,
+  data: ProcessCompletionData
+): YamlCompletion[] {
   const where = context.path.join("/");
+  if (where === GRANTS_PATH) {
+    return grantKeyCompletions(data.projectConnections, data.providers).filter(
+      (completion) => !context.existingKeys.includes(completion.label)
+    );
+  }
   let keys: readonly string[];
   if (where === "") {
     keys = PROCESS_YAML_KEYS.process;
@@ -463,6 +164,14 @@ function keyCandidates(context: YamlCursorContext): ProcessCompletion[] {
     keys = PROCESS_YAML_KEYS.toolkit;
   } else if (where === "steps/#/document") {
     keys = PROCESS_YAML_KEYS.document;
+  } else if (where === "steps/#/review") {
+    keys = PROCESS_YAML_KEYS.review;
+  } else if (where === "steps/#/review/feedback") {
+    keys = PROCESS_YAML_KEYS.reviewFeedback;
+  } else if (where === "steps/#/retry") {
+    keys = PROCESS_YAML_KEYS.retry;
+  } else if (SIGNAL_PATHS.has(where)) {
+    keys = PROCESS_YAML_KEYS.signal;
   } else if (where === "steps/#") {
     keys = stepKeysFor(context.stepType);
   } else {
@@ -470,7 +179,7 @@ function keyCandidates(context: YamlCursorContext): ProcessCompletion[] {
   }
   const keyCompletions = keys
     .filter((key) => !context.existingKeys.includes(key))
-    .map((key) => keyCompletion(key, where));
+    .map((key) => keyCompletion(key, where, context.stepType));
   const snippets =
     where === "steps/#" && context.itemStart && context.stepType === null
       ? PROCESS_STEP_SNIPPETS
@@ -488,9 +197,20 @@ function stepKeysFor(stepType: string | null): readonly string[] {
   return [...new Set(Object.values(PROCESS_YAML_KEYS.steps).flat())];
 }
 
-function keyCompletion(key: string, where: string): ProcessCompletion {
-  const doc = KEY_DOCS[`${where}/${key}`] ?? KEY_DOCS[key];
-  const block = BLOCK_KEYS[key];
+function keyCompletion(
+  key: string,
+  where: string,
+  stepType: string | null
+): YamlCompletion {
+  // An agent step's review is a mapping; AgentFlow's implement step's a value.
+  const agentReview =
+    key === "review" &&
+    where === "steps/#" &&
+    stepType !== ProcessStepType.AgentFlowExecute;
+  const doc = agentReview
+    ? AGENT_REVIEW_DOC
+    : (PROCESS_YAML_KEY_DOCS[`${where}/${key}`] ?? PROCESS_YAML_KEY_DOCS[key]);
+  const block = agentReview ? BlockKind.Map : BLOCK_KEYS[key];
   let insert = `${key}: `;
   if (block === BlockKind.Map) {
     insert = `${key}:\n  `;
@@ -500,7 +220,7 @@ function keyCompletion(key: string, where: string): ProcessCompletion {
   return {
     label: key,
     insert,
-    kind: ProcessCompletionKind.Key,
+    kind: YamlCompletionKind.Key,
     detail: doc?.detail,
     info: doc?.info,
   };
@@ -509,19 +229,28 @@ function keyCompletion(key: string, where: string): ProcessCompletion {
 function valueCandidates(
   context: YamlCursorContext,
   data: ProcessCompletionData
-): ProcessCompletion[] {
+): YamlCompletion[] {
   const where = context.path.join("/");
   const values = (
     entries: ReadonlyArray<{ value: string; info: string }>
-  ): ProcessCompletion[] =>
+  ): YamlCompletion[] =>
     entries.map((entry) => ({
       label: entry.value,
       insert: entry.value,
-      kind: ProcessCompletionKind.Value,
+      kind: YamlCompletionKind.Value,
       info: entry.info,
     }));
   if (where === "steps/#" && context.key === "type") {
     return values(STEP_TYPE_VALUES);
+  }
+  if (where === GRANTS_PATH && context.key) {
+    const connection = data.projectConnections.find(
+      (candidate) => candidate.key === context.key
+    );
+    return grantValueCompletions(
+      context.key,
+      data.providers.find((provider) => provider.key === connection?.provider)
+    );
   }
   if (where === "steps/#/document" && context.key === "type") {
     return values(DOCUMENT_TYPE_VALUES);
@@ -532,17 +261,32 @@ function valueCandidates(
   if (context.key === "finish") {
     return values(FINISH_VALUES);
   }
+  if (context.key === "role") {
+    return values(ROLE_VALUES);
+  }
+  if (context.key === "releaseNotes") {
+    return values(RELEASE_NOTES_VALUES);
+  }
   if (context.key === "recommendations") {
     return values(RECOMMENDATIONS_VALUES);
   }
-  if (context.key === "review") {
+  if (
+    context.key === "review" &&
+    context.stepType === ProcessStepType.AgentFlowExecute
+  ) {
     return values(REVIEW_VALUES);
+  }
+  if (where === "steps/#/review" && context.key === "session") {
+    return values(REVIEW_SESSION_VALUES);
+  }
+  if (context.key === "consumeLabels" || context.key === "mention") {
+    return values(BOOLEAN_VALUES);
   }
   if (where === "toolkit" && context.key === "repository") {
     return data.repositories.map((repository) => ({
       label: repository,
       insert: repository,
-      kind: ProcessCompletionKind.Value,
+      kind: YamlCompletionKind.Value,
       info: "A repository of this project",
     }));
   }
@@ -552,12 +296,12 @@ function valueCandidates(
 function itemCandidates(
   context: YamlCursorContext,
   data: ProcessCompletionData
-): ProcessCompletion[] {
+): YamlCompletion[] {
   if (context.key === "show") {
     return data.stepIds.map((id) => ({
       label: id,
       insert: id,
-      kind: ProcessCompletionKind.Value,
+      kind: YamlCompletionKind.Value,
       info: "Show this step's files to the approver",
     }));
   }
@@ -565,7 +309,7 @@ function itemCandidates(
     return [".claude/commands", ".claude/skills", ".specify"].map((mount) => ({
       label: mount,
       insert: mount,
-      kind: ProcessCompletionKind.Value,
+      kind: YamlCompletionKind.Value,
       info: "A directory of the toolkit repository linked into the workspace",
     }));
   }
@@ -576,8 +320,14 @@ const BlockKind = { Map: "map", List: "list" } as const;
 type BlockKind = (typeof BlockKind)[keyof typeof BlockKind];
 
 const BLOCK_KEYS: Record<string, BlockKind> = {
+  retry: BlockKind.Map,
+  approve: BlockKind.Map,
+  complete: BlockKind.Map,
+  feedback: BlockKind.Map,
+  labels: BlockKind.List,
   toolkit: BlockKind.Map,
   document: BlockKind.Map,
+  connections: BlockKind.Map,
   steps: BlockKind.List,
   show: BlockKind.List,
   artifacts: BlockKind.List,
@@ -659,7 +409,14 @@ const FINISH_VALUES = [
   },
 ];
 
-const KEY_DOCS: Record<string, { detail?: string; info: string }> = {
+/**
+ * What each key of the process YAML means (suggestions here, the workflow
+ * configuration guide); a `<where>/<key>` entry overrides the key at that place.
+ */
+export const PROCESS_YAML_KEY_DOCS: Record<
+  string,
+  { detail?: string; info: string }
+> = {
   toolkit: {
     detail: "mapping",
     info: "A repository of the project whose directories (commands, skills) the agent loads.",
@@ -692,7 +449,7 @@ const KEY_DOCS: Record<string, { detail?: string; info: string }> = {
   },
   questions: {
     detail: "ask | continue",
-    info: "ask: stop and ask when a decision is needed; continue: decide and go on.",
+    info: "ask: stop and ask when a decision is needed (the run waits in input.needed); continue: decide and go on. Default: ask on an AgentFlow plan step, continue on an agent step.",
   },
   artifacts: {
     detail: "list of globs",
@@ -708,20 +465,70 @@ const KEY_DOCS: Record<string, { detail?: string; info: string }> = {
   },
   finish: {
     detail: "none | push",
-    info: "none: keep changes for the next step; push: commit and push every repository with changes.",
+    info: "none (default): keep changes for the next step; push: commit and push every repository with changes, reported as execute.started / execute.completed.",
+  },
+  role: {
+    detail: "plan | implement",
+    info: "What the step is to AgentFlow. plan: the step writes the run's implementation plan (AgentFlow tells the agent to write it to .agentflow-ai/work/plan.md and keeps it as the run's plan). implement: the step works from the approved plan, always pushes and writes release notes.",
+  },
+  releaseNotes: {
+    detail: "true | false",
+    info: "Implement step (role: implement, or agentflow.execute): write release notes when done (default true), published as a document and as {{releaseNotes}}.",
   },
   timeoutMinutes: { detail: "5-1440", info: "How long the step may run." },
+  retry: {
+    detail: "mapping",
+    info: "Retry the step automatically when its agent fails on the model provider (an expired token, a quota, an overload): after a backoff, the failed session goes on in a fork (--resume --fork-session).",
+  },
+  "steps/#/retry/attempts": {
+    detail: "1-5",
+    info: "How many times the step is retried automatically before the run fails.",
+  },
+  "steps/#/approve": {
+    detail: "mapping",
+    info: "Approval step: labels (tags) added on the ticket that approve it, besides Approve in AgentFlow.",
+  },
+  "steps/#/review/approve": {
+    detail: "mapping",
+    info: "Plan step: labels (tags) added on the ticket that approve the plan.",
+  },
+  "steps/#/review/complete": {
+    detail: "mapping",
+    info: "Any other step: labels (tags) added on the ticket that end the review (e.g. code review done).",
+  },
+  "steps/#/review/feedback": {
+    detail: "mapping",
+    info: "Labels (tags) on the ticket, or a comment that mentions the bot (mention: true), that run the step again with the feedback. A feedback label is removed once acted on.",
+  },
+  "steps/#/review/instruction": {
+    detail: "text",
+    info: "Added to the feedback round's prompt. Variables: {{feedback.text}}, {{feedback.author}}, {{feedback.via}}, {{review.round}} and the issue's.",
+  },
+  "steps/#/review/session": {
+    detail: "resume | fresh",
+    info: "resume (default): continue the step's session; fresh: start a new one.",
+  },
+  "steps/#/review/consumeLabels": {
+    detail: "true | false",
+    info: "Remove a feedback label from the ticket once acted on (default true).",
+  },
+  labels: { detail: "list", info: "Labels (Jira) or tags (Azure DevOps)." },
+  mention: {
+    detail: "true | false",
+    info: "A comment that mentions the bot sends feedback; its text is the feedback.",
+  },
+  connections: CONNECTIONS_GRANT_DOC,
   recommendations: {
     detail: "accept | suggest",
-    info: "Plan step: accept settles a question the agents recommend an answer for with it (only questions without one stop the run); suggest keeps it open for people.",
+    info: "Plan step: accept (default) settles a question the agents recommend an answer for with it (only questions without one stop the run); suggest keeps it open for people.",
   },
   review: {
     detail: "full | fast",
-    info: "Implement step: full reviews and finalizes the approved plan before implementing it; fast implements it as it is.",
+    info: "Implement step: full (default) reviews and finalizes the approved plan before implementing it; fast implements it as it is.",
   },
   show: {
     detail: "list",
-    info: "Step ids or file globs the approver reviews.",
+    info: "Step ids or file globs the approver reviews. The run waits in input.needed until an org admin approves; a rejection fails the run.",
   },
   "steps/#/document/type": {
     detail: "PRD | DOC | IMPLEMENTATION_PLAN",
@@ -736,3 +543,47 @@ const KEY_DOCS: Record<string, { detail?: string; info: string }> = {
     info: "Variables {{issue.key}}, {{issue.title}}; empty: the Issue's title.",
   },
 };
+
+const ROLE_VALUES = [
+  {
+    value: ProcessStepRole.Plan,
+    info: "Writes the run's implementation plan (kept as the run's plan document)",
+  },
+  {
+    value: ProcessStepRole.Implement,
+    info: "Works from the approved plan, pushes and writes release notes",
+  },
+];
+
+const RELEASE_NOTES_VALUES = [
+  { value: "true", info: "Write release notes when done (default)" },
+  { value: "false", info: "No release notes" },
+];
+
+/** Where a signal's `labels` go: review.approve, review.complete, an approval's approve. */
+const SIGNAL_PATHS: ReadonlySet<string> = new Set([
+  "steps/#/review/approve",
+  "steps/#/review/complete",
+  "steps/#/approve",
+]);
+
+const AGENT_REVIEW_DOC = {
+  detail: "mapping",
+  info: "People review the step's work before the run goes on: approve (a plan step) or complete (any other step) lets it go on, feedback runs the step again with it. Decided in AgentFlow, with labels on the ticket or a comment that mentions the bot.",
+};
+
+const REVIEW_SESSION_VALUES = [
+  {
+    value: ReviewSession.Resume,
+    info: "Continue the step's agent session with the feedback (default)",
+  },
+  {
+    value: ReviewSession.Fresh,
+    info: "A new session with the step's instruction and the feedback",
+  },
+];
+
+const BOOLEAN_VALUES = [
+  { value: "true", info: "Yes" },
+  { value: "false", info: "No" },
+];

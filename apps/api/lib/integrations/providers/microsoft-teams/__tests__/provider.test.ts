@@ -1,4 +1,5 @@
 import {
+  IntegrationDeliveryMode,
   IntegrationFieldKind,
   IntegrationProviderKey,
 } from "@repo/api/src/types/integration";
@@ -11,6 +12,7 @@ import { z } from "zod";
 import type { WorkflowRunSnapshot } from "../../../types";
 import { HttpMethod, ValidateConnectionReason } from "../../../types";
 import { teamsConnectionSecretsSchema } from "../connection";
+import { TeamsTriggerType } from "../constants";
 import {
   TEAMS_DEFAULT_MESSAGE_TEMPLATE,
   TEAMS_DEFAULT_TITLE_TEMPLATE,
@@ -52,25 +54,34 @@ const postedCardSchema = z.object({
 });
 
 describe("microsoftTeamsProvider definition", () => {
-  it("is an action-only provider", () => {
+  it("posts through a webhook and starts runs from bot mentions", () => {
     expect(microsoftTeamsProvider.key).toBe(
       IntegrationProviderKey.MicrosoftTeams
     );
-    expect(microsoftTeamsProvider.inbound).toBeUndefined();
-    expect(microsoftTeamsProvider.source).toBeUndefined();
-    expect(microsoftTeamsProvider.triggers).toEqual([]);
+    expect(microsoftTeamsProvider.inbound?.deliveryModes).toEqual([
+      IntegrationDeliveryMode.Webhook,
+    ]);
+    expect(microsoftTeamsProvider.source?.fetchItem).toBeTypeOf("function");
+    expect(
+      microsoftTeamsProvider.triggers.map((trigger) => trigger.key)
+    ).toEqual([TeamsTriggerType.BotMentioned]);
     expect(microsoftTeamsProvider.actions.map((action) => action.key)).toEqual([
       TeamsActionType.PostMessage,
+      TeamsActionType.Reply,
     ]);
   });
 
-  it("declares the webhook URL as its only, secret connection field", () => {
-    expect(microsoftTeamsProvider.connection.fields).toEqual([
-      expect.objectContaining({
-        key: "webhookUrl",
-        kind: IntegrationFieldKind.Secret,
-        required: true,
-      }),
+  it("declares the webhook URL and the bot fields, secrets as secrets", () => {
+    expect(
+      microsoftTeamsProvider.connection.fields.map((field) => [
+        field.key,
+        field.kind,
+      ])
+    ).toEqual([
+      ["webhookUrl", IntegrationFieldKind.Secret],
+      ["appId", IntegrationFieldKind.Text],
+      ["tenantId", IntegrationFieldKind.Text],
+      ["clientSecret", IntegrationFieldKind.Secret],
     ]);
   });
 });
@@ -95,11 +106,9 @@ describe("teamsConnectionSecretsSchema", () => {
     ]);
   });
 
-  it("requires a URL", () => {
-    expect(
-      teamsConnectionSecretsSchema.safeParse({ webhookUrl: "" }).success
-    ).toBe(false);
-    expect(teamsConnectionSecretsSchema.safeParse({}).success).toBe(false);
+  it("treats an empty URL as not set (the bot may be used alone)", () => {
+    expect(teamsConnectionSecretsSchema.parse({ webhookUrl: " " })).toEqual({});
+    expect(teamsConnectionSecretsSchema.parse({})).toEqual({});
   });
 });
 
@@ -201,7 +210,9 @@ describe("microsoftTeamsProvider.connection.validate", () => {
 });
 
 describe("microsoft_teams.post_message", () => {
-  const action = microsoftTeamsProvider.actions[0];
+  const action = microsoftTeamsProvider.actions.find(
+    (candidate) => candidate.key === TeamsActionType.PostMessage
+  );
   if (!action) {
     throw new Error("post_message action missing");
   }

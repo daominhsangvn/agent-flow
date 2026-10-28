@@ -1,8 +1,10 @@
+import { IntegrationProviderKey } from "@repo/api/src/types/integration";
 import {
+  type JobRepoPoolEntry,
+  PROJECT_REPOSITORIES_LOAD_FAILURE,
   RepoSource,
   type UseResolvedJobReposResult,
 } from "@repo/app/loops/hooks/use-resolved-job-repos";
-import { TEAM_REPOSITORIES_LOAD_FAILURE } from "@repo/app/teams/hooks/use-team-repositories-union";
 import {
   cleanup,
   fireEvent,
@@ -57,7 +59,7 @@ vi.mock("@repo/app/github/hooks/use-default-branches", () => ({
 
 const REPOS_HEADER_REGEX = /repositories/i;
 const LOADING_REPOS_REGEX = /loading repositories/i;
-const NO_REPOS_REGEX = /no repositories curated/i;
+const NO_REPOS_REGEX = /no repositories on this project/i;
 const FROM_PREVIOUS_JOB_REGEX = /from previous job/i;
 const INCLUDE_REPO_A_REGEX = /include org\/repo-a/i;
 const INCLUDE_REPO_B_REGEX = /include org\/repo-b/i;
@@ -72,24 +74,19 @@ const BRANCH_OPTION_FEATURE_X_REGEX = /feature\/x/i;
 const BRANCH_OPTION_MAIN_REGEX = /^main/i;
 const BRANCH_OPTION_RELEASE_2024_REGEX = /release\/2024/i;
 
-function makeRepo(id: string, fullName: string) {
+function makeRepo(
+  id: string,
+  fullName: string,
+  overrides: Partial<JobRepoPoolEntry> = {}
+): JobRepoPoolEntry {
   return {
-    id: `team-repo-${id}`,
-    teamId: "team-1",
-    installationRepositoryId: id,
-    isDefaultSelected: false,
+    id,
+    fullName,
+    provider: IntegrationProviderKey.GitHub,
     isPrimary: false,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    repository: {
-      id,
-      installationId: "install-1",
-      githubRepoId: id,
-      name: fullName.split("/")[1] ?? "",
-      owner: fullName.split("/")[0] ?? "",
-      fullName,
-      private: false,
-    },
+    defaultBranch: null,
+    githubRepositoryId: id,
+    ...overrides,
   };
 }
 
@@ -121,7 +118,7 @@ describe("JobRepositoriesSection (PLN-529)", () => {
     expect(screen.getByText(LOADING_REPOS_REGEX)).toBeInTheDocument();
   });
 
-  it("renders an empty-pool message when no team repos are curated", () => {
+  it("renders an empty-pool message when the project has no repositories", () => {
     render(
       <JobRepositoriesSection
         onChange={vi.fn()}
@@ -132,7 +129,7 @@ describe("JobRepositoriesSection (PLN-529)", () => {
   });
 
   // ISS-5095: a failed read also arrives as an empty pool, so without this
-  // branch the section states the team curated nothing and sends the user to a
+  // branch the section states the project has no repositories and sends the user to a
   // settings page — a claim it has no evidence for.
   it("renders the load failure instead of the empty-pool claim when the read failed", () => {
     render(
@@ -140,12 +137,12 @@ describe("JobRepositoriesSection (PLN-529)", () => {
         onChange={vi.fn()}
         resolved={buildResolved({
           pool: [],
-          poolError: TEAM_REPOSITORIES_LOAD_FAILURE,
+          poolError: PROJECT_REPOSITORIES_LOAD_FAILURE,
         })}
       />
     );
     expect(
-      screen.getByText(TEAM_REPOSITORIES_LOAD_FAILURE)
+      screen.getByText(PROJECT_REPOSITORIES_LOAD_FAILURE)
     ).toBeInTheDocument();
     expect(screen.queryByText(NO_REPOS_REGEX)).not.toBeInTheDocument();
   });
@@ -161,14 +158,14 @@ describe("JobRepositoriesSection (PLN-529)", () => {
           primary: {
             id: "repo-a",
             fullName: "org/repo-a",
-            source: RepoSource.ProjectOverride,
+            source: RepoSource.ProjectDefault,
             inPool: true,
           },
           additional: [
             {
               id: "repo-b",
               fullName: "org/repo-b",
-              source: RepoSource.TeamDefault,
+              source: RepoSource.ProjectDefault,
               inPool: true,
             },
           ],
@@ -181,6 +178,40 @@ describe("JobRepositoriesSection (PLN-529)", () => {
         expect.objectContaining({
           primary: { id: "repo-a", fullName: "org/repo-a", branch: "main" },
           additional: [{ fullName: "org/repo-b", branch: "develop" }],
+        })
+      );
+    });
+  });
+
+  it("uses the recorded default branch for a repository without a GitHub id", async () => {
+    const onChange = vi.fn();
+    const repoX = makeRepo("repo-x", "org/proj/repo-x", {
+      provider: IntegrationProviderKey.AzureDevOps,
+      defaultBranch: "develop-x",
+      githubRepositoryId: null,
+    });
+    render(
+      <JobRepositoriesSection
+        onChange={onChange}
+        resolved={buildResolved({
+          primary: {
+            id: "repo-x",
+            fullName: "org/proj/repo-x",
+            source: RepoSource.ProjectDefault,
+            inPool: true,
+          },
+          pool: [repoX],
+        })}
+      />
+    );
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          primary: {
+            id: "repo-x",
+            fullName: "org/proj/repo-x",
+            branch: "develop-x",
+          },
         })
       );
     });
@@ -217,7 +248,7 @@ describe("JobRepositoriesSection (PLN-529)", () => {
           primary: {
             id: "repo-a",
             fullName: "org/repo-a",
-            source: RepoSource.TeamDefault,
+            source: RepoSource.ProjectDefault,
             inPool: true,
           },
           pool: [repoA],
@@ -244,14 +275,14 @@ describe("JobRepositoriesSection (PLN-529)", () => {
           primary: {
             id: "repo-a",
             fullName: "org/repo-a",
-            source: RepoSource.TeamDefault,
+            source: RepoSource.ProjectDefault,
             inPool: true,
           },
           additional: [
             {
               id: "repo-b",
               fullName: "org/repo-b",
-              source: RepoSource.TeamDefault,
+              source: RepoSource.ProjectDefault,
               inPool: true,
             },
           ],
@@ -279,7 +310,7 @@ describe("JobRepositoriesSection (PLN-529)", () => {
           primary: {
             id: "repo-a",
             fullName: "org/repo-a",
-            source: RepoSource.TeamDefault,
+            source: RepoSource.ProjectDefault,
             inPool: true,
           },
           pool: [repoA],
@@ -302,7 +333,7 @@ describe("JobRepositoriesSection (PLN-529)", () => {
           primary: {
             id: "out-1",
             fullName: "org/out",
-            source: RepoSource.ProjectOverride,
+            source: RepoSource.ProjectDefault,
             inPool: false,
           },
           pool: [repoA],
@@ -330,7 +361,7 @@ describe("JobRepositoriesSection (PLN-529)", () => {
           primary: {
             id: "repo-a",
             fullName: "org/repo-a",
-            source: RepoSource.TeamDefault,
+            source: RepoSource.ProjectDefault,
             inPool: true,
           },
           additional: [
@@ -366,7 +397,7 @@ describe("JobRepositoriesSection (PLN-529)", () => {
           primary: {
             id: "repo-a",
             fullName: "org/repo-a",
-            source: RepoSource.TeamDefault,
+            source: RepoSource.ProjectDefault,
             inPool: true,
           },
           pool: [repoA],
@@ -411,14 +442,14 @@ describe("JobRepositoriesSection (PLN-529)", () => {
           primary: {
             id: "repo-a",
             fullName: "org/repo-a",
-            source: RepoSource.TeamDefault,
+            source: RepoSource.ProjectDefault,
             inPool: true,
           },
           additional: [
             {
               id: "repo-b",
               fullName: "org/repo-b",
-              source: RepoSource.TeamDefault,
+              source: RepoSource.ProjectDefault,
               inPool: true,
             },
           ],
@@ -458,7 +489,7 @@ describe("JobRepositoriesSection (PLN-529)", () => {
           primary: {
             id: "repo-a",
             fullName: "org/repo-a",
-            source: RepoSource.TeamDefault,
+            source: RepoSource.ProjectDefault,
             inPool: true,
           },
           additional: [
@@ -508,7 +539,7 @@ describe("JobRepositoriesSection (PLN-529)", () => {
           primary: {
             id: "repo-a",
             fullName: "org/repo-a",
-            source: RepoSource.TeamDefault,
+            source: RepoSource.ProjectDefault,
             inPool: true,
           },
           pool: [repoA, repoB],

@@ -1,10 +1,13 @@
 "use client";
 
 import type { Workflow } from "@repo/api/src/types/workflow";
+import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 // Cross-slice: the manual-run triggers come from the integrations provider
 // catalog, and the inline error state is owned by that slice.
 import { QueryErrorMessage } from "@repo/app/integrations/components/query-error-message";
 import { useIntegrationProviders } from "@repo/app/integrations/hooks/use-integrations";
+// Cross-slice: an orchestrated workflow's cases are the orchestrator slice's list.
+import { OrchestratorCaseList } from "@repo/app/orchestrator/components/orchestrator-case-list";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dialog";
 import { useTabParam } from "@repo/app/shared/hooks/use-tab-param";
@@ -34,6 +37,7 @@ import { WorkflowRunHistory } from "./workflow-runs-table";
 export const WorkflowDetailTab = {
   Configuration: "configuration",
   Runs: "runs",
+  Cases: "cases",
 } as const;
 export type WorkflowDetailTab =
   (typeof WorkflowDetailTab)[keyof typeof WorkflowDetailTab];
@@ -47,7 +51,7 @@ export type WorkflowDetailViewProps = {
 
 /**
  * One workflow: its configuration (the editor, read-only for members) and its
- * run history as URL-synced tabs, plus the admin actions "Run now" (for
+ * run history (or, orchestrated, its cases) as URL-synced tabs, plus the admin actions "Run now" (for
  * triggers that support a manual run) and "Delete".
  */
 export function WorkflowDetailView({
@@ -118,11 +122,12 @@ function WorkflowDetailContent({
   const deleteWorkflow = useDeleteWorkflow();
   const { navigate } = useNavigation();
   const buildOrgPath = useOrgPath();
+  const isOrchestrated = workflow.agent.mode === WorkflowAgentMode.Orchestrated;
   const [runNowOpen, setRunNowOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const { activeTab, setActiveTab } = useTabParam<WorkflowDetailTab>({
     defaultTab: WorkflowDetailTab.Configuration,
-    validTabs: WORKFLOW_DETAIL_TABS,
+    validTabs: detailTabsFor(workflow.agent.mode),
   });
   const manualTriggers = getManualRunTriggers(
     providers.data ?? [],
@@ -140,13 +145,16 @@ function WorkflowDetailContent({
               {workflow.enabled ? "Enabled" : "Disabled"}
             </Badge>
           </div>
-          <p className="text-muted-foreground text-sm">
-            {workflow.runCounts.total} runs ({workflow.runCounts.active} active)
-            {" · "}
-            {workflow.lastRunAt
-              ? `last run ${formatRelativeTime(workflow.lastRunAt)}`
-              : "never run"}
-          </p>
+          {isOrchestrated ? null : (
+            <p className="text-muted-foreground text-sm">
+              {workflow.runCounts.total} runs ({workflow.runCounts.active}{" "}
+              active)
+              {" · "}
+              {workflow.lastRunAt
+                ? `last run ${formatRelativeTime(workflow.lastRunAt)}`
+                : "never run"}
+            </p>
+          )}
         </div>
         {isAdmin ? (
           <div className="flex shrink-0 flex-wrap gap-2">
@@ -181,12 +189,21 @@ function WorkflowDetailContent({
           >
             Configuration
           </TabsTrigger>
-          <TabsTrigger
-            className="flex-initial px-4"
-            value={WorkflowDetailTab.Runs}
-          >
-            Runs
-          </TabsTrigger>
+          {isOrchestrated ? (
+            <TabsTrigger
+              className="flex-initial px-4"
+              value={WorkflowDetailTab.Cases}
+            >
+              Cases
+            </TabsTrigger>
+          ) : (
+            <TabsTrigger
+              className="flex-initial px-4"
+              value={WorkflowDetailTab.Runs}
+            >
+              Runs
+            </TabsTrigger>
+          )}
         </TabsList>
         <TabsContent className="mt-3" value={WorkflowDetailTab.Configuration}>
           <WorkflowEditor
@@ -199,6 +216,9 @@ function WorkflowDetailContent({
         </TabsContent>
         <TabsContent className="mt-3" value={WorkflowDetailTab.Runs}>
           <WorkflowRunHistory workflowId={workflow.id} />
+        </TabsContent>
+        <TabsContent className="mt-3" value={WorkflowDetailTab.Cases}>
+          <OrchestratorCaseList workflowId={workflow.id} />
         </TabsContent>
       </Tabs>
 
@@ -226,7 +246,9 @@ function WorkflowDetailContent({
   );
 }
 
-const WORKFLOW_DETAIL_TABS: readonly WorkflowDetailTab[] = [
-  WorkflowDetailTab.Configuration,
-  WorkflowDetailTab.Runs,
-];
+function detailTabsFor(mode: WorkflowAgentMode): readonly WorkflowDetailTab[] {
+  if (mode === WorkflowAgentMode.Orchestrated) {
+    return [WorkflowDetailTab.Configuration, WorkflowDetailTab.Cases];
+  }
+  return [WorkflowDetailTab.Configuration, WorkflowDetailTab.Runs];
+}

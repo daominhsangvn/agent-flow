@@ -52,6 +52,7 @@ function processView(overrides: Partial<RunProcessView> = {}): RunProcessView {
     stepId: "clarify",
     waiting: null,
     approval: null,
+    review: null,
     stepFiles: [],
     ...overrides,
   };

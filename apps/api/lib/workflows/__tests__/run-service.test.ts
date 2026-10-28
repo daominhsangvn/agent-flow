@@ -4,6 +4,10 @@ import {
   IntegrationDeliverySource,
   IntegrationProviderKey,
 } from "@repo/api/src/types/integration";
+import {
+  IntegrationToolCallStatus,
+  ToolCallDecision,
+} from "@repo/api/src/types/integration-tools";
 import { ProcessDocumentType } from "@repo/api/src/types/project-process";
 import { Result, Status } from "@repo/api/src/types/result";
 import {
@@ -29,6 +33,7 @@ const IDS = {
 const mocks = vi.hoisted(() => ({
   db: {
     workflowRun: { findMany: vi.fn(), findFirst: vi.fn() },
+    sessionDetail: { findMany: vi.fn() },
     workflow: { findFirst: vi.fn() },
     workflowTrigger: { findFirst: vi.fn() },
     workflowActionRun: {
@@ -46,8 +51,14 @@ const mocks = vi.hoisted(() => ({
   listRunDocuments: vi.fn(),
   drainActionRuns: vi.fn(),
   waitUntil: vi.fn(),
+  listToolCalls: vi.fn(),
+  decideToolCall: vi.fn(),
 }));
 
+// The orchestrator's events are ingest-orchestrated.test.ts's.
+vi.mock("@/lib/orchestrator/inbound", () => ({
+  routeToOrchestrator: () => Promise.resolve([]),
+}));
 vi.mock("@repo/database", () => ({
   withDb: (fn: (db: unknown) => unknown) => fn(mocks.db),
 }));
@@ -82,12 +93,19 @@ vi.mock("@/lib/workflows/engine/actions", () => ({
   drainActionRuns: mocks.drainActionRuns,
 }));
 vi.mock("@/lib/wait-until", () => ({ waitUntil: mocks.waitUntil }));
+vi.mock("@/app/integration-tools/integration-tool-call-service", () => ({
+  integrationToolCallService: {
+    listForRun: mocks.listToolCalls,
+    decide: mocks.decideToolCall,
+  },
+}));
 
 const SECRET = "jira-token-0123456789";
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.listRunDocuments.mockResolvedValue([]);
+  mocks.listToolCalls.mockResolvedValue([]);
   mocks.db.workflow.findFirst.mockResolvedValue({
     id: IDS.workflow,
     enabled: true,
@@ -126,6 +144,7 @@ beforeEach(() => {
   mocks.db.workflowRun.findFirst.mockResolvedValue(runRow());
   mocks.db.workflowActionRun.findMany.mockResolvedValue([]);
   mocks.listRunLoops.mockResolvedValue([]);
+  mocks.db.sessionDetail.findMany.mockResolvedValue([]);
 });
 
 function runRow(overrides: Record<string, unknown> = {}) {
@@ -147,6 +166,7 @@ function runRow(overrides: Record<string, unknown> = {}) {
       occurredAt: "2026-10-01T10:00:00.000Z",
     },
     prUrl: null,
+    repository: null,
     error: null,
     createdAt: new Date("2026-10-01T10:00:00.000Z"),
     updatedAt: new Date("2026-10-01T10:00:00.000Z"),
@@ -229,6 +249,84 @@ describe("workflowRunService.list", () => {
   });
 });
 
+describe("workflowRunService run pull requests", () => {
+  function repository(fullName: string, pullRequest: number | null) {
+    return {
+      id: `repo-${fullName}`,
+      connectionId: "conn-1",
+      provider: "github",
+      externalId: fullName,
+      fullName,
+      webUrl: `https://github.com/${fullName}`,
+      cloneUrl: `https://github.com/${fullName}.git`,
+      defaultBranch: "main",
+      branch: pullRequest === null ? null : `feat/${fullName}`,
+      baseBranch: "main",
+      pullRequest:
+        pullRequest === null
+          ? null
+          : {
+              url: `https://github.com/${fullName}/pull/${pullRequest}`,
+              number: pullRequest,
+            },
+    };
+  }
+
+  it("lists the pull request of every repository the run changed", async () => {
+    mocks.db.workflowRun.findMany.mockResolvedValueOnce([
+      runRow({
+        prUrl: "https://github.com/acme/web/pull/12",
+        branchName: "feat/acme/web",
+        repository: [
+          repository("acme/web", 12),
+          repository("acme/docs", null),
+          repository("acme/api", 4),
+        ],
+      }),
+    ]);
+
+    const result = await workflowRunService.list(IDS.org, {});
+    const page = result.ok ? result.value : expect.fail("page expected");
+
+    expect(page.runs[0]?.pullRequests).toEqual([
+      {
+        url: "https://github.com/acme/web/pull/12",
+        number: 12,
+        repository: "acme/web",
+        branch: "feat/acme/web",
+      },
+      {
+        url: "https://github.com/acme/api/pull/4",
+        number: 4,
+        repository: "acme/api",
+        branch: "feat/acme/api",
+      },
+    ]);
+  });
+
+  it("falls back to the run's single pull request on older runs", async () => {
+    mocks.db.workflowRun.findMany.mockResolvedValueOnce([
+      runRow({
+        prUrl: "https://github.com/acme/web/pull/3",
+        branchName: "feat/proj-7",
+        repository: null,
+      }),
+    ]);
+
+    const result = await workflowRunService.list(IDS.org, {});
+    const page = result.ok ? result.value : expect.fail("page expected");
+
+    expect(page.runs[0]?.pullRequests).toEqual([
+      {
+        url: "https://github.com/acme/web/pull/3",
+        number: null,
+        repository: null,
+        branch: "feat/proj-7",
+      },
+    ]);
+  });
+});
+
 describe("workflowRunService.get", () => {
   it("returns documents, loops and action runs", async () => {
     mocks.db.workflowActionRun.findMany.mockResolvedValue([
@@ -261,6 +359,7 @@ describe("workflowRunService.get", () => {
         },
       ],
       loops: [],
+      sessions: [],
       actionRuns: [
         {
           id: IDS.actionRun,
@@ -533,6 +632,93 @@ describe("workflowRunService.cancel", () => {
       ok: true,
       value: { status: WorkflowRunStatus.Cancelled },
     });
+  });
+});
+
+describe("workflowRunService tool calls", () => {
+  const CALL_ID = "0199a5f0-0000-7000-8000-0000000000c7";
+  const call = {
+    id: CALL_ID,
+    tool: "microsoft_teams_post_message",
+    operationType: "microsoft_teams.post_message",
+    connectionKey: "teams-release",
+    input: { message: "Shipped." },
+    status: IntegrationToolCallStatus.PendingApproval,
+    externalRef: null,
+    error: null,
+    actionRunId: IDS.actionRun,
+    stepId: null,
+    decidedBy: null,
+    decidedAt: null,
+    createdAt: new Date("2026-10-13T10:00:00.000Z"),
+  };
+
+  beforeEach(() => {
+    mocks.db.workflowRun.findFirst.mockResolvedValue(runRow());
+    mocks.listToolCalls.mockResolvedValue([call]);
+  });
+
+  it("lists the run's tool calls on its detail", async () => {
+    const detail = await workflowRunService.get(IDS.org, IDS.run);
+
+    expect(detail?.toolCalls).toEqual([call]);
+    expect(mocks.listToolCalls).toHaveBeenCalledWith(IDS.org, IDS.run);
+  });
+
+  it("decides a call and returns the run detail", async () => {
+    mocks.decideToolCall.mockResolvedValue(Result.ok(undefined));
+
+    const result = await workflowRunService.decideToolCall({
+      organizationId: IDS.org,
+      runId: IDS.run,
+      callId: CALL_ID,
+      decision: ToolCallDecision.Approve,
+      userId: "user-1",
+    });
+
+    expect(result).toMatchObject({ ok: true, value: { id: IDS.run } });
+    expect(mocks.decideToolCall).toHaveBeenCalledWith({
+      organizationId: IDS.org,
+      runId: IDS.run,
+      callId: CALL_ID,
+      decision: ToolCallDecision.Approve,
+      userId: "user-1",
+    });
+  });
+
+  it("answers a decided call with its conflict", async () => {
+    mocks.decideToolCall.mockResolvedValue(
+      Result.err({ status: Status.Conflict, message: "decided" })
+    );
+
+    const result = await workflowRunService.decideToolCall({
+      organizationId: IDS.org,
+      runId: IDS.run,
+      callId: CALL_ID,
+      decision: ToolCallDecision.Reject,
+      userId: "user-1",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: { status: Status.Conflict, message: "decided" },
+    });
+  });
+
+  it("does not look up a call id that is not a uuid", async () => {
+    const result = await workflowRunService.decideToolCall({
+      organizationId: IDS.org,
+      runId: IDS.run,
+      callId: "nope",
+      decision: ToolCallDecision.Approve,
+      userId: "user-1",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { status: Status.NotFound },
+    });
+    expect(mocks.decideToolCall).not.toHaveBeenCalled();
   });
 });
 

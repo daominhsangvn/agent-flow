@@ -1,5 +1,7 @@
 import {
+  ClaudeCodeVersionChannel,
   type ComputeTargetModelProvider,
+  claudeCodeVersionSchema,
   MODEL_PROVIDER_MODEL_ENV_KEYS,
   ModelProviderMode,
   type UpdateComputeTargetModelProviderInput,
@@ -18,7 +20,8 @@ import {
  * The non-secret settings live in `compute_targets.model_provider`, the auth
  * token sealed in `model_provider_token_encrypted`. Only the target's owner
  * reads or changes them; every loop dispatched to the target carries the
- * resulting Claude Code environment (`resolveComputeTargetClaudeEnv`).
+ * resulting Claude Code environment and version
+ * (`resolveComputeTargetClaudeRuntime`).
  */
 
 const storedSettingsSchema = z.object({
@@ -26,6 +29,11 @@ const storedSettingsSchema = z.object({
   baseUrl: z.string().nullable(),
   model: z.string().nullable(),
   env: z.record(z.string(), z.string()),
+  // Settings saved before the version existed (or holding one the runner
+  // would refuse) run the latest release instead of losing the provider.
+  claudeCodeVersion: claudeCodeVersionSchema.catch(
+    ClaudeCodeVersionChannel.Latest
+  ),
 });
 type StoredSettings = z.infer<typeof storedSettingsSchema>;
 
@@ -34,6 +42,15 @@ const MACHINE_DEFAULT: StoredSettings = {
   baseUrl: null,
   model: null,
   env: {},
+  claudeCodeVersion: ClaudeCodeVersionChannel.Latest,
+};
+
+/** What every loop dispatched to a compute target carries for Claude Code. */
+export type ComputeTargetClaudeRuntime = {
+  /** The model provider environment, or null for the computer's own account. */
+  claudeEnv: Record<string, string> | null;
+  /** `latest` or an exact release, installed by headless runners. */
+  claudeCodeVersion: string;
 };
 const TOKEN_HINT_LENGTH = 4;
 
@@ -71,12 +88,13 @@ export const computeTargetModelProviderService = {
     }
     const settings: StoredSettings =
       input.mode === ModelProviderMode.Machine
-        ? MACHINE_DEFAULT
+        ? { ...MACHINE_DEFAULT, claudeCodeVersion: input.claudeCodeVersion }
         : {
             mode: ModelProviderMode.Custom,
             baseUrl: input.baseUrl,
             model: input.model || null,
             env: input.env,
+            claudeCodeVersion: input.claudeCodeVersion,
           };
     const token = nextToken(input, target.token);
     await withDb((db) =>
@@ -96,13 +114,14 @@ export const computeTargetModelProviderService = {
 };
 
 /**
- * Claude Code environment for loops on the target, or null when it uses the
- * computer's own Claude account. A token that can no longer be decrypted is
- * left out (and logged) rather than failing the loop launch.
+ * Claude Code settings for loops on the target: the model provider
+ * environment (null when it uses the computer's own Claude account) and the
+ * Claude Code version. A token that can no longer be decrypted is left out
+ * (and logged) rather than failing the loop launch.
  */
-export async function resolveComputeTargetClaudeEnv(
+export async function resolveComputeTargetClaudeRuntime(
   computeTargetId: string
-): Promise<Record<string, string> | null> {
+): Promise<ComputeTargetClaudeRuntime> {
   const target = await withDb((db) =>
     db.computeTarget.findUnique({
       where: { id: computeTargetId },
@@ -110,24 +129,14 @@ export async function resolveComputeTargetClaudeEnv(
     })
   );
   const settings = readSettings(target?.modelProvider);
-  if (settings.mode !== ModelProviderMode.Custom || !settings.baseUrl) {
-    return null;
-  }
-  const env: Record<string, string> = { ...settings.env };
-  if (settings.model) {
-    for (const key of MODEL_PROVIDER_MODEL_ENV_KEYS) {
-      env[key] ??= settings.model;
-    }
-  }
-  env.ANTHROPIC_BASE_URL = settings.baseUrl;
-  const token = openToken(
-    computeTargetId,
-    target?.modelProviderTokenEncrypted ?? null
-  );
-  if (token) {
-    env.ANTHROPIC_AUTH_TOKEN = token;
-  }
-  return env;
+  return {
+    claudeEnv: buildClaudeEnv(
+      computeTargetId,
+      settings,
+      target?.modelProviderTokenEncrypted ?? null
+    ),
+    claudeCodeVersion: settings.claudeCodeVersion,
+  };
 }
 
 async function findOwnedTarget(
@@ -197,5 +206,29 @@ function toDto(
       isSet: token !== null,
       lastFour: token ? token.slice(-TOKEN_HINT_LENGTH) : null,
     },
+    claudeCodeVersion: settings.claudeCodeVersion,
   };
+}
+
+/** The model provider environment, or null for the computer's own account. */
+function buildClaudeEnv(
+  computeTargetId: string,
+  settings: StoredSettings,
+  sealedToken: string | null
+): Record<string, string> | null {
+  if (settings.mode !== ModelProviderMode.Custom || !settings.baseUrl) {
+    return null;
+  }
+  const env: Record<string, string> = { ...settings.env };
+  if (settings.model) {
+    for (const key of MODEL_PROVIDER_MODEL_ENV_KEYS) {
+      env[key] ??= settings.model;
+    }
+  }
+  env.ANTHROPIC_BASE_URL = settings.baseUrl;
+  const token = openToken(computeTargetId, sealedToken);
+  if (token) {
+    env.ANTHROPIC_AUTH_TOKEN = token;
+  }
+  return env;
 }

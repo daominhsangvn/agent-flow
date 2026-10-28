@@ -1,3 +1,4 @@
+import { IntegrationProviderKey } from "@repo/api/src/types/integration";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import {
   RepoSource,
@@ -8,17 +9,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Hook collaborators are stubbed at module load. Each test reconfigures the
 // stubs to drive a specific resolution-chain branch.
-const mockUseProject = vi.fn();
-const mockUseTeamRepositoriesUnion = vi.fn();
+const mockUseProjectRepositories = vi.fn();
+const mockUseGitHubRepositories = vi.fn();
 const mockUseInheritedAdditionalRepos = vi.fn();
 
-vi.mock("@repo/app/projects/hooks/use-projects", () => ({
-  useProject: (...args: unknown[]) => mockUseProject(...args),
+vi.mock("@repo/app/projects/hooks/use-project-repositories", () => ({
+  useProjectRepositories: (...args: unknown[]) =>
+    mockUseProjectRepositories(...args),
 }));
 
-vi.mock("@repo/app/teams/hooks/use-team-repositories-union", () => ({
-  useTeamRepositoriesUnion: (...args: unknown[]) =>
-    mockUseTeamRepositoriesUnion(...args),
+vi.mock("@repo/app/github/hooks/use-github-integration", () => ({
+  useGitHubRepositories: (...args: unknown[]) =>
+    mockUseGitHubRepositories(...args),
 }));
 
 vi.mock("@repo/app/loops/hooks/use-loops", () => ({
@@ -26,56 +28,49 @@ vi.mock("@repo/app/loops/hooks/use-loops", () => ({
     mockUseInheritedAdditionalRepos(...args),
 }));
 
-type PoolRepo = {
-  installationRepositoryId: string;
-  isDefaultSelected: boolean;
-  isPrimary: boolean;
+type Repo = {
+  id: string;
   fullName: string;
+  isPrimary?: boolean;
+  connectionId?: string | null;
+  provider?: string;
+  defaultBranch?: string | null;
 };
 
-function makePool(rows: PoolRepo[]) {
-  return rows.map((r) => ({
-    id: `team-repo-${r.installationRepositoryId}`,
-    teamId: "team-1",
-    installationRepositoryId: r.installationRepositoryId,
-    isDefaultSelected: r.isDefaultSelected,
-    isPrimary: r.isPrimary,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    repository: {
-      id: r.installationRepositoryId,
-      installationId: "install-1",
-      githubRepoId: r.installationRepositoryId,
-      name: r.fullName.split("/")[1] ?? "",
-      owner: r.fullName.split("/")[0] ?? "",
-      fullName: r.fullName,
-      private: false,
-    },
-  }));
-}
-
 type Setup = {
-  projectSettings?: Record<string, unknown>;
-  teamCount?: number;
-  pool?: ReturnType<typeof makePool>;
-  poolError?: string | null;
+  repositories?: Repo[];
+  repositoriesError?: boolean;
+  githubRepos?: Array<{ id: string; fullName: string }>;
   inherited?: { additionalRepos: Array<{ fullName: string; branch: string }> };
 };
 
+function makeRepo(r: Repo) {
+  return {
+    id: r.id,
+    projectId: "p1",
+    connectionId: r.connectionId === undefined ? "conn-1" : r.connectionId,
+    connectionName: "Conn",
+    provider: r.provider ?? IntegrationProviderKey.GitHub,
+    externalId: r.id,
+    fullName: r.fullName,
+    name: r.fullName.split("/")[1] ?? "",
+    defaultBranch: r.defaultBranch ?? null,
+    webUrl: "",
+    isPrimary: r.isPrimary ?? false,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
+
 function configure(setup: Setup) {
-  const teamCount = setup.teamCount ?? 1;
-  const teams = Array.from({ length: teamCount }, (_, i) => ({
-    id: `team-${i + 1}`,
-    name: `Team ${i + 1}`,
-  }));
-  mockUseProject.mockReturnValue({
-    data: { teams, settings: setup.projectSettings ?? {} },
+  mockUseProjectRepositories.mockReturnValue({
+    data: (setup.repositories ?? []).map(makeRepo),
     isLoading: false,
+    isError: setup.repositoriesError ?? false,
   });
-  mockUseTeamRepositoriesUnion.mockReturnValue({
-    repositories: setup.pool ?? [],
+  mockUseGitHubRepositories.mockReturnValue({
+    data: setup.githubRepos ?? [],
     isLoading: false,
-    error: setup.poolError ?? null,
   });
   mockUseInheritedAdditionalRepos.mockReturnValue({
     data: setup.inherited
@@ -88,109 +83,135 @@ function configure(setup: Setup) {
   });
 }
 
-describe("useResolvedJobRepos (PLN-529)", () => {
+describe("useResolvedJobRepos", () => {
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  // ISS-5095. The consumers key their empty-vs-failed branch off this field;
-  // dropping it is what let a 403 render as "No repositories curated".
-  it("propagates a failed pool read so consumers can tell it apart from an empty pool", () => {
-    configure({ pool: makePool([]), poolError: "boom" });
+  // ISS-5095. Consumers key their empty-vs-failed branch off this field.
+  it("propagates a failed repositories read so consumers can tell it apart from an empty pool", () => {
+    configure({ repositoriesError: true });
     const { result } = renderHook(() =>
       useResolvedJobRepos({ projectId: "p1" })
     );
-    expect(result.current.poolError).toBe("boom");
+    expect(result.current.poolError).toEqual(expect.any(String));
     expect(result.current.pool).toEqual([]);
   });
 
   it("reports no pool error when the reads succeeded", () => {
-    configure({ pool: makePool([]) });
+    configure({});
     const { result } = renderHook(() =>
       useResolvedJobRepos({ projectId: "p1" })
     );
     expect(result.current.poolError).toBeNull();
-  });
-
-  it("returns null primary when the project has no resolution data", () => {
-    configure({ pool: makePool([]) });
-    const { result } = renderHook(() =>
-      useResolvedJobRepos({ projectId: "p1" })
-    );
     expect(result.current.primary).toBeNull();
     expect(result.current.additional).toEqual([]);
   });
 
-  it("labels the primary as project-override when the project carries an override", () => {
+  it("takes the primary from the repository flagged isPrimary", () => {
     configure({
-      projectSettings: {
-        repositoryOverrides: {
-          selectedRepoIds: ["r1"],
-          primaryRepoId: "r1",
-        },
-      },
-      pool: makePool([
-        {
-          installationRepositoryId: "r1",
-          isDefaultSelected: false,
-          isPrimary: false,
-          fullName: "org/r1",
-        },
-      ]),
+      repositories: [
+        { id: "pr-1", fullName: "org/r1" },
+        { id: "pr-2", fullName: "org/r2", isPrimary: true },
+      ],
     });
     const { result } = renderHook(() =>
       useResolvedJobRepos({ projectId: "p1" })
     );
-    expect(result.current.primary?.fullName).toBe("org/r1");
-    expect(result.current.primary?.source).toBe(RepoSource.ProjectOverride);
+    expect(result.current.primary).toEqual(
+      expect.objectContaining({
+        id: "pr-2",
+        fullName: "org/r2",
+        source: RepoSource.ProjectDefault,
+        inPool: true,
+      })
+    );
+    expect(result.current.additional).toEqual([]);
   });
 
-  it("labels the primary as team-default for a single-team project with team-marked primary", () => {
+  it("excludes repositories without a connection from the pool", () => {
     configure({
-      pool: makePool([
-        {
-          installationRepositoryId: "r1",
-          isDefaultSelected: true,
-          isPrimary: true,
-          fullName: "org/r1",
-        },
-        {
-          installationRepositoryId: "r2",
-          isDefaultSelected: true,
-          isPrimary: false,
-          fullName: "org/r2",
-        },
-      ]),
+      repositories: [
+        { id: "pr-1", fullName: "org/r1", isPrimary: true, connectionId: null },
+        { id: "pr-2", fullName: "org/r2" },
+      ],
     });
     const { result } = renderHook(() =>
       useResolvedJobRepos({ projectId: "p1" })
     );
-    expect(result.current.primary?.fullName).toBe("org/r1");
-    expect(result.current.primary?.source).toBe(RepoSource.TeamDefault);
-    expect(result.current.additional).toEqual([
+    expect(result.current.pool.map((r) => r.id)).toEqual(["pr-2"]);
+    expect(result.current.primary).toBeNull();
+  });
+
+  it("maps a GitHub repository to its installation repo by case-insensitive name", () => {
+    configure({
+      repositories: [{ id: "pr-1", fullName: "Org/R1", isPrimary: true }],
+      githubRepos: [{ id: "gh-1", fullName: "org/r1" }],
+    });
+    const { result } = renderHook(() =>
+      useResolvedJobRepos({ projectId: "p1" })
+    );
+    expect(result.current.pool[0]?.githubRepositoryId).toBe("gh-1");
+  });
+
+  it("gives a non-GitHub repository no GitHub id and keeps its default branch", () => {
+    configure({
+      repositories: [
+        {
+          id: "pr-1",
+          fullName: "org/proj/r1",
+          isPrimary: true,
+          provider: IntegrationProviderKey.AzureDevOps,
+          defaultBranch: "develop",
+        },
+      ],
+      githubRepos: [{ id: "gh-1", fullName: "org/proj/r1" }],
+    });
+    const { result } = renderHook(() =>
+      useResolvedJobRepos({ projectId: "p1" })
+    );
+    expect(result.current.pool[0]).toEqual(
       expect.objectContaining({
-        fullName: "org/r2",
-        source: RepoSource.TeamDefault,
-      }),
-    ]);
+        githubRepositoryId: null,
+        defaultBranch: "develop",
+      })
+    );
+  });
+
+  it("labels a primary seed found in the pool as prior-loop when a prior loop exists", () => {
+    configure({
+      repositories: [
+        { id: "pr-1", fullName: "org/r1", isPrimary: true },
+        { id: "pr-2", fullName: "org/r2" },
+      ],
+      inherited: { additionalRepos: [] },
+    });
+    mockUseInheritedAdditionalRepos.mockReturnValue({
+      data: {
+        additionalRepos: [],
+        source: { loopId: "loop-1", command: LoopCommand.Plan },
+      },
+      isLoading: false,
+    });
+    const { result } = renderHook(() =>
+      useResolvedJobRepos({
+        projectId: "p1",
+        artifactId: "doc-1",
+        command: LoopCommand.Plan,
+        primaryFullNameSeed: "org/r2",
+      })
+    );
+    expect(result.current.primary).toEqual(
+      expect.objectContaining({ id: "pr-2", source: RepoSource.PriorLoop })
+    );
   });
 
   it("uses the inherited prior-loop peers as additional with prior-loop label", () => {
     configure({
-      pool: makePool([
-        {
-          installationRepositoryId: "r1",
-          isDefaultSelected: true,
-          isPrimary: true,
-          fullName: "org/r1",
-        },
-        {
-          installationRepositoryId: "r2",
-          isDefaultSelected: false,
-          isPrimary: false,
-          fullName: "org/r2",
-        },
-      ]),
+      repositories: [
+        { id: "pr-1", fullName: "org/r1", isPrimary: true },
+        { id: "pr-2", fullName: "org/r2" },
+      ],
       inherited: {
         additionalRepos: [{ fullName: "org/r2", branch: "feature/x" }],
       },
@@ -204,31 +225,13 @@ describe("useResolvedJobRepos (PLN-529)", () => {
     );
     expect(result.current.additional).toEqual([
       expect.objectContaining({
+        id: "pr-2",
         fullName: "org/r2",
         source: RepoSource.PriorLoop,
-        // PR #1134 review P1: prior-loop peer branches are preserved so the
-        // follow-up run keeps the same branch the prior loop used instead of
-        // falling back to the GitHub default.
+        // Prior-loop peer branches are preserved so the follow-up run keeps
+        // the branch the prior loop used.
         branch: "feature/x",
       }),
     ]);
-  });
-
-  it("returns null primary in the multi-team-no-override case", () => {
-    configure({
-      teamCount: 2,
-      pool: makePool([
-        {
-          installationRepositoryId: "r1",
-          isDefaultSelected: true,
-          isPrimary: false,
-          fullName: "org/r1",
-        },
-      ]),
-    });
-    const { result } = renderHook(() =>
-      useResolvedJobRepos({ projectId: "p1" })
-    );
-    expect(result.current.primary).toBeNull();
   });
 });

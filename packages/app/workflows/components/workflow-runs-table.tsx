@@ -22,13 +22,14 @@ import {
 } from "@repo/design-system/components/ui/table";
 import { Link } from "@repo/navigation/link";
 import { useOrgPath } from "@repo/navigation/use-org-path";
-import { ExternalLinkIcon, HistoryIcon, Loader2Icon } from "lucide-react";
+import { HistoryIcon, Loader2Icon } from "lucide-react";
 import {
   flattenRunPages,
   useOrgWorkflowRuns,
   useWorkflowRuns,
 } from "../hooks/use-workflows";
 import { describeWorkflowRunError } from "../lib/workflow-error-messages";
+import { WorkflowRunPullRequests } from "./workflow-run-pull-requests";
 import { WorkflowRunStatusBadge } from "./workflow-status-badges";
 
 /** Run history of one workflow. */
@@ -141,7 +142,7 @@ export function WorkflowRunsTable({
               <TableHead>Status</TableHead>
               <TableHead>Source item</TableHead>
               {showWorkflow ? <TableHead>Workflow</TableHead> : null}
-              <TableHead>Pull request</TableHead>
+              <TableHead>Pull requests</TableHead>
               <TableHead>Started</TableHead>
               <TableHead>Finished</TableHead>
             </TableRow>
@@ -170,20 +171,12 @@ export function WorkflowRunsTable({
                     </Link>
                   </TableCell>
                 ) : null}
-                <TableCell>
-                  {run.prUrl ? (
-                    <a
-                      className="inline-flex items-center gap-1 text-[var(--link)] hover:underline"
-                      href={run.prUrl}
-                      rel="noreferrer noopener"
-                      target="_blank"
-                    >
-                      Open
-                      <ExternalLinkIcon className="size-3" />
-                    </a>
-                  ) : (
-                    <span className="text-muted-foreground">-</span>
-                  )}
+                <TableCell className="max-w-[16rem]">
+                  <WorkflowRunPullRequests
+                    emptyText="-"
+                    pullRequests={run.pullRequests}
+                    variant="compact"
+                  />
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-muted-foreground">
                   {formatRelativeTime(run.createdAt)}

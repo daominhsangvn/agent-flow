@@ -58,12 +58,12 @@ export type OnboardingChecklistView = {
  */
 export function useOnboardingChecklist(): OnboardingChecklistView {
   // Refetch when the tab regains focus — `"always"`, not `true`. Unlike every
-  // sibling row, the desktop row completes through an action that happens
-  // OUTSIDE the browser: the user follows an external download link, installs an
-  // app, and that app registers a compute target from a different client. No
+  // sibling row, the runner row completes through an action that happens
+  // OUTSIDE the browser: the user installs a runner on a server or in Docker,
+  // and the runner registers a compute target from a different client. No
   // in-tab mutation ever invalidates this query, and `true` only refetches a
   // STALE query — which, against this query's five-minute `staleTime`, is
-  // precisely not the window in which someone downloads, installs and comes
+  // precisely not the window in which someone installs a runner and comes
   // back. `"always"` re-checks on the return itself.
   const { data: status } = useOnboardingStatus({
     refetchOnWindowFocus: "always",

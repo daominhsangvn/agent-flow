@@ -9,10 +9,7 @@ import { onboardingService } from "./service";
 export const GET = withAnyAuth<OnboardingStatus, "/onboarding">(
   async ({ user }) => {
     try {
-      const status = await onboardingService.getStatus(
-        user.organizationId,
-        user.id
-      );
+      const status = await onboardingService.getStatus(user.organizationId);
       return successResponse(status);
     } catch (error) {
       return errorResponse("Failed to fetch onboarding status", error);

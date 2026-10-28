@@ -12,7 +12,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { env } from "@/env";
 import { createTestQueryClient } from "@/hooks/queries/__tests__/test-utils";
 import { COMPUTE_TARGET_HEADER } from "@/lib/desktop-command-signing/constants";
-import { GATEWAY_RELAY_HEALTH_CHECK_PATH } from "@/lib/engineer/constants";
+import {
+  GATEWAY_RELAY_HEALTH_CHECK_PATH,
+  RUNNER_SETUP_URL,
+} from "@/lib/engineer/constants";
 import { getHealthCheckTargetKey } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 
@@ -31,6 +34,8 @@ const RE_UNREGISTER = /Unregister/i;
 const RE_REPAIR_BUTTON = /^repair \d+ failures?$/i;
 const RE_MANUAL_MCP_INSTALL = /Project-local MCP installs are not supported/i;
 const RE_REPAIR_DEFERRAL = /Repair can fix this from here/i;
+const RE_RUNNER_GUIDE = /runner installation guide/i;
+const RE_DESKTOP_CLIENT = /Desktop client/i;
 const TEST_TARGET_ID = "target-1";
 const TEST_TARGET_NAME = "Daniel-MBP";
 const TEST_DESKTOP_DOWNLOAD_URL =
@@ -171,6 +176,23 @@ describe("ComputeTargetsCard", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  // The onboarding checklist's "Download and install a runner" row lands here,
+  // so an empty list explains runners, not the desktop app.
+  it("explains how to install a runner when the organization has none", () => {
+    mockUseComputeTargets.mockReturnValue({ data: [], isLoading: false });
+
+    renderWithClient();
+
+    expect(screen.getByText("No runners yet.")).toBeInTheDocument();
+    expect(screen.queryByText(RE_DESKTOP_CLIENT)).toBeNull();
+    const guide = screen.getByRole("link", { name: RE_RUNNER_GUIDE });
+    expect(guide).toHaveAttribute("href", RUNNER_SETUP_URL);
+    expect(guide).toHaveAttribute("target", "_blank");
+    expect(
+      screen.getByRole("link", { name: "Settings - API Keys" })
+    ).toHaveAttribute("href", "/test-org/settings?tab=api-keys");
   });
 
   it("renders cached system-check results immediately without auto-refreshing", () => {

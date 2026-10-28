@@ -86,9 +86,9 @@ export function InsightsOverviewDashboard({
   // FEA-2232: user-driven window (persisted, dashboard-local selection).
   const { dateRange, setDateRange, period, periodLabel, deltaLabel } =
     useDashboardRange(DASHBOARD_RANGE_SURFACE);
-  const delivery = useDeliveryInsights(period, scope, undefined);
-  const utilization = useUtilizationInsights(period, scope, undefined);
-  const agents = useAgentsInsights(period, scope, undefined);
+  const delivery = useDeliveryInsights(period, scope);
+  const utilization = useUtilizationInsights(period, scope);
+  const agents = useAgentsInsights(period, scope);
   // Memoized: getStartDateForRange returns a fresh ms-precision ISO string per
   // call, so an unmemoized value would change the query key every render and
   // drive a refetch/skeleton-flash loop (same reason as the Sessions page).
@@ -101,9 +101,7 @@ export function InsightsOverviewDashboard({
   // card issued a bare `GET /agent-sessions` (no scope), so after the PLN-1138
   // cloud swap the "Me" dashboard silently showed org-wide sessions. `me` maps
   // to `self` (server-enforced to the authenticated user); every other scope
-  // stays org-wide, preserving the Org view. Team drill-down is not wired on
-  // this card (it passes no teamId, exactly like the KPI queries above), so it
-  // resolves to the org view rather than an unscoped team read.
+  // stays org-wide, preserving the Org view.
   const viewerScope =
     scope === InsightsScopeValues.Me
       ? AgentSessionViewerScope.Self

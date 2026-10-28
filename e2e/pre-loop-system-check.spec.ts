@@ -11,7 +11,6 @@ import {
   setComputePreference,
 } from "./helpers/compute-targets";
 import { createProject, deleteProject } from "./helpers/create-project";
-import { createTeam, deleteTeam } from "./helpers/create-team";
 import {
   createDocument,
   type DocumentSummary,
@@ -51,7 +50,6 @@ type HealthCheckResponse = {
 type Fixture = {
   feature: DocumentSummary;
   projectId: string;
-  teamId: string;
 };
 
 function makePassingHealthCheck(): HealthCheckResponse {
@@ -107,13 +105,8 @@ async function createFeatureFixture(
   request: APIRequestContext,
   token: string
 ): Promise<Fixture> {
-  const team = await createTeam(request, {
-    name: createUniqueName("e2e-pre-loop"),
-    token,
-  });
   const project = await createProject(request, {
     name: createUniqueName("e2e-pre-loop"),
-    teamIds: [team.id],
     defaultRepository: {
       repoId: "e2e-stub",
       repoFullName: "e2e/stub",
@@ -129,7 +122,7 @@ async function createFeatureFixture(
     token,
   });
 
-  return { feature, projectId: project.id, teamId: team.id };
+  return { feature, projectId: project.id };
 }
 
 async function cleanupFixture(
@@ -142,7 +135,6 @@ async function cleanupFixture(
   }
   await deleteDocument(request, fixture.feature.id, token);
   await deleteProject(request, fixture.projectId, token);
-  await deleteTeam(request, fixture.teamId, token);
 }
 
 async function installReleaseRoute(page: Page) {

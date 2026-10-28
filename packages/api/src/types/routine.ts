@@ -4,7 +4,7 @@ import { z } from "zod";
  * Shared Routine + RoutineRun contract types (FEA-4365 / PRD-566).
  *
  * The cloud/web-side persistence contract for scheduled Routines and their run
- * history — the org/team-scoped source of truth the Web surface reads and that
+ * history — the org-scoped source of truth the Web surface reads and that
  * desktop-origin routines sync up to. These shapes are a SUPERSET mapping of the
  * desktop crewd `ScheduledTask`/`RunRecord` model (packages/crewd/src/model.ts)
  * and are faithful to the frozen Routines prototype
@@ -212,7 +212,6 @@ export const createRoutineInputSchema = z.object({
    * this so re-syncing the same task is idempotent per org.
    */
   sourceId: z.string().max(ROUTINE_SHORT_TEXT_MAX).nullish(),
-  teamId: z.string().uuid().nullish(),
   name: z.string().min(1).max(ROUTINE_SHORT_TEXT_MAX),
   description: z.string().max(ROUTINE_LONG_TEXT_MAX).default(""),
   instructions: z.string().max(ROUTINE_LONG_TEXT_MAX).default(""),
@@ -258,7 +257,7 @@ export const createRoutineInputSchema = z.object({
 export type CreateRoutineInput = z.infer<typeof createRoutineInputSchema>;
 
 /**
- * Update-routine input. Every field optional; org/team scope and identity are
+ * Update-routine input. Every field optional; org scope and identity are
  * supplied out-of-band by the caller, never in the body.
  *
  * NOT `createRoutineInputSchema.partial()`: `.partial()` only makes keys
@@ -271,7 +270,6 @@ export type CreateRoutineInput = z.infer<typeof createRoutineInputSchema>;
  * never patched.
  */
 export const updateRoutineInputSchema = z.object({
-  teamId: z.string().uuid().nullish(),
   name: z.string().min(1).max(ROUTINE_SHORT_TEXT_MAX).optional(),
   description: z.string().max(ROUTINE_LONG_TEXT_MAX).optional(),
   instructions: z.string().max(ROUTINE_LONG_TEXT_MAX).optional(),

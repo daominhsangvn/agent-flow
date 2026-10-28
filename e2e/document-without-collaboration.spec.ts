@@ -13,7 +13,6 @@ import {
 import { getApiBaseUrl } from "./helpers/api-url";
 import { getSessionBearerToken } from "./helpers/better-auth";
 import { createProject, deleteProject } from "./helpers/create-project";
-import { createTeam, deleteTeam } from "./helpers/create-team";
 import { createDocument, deleteDocument } from "./helpers/documents";
 import { authenticateToApp } from "./helpers/sign-in";
 import { E2ETag } from "./helpers/tags";
@@ -44,13 +43,8 @@ test("documents render and publish without collaboration (no Liveblocks)", {
     })
   );
 
-  const team = await createTeam(request, {
-    name: createUniqueName("e2e-no-collab-team"),
-    token,
-  });
   const project = await createProject(request, {
     name: createUniqueName("e2e-no-collab-project"),
-    teamIds: [team.id],
     token,
   });
   const prd = await createDocument(request, {
@@ -94,6 +88,5 @@ test("documents render and publish without collaboration (no Liveblocks)", {
   } finally {
     await deleteDocument(request, prd.id, token);
     await deleteProject(request, project.id, token);
-    await deleteTeam(request, team.id, token);
   }
 });

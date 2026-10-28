@@ -192,6 +192,8 @@ export type ContextPack = {
   userContext?: string;
   /** Agent instructions of the project (loop on project repositories). */
   projectInstructions?: string;
+  /** Key of the loop's project (its slug, e.g. `PRO-1`); a personal runner runs only its own. */
+  projectKey?: string;
   /** The process step of a STEP loop. */
   step?: LoopStepConfig;
   /**
@@ -248,6 +250,7 @@ export const ContextPackSchema = z.object({
     .optional(),
   userContext: z.string().optional(),
   projectInstructions: z.string().optional(),
+  projectKey: z.string().optional(),
   step: LoopStepConfigSchema.optional(),
   attachments: z.array(ContextPackAttachmentSchema).optional(),
   additionalRepos: z.array(AdditionalRepoRefWithTokenSchema).optional(),
@@ -288,5 +291,10 @@ export type ExecuteReview = (typeof ExecuteReview)[keyof typeof ExecuteReview];
 export const LoopAgentPolicySchema = z.object({
   recommendations: z.enum(PlanRecommendations).optional(),
   review: z.enum(ExecuteReview).optional(),
+  /**
+   * EXECUTE of a workflow run writes release notes when it is done
+   * (`LoopArtifactFile.ReleaseNotes`); absent: none.
+   */
+  releaseNotes: z.boolean().optional(),
 });
 export type LoopAgentPolicy = z.infer<typeof LoopAgentPolicySchema>;

@@ -149,7 +149,7 @@ describe("WorkspaceAuthGuard", () => {
   });
 
   // ISS-5095, the shell-blanking regression itself: an org member opened Create
-  // PRD, one sub-resource read (GET /teams/:id/repositories) 403'd, and the whole
+  // PRD, one sub-resource read 403'd, and the whole
   // main region was replaced by "Your session expired" — whose Sign in button
   // then signed out a perfectly healthy session. A resource 403 must leave the
   // workspace rendering so the owning surface can show its own error.

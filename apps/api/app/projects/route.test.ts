@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   findByOrganization: vi.fn(),
-  findByTeam: vi.fn(),
   getValuesForEntity: vi.fn(),
 }));
 
@@ -17,7 +16,6 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
 vi.mock("./service", () => ({
   projectsService: {
     findByOrganization: mocks.findByOrganization,
-    findByTeam: mocks.findByTeam,
   },
 }));
 
@@ -37,7 +35,6 @@ describe("GET /projects", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.findByOrganization.mockResolvedValue([]);
-    mocks.findByTeam.mockResolvedValue([]);
     mocks.getValuesForEntity.mockResolvedValue([]);
   });
 
@@ -55,12 +52,12 @@ describe("GET /projects", () => {
 
   it("forwards valid query params to the service", async () => {
     const response = await GET(
-      new NextRequest("http://localhost:3002/projects?teamId=team-1&limit=25"),
+      new NextRequest("http://localhost:3002/projects?limit=25"),
       routeContext()
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.findByTeam).toHaveBeenCalledWith("team-1", "org-1", {
+    expect(mocks.findByOrganization).toHaveBeenCalledWith("org-1", {
       limit: 25,
       excludeStatus: ["ARCHIVED"],
     });
@@ -76,22 +73,31 @@ describe("GET /projects", () => {
     expect(response.status).toBe(400);
     expect(body.success).toBe(false);
     expect(mocks.findByOrganization).not.toHaveBeenCalled();
-    expect(mocks.findByTeam).not.toHaveBeenCalled();
+  });
+
+  it("rejects the removed teamId filter with 400", async () => {
+    const response = await GET(
+      new NextRequest("http://localhost:3002/projects?teamId=team-1"),
+      routeContext()
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.findByOrganization).not.toHaveBeenCalled();
   });
 
   it("rejects unsupported query params even when mixed with valid ones", async () => {
     const response = await GET(
       new NextRequest(
-        "http://localhost:3002/projects?teamId=team-1&bogus=should-fail"
+        "http://localhost:3002/projects?limit=5&bogus=should-fail"
       ),
       routeContext()
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.findByTeam).not.toHaveBeenCalled();
+    expect(mocks.findByOrganization).not.toHaveBeenCalled();
   });
 
-  it("honors limit on the organization path, not only the team path (shafty023)", async () => {
+  it("honors limit on the organization list (shafty023)", async () => {
     const response = await GET(
       new NextRequest("http://localhost:3002/projects?limit=25"),
       routeContext()

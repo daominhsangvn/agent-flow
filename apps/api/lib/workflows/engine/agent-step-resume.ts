@@ -6,6 +6,10 @@ import {
   LOOP_STEP_WORK_DIR,
   LoopStepFile,
 } from "@agentflow-ai/loops-api/loop-step";
+import {
+  IntegrationToolCallStatus,
+  IntegrationToolName,
+} from "@repo/api/src/types/integration-tools";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import {
   type AgentProcessStep,
@@ -14,18 +18,32 @@ import {
   type RunStepState,
 } from "@repo/api/src/types/project-process";
 import {
+  WorkflowActionRunStatus,
   type WorkflowAgentConfig,
   WorkflowRunErrorCode,
-  type WorkflowRunEvent,
+  WorkflowRunEvent,
   WorkflowRunStatus,
 } from "@repo/api/src/types/workflow";
-import type { SourceItem } from "@/lib/integrations/types";
-import { STEP_ISSUE_FILE, toLoopStepConfig } from "./agent-step";
+import { withDb } from "@repo/database";
+import { JiraActionType } from "@/lib/integrations/providers/jira/constants";
+import type { SourceItem, SourceItemComment } from "@/lib/integrations/types";
+import {
+  type AgentStepSettlement,
+  STEP_ISSUE_FILE,
+  STEP_PLAN_FILE,
+  stepStartedEvents,
+  toLoopStepConfig,
+} from "./agent-step";
 import { runError } from "./errors";
 import { launchStepLoop } from "./launch-step";
+import { stepLaunchFailure } from "./personal-runner-queue";
 import { readRunProcessSnapshot } from "./process";
 import { toJsonObject } from "./run-data";
-import { findLatestRunLoop, listRunLoops } from "./run-loops";
+import {
+  findLatestRunLoop,
+  listRunLoops,
+  type RunLoopState,
+} from "./run-loops";
 import {
   type EngineRun,
   failRun,
@@ -66,7 +84,7 @@ export type ResumeAgentStepInput = {
 export async function resumeAgentStep(
   input: ResumeAgentStepInput
 ): Promise<StepOutcome> {
-  const { run, waiting, events } = input;
+  const { run, waiting } = input;
   const snapshot = readRunProcessSnapshot(run.process);
   const step = snapshot?.definition.steps.find(
     (candidate): candidate is AgentProcessStep =>
@@ -80,9 +98,16 @@ export async function resumeAgentStep(
         WorkflowRunErrorCode.AgentConfigInvalid,
         "The waiting process step could not be read, so the answers cannot be passed on."
       ),
-      events
+      input.events
     );
   }
+  // A plan step that goes on with the answers writes the plan again.
+  const events = [
+    ...input.events,
+    ...stepStartedEvents(step).filter(
+      (event) => event === WorkflowRunEvent.PlanStarted
+    ),
+  ];
   const data: RunTransitionData = {
     stepId: step.id,
     stepState: null,
@@ -107,6 +132,7 @@ export async function resumeAgentStep(
     projectId: input.projectId,
     runAsUser: input.runAsUser,
     documentId,
+    sourceDocumentId: run.featureDocumentId,
     agent: input.agent,
     step: toLoopStepConfig({
       runId: run.id,
@@ -119,7 +145,7 @@ export async function resumeAgentStep(
     resumeLoopId: waiting.loopId,
   });
   if (!launch.ok) {
-    return failRun(launch.error, events);
+    return stepLaunchFailure(launch.error, events);
   }
   return transition(WorkflowRunStatus.Running, events, data);
 }
@@ -145,17 +171,18 @@ export function answersPrompt(
 
 /**
  * The prompt of answers given on the source item: its comments written after
- * the step asked, else a pointer to the refreshed Issue.
+ * the step asked, else a pointer to the refreshed Issue. `ownCommentIds` are
+ * the comments this run posted (its questions among them): they are never
+ * answers, and when people replied in the thread of one of them, only those
+ * replies are, so the questions of another run on the same item (asked and
+ * answered in their own threads) cannot be taken for this run's answers.
  */
 export function ticketAnswersPrompt(
   waiting: WaitingStep,
-  item: SourceItem
+  item: SourceItem,
+  ownCommentIds: ReadonlySet<string> = new Set()
 ): string {
-  const askedAt = Date.parse(waiting.askedAt);
-  const comments = item.comments.filter((comment) => {
-    const at = comment.createdAt ? Date.parse(comment.createdAt) : Number.NaN;
-    return Number.isFinite(at) && at > askedAt;
-  });
+  const comments = answerComments(waiting, item, ownCommentIds);
   const questions = waiting.questions.map(
     (question) => `- ${question.question}`
   );
@@ -180,19 +207,23 @@ export function ticketAnswersPrompt(
   ].join("\n");
 }
 
-export type RepairStepQuestionsInput = {
+export type RepairStepInput = {
   run: EngineRun;
   agent: WorkflowAgentConfig;
   projectId: string;
   runAsUser: { id: string; clerkId: string };
   step: AgentProcessStep;
-  /** The loop whose questions could not be read; its session is resumed. */
+  /** The loop whose output could not be used; its session is resumed. */
   loopId: string;
-  error: string;
-  /** Repair attempts including this one (RunStepState.questionsRepair). */
+  /** Repair attempts including this one. */
   attempts: number;
   /** Columns the settled step already set (pushed branches). */
   data: RunTransitionData;
+};
+
+export type RepairStepQuestionsInput = RepairStepInput & {
+  /** Why the questions could not be read. */
+  error: string;
 };
 
 /**
@@ -204,6 +235,75 @@ export type RepairStepQuestionsInput = {
 export async function repairStepQuestions(
   input: RepairStepQuestionsInput
 ): Promise<StepOutcome> {
+  return await resumeForRepair(
+    input,
+    {
+      waiting: null,
+      approval: null,
+      questionsRepair: {
+        stepId: input.step.id,
+        loopId: input.loopId,
+        attempts: input.attempts,
+      },
+    },
+    questionsRepairPrompt(input.error)
+  );
+}
+
+/**
+ * A plan step that ended without writing the plan is resumed on its computer
+ * to write it (OUTPUT_REPAIR_MAX times). The run stays `running`.
+ */
+export async function repairStepOutput(
+  input: RepairStepInput
+): Promise<StepOutcome> {
+  return await resumeForRepair(
+    input,
+    {
+      waiting: null,
+      approval: null,
+      outputRepair: {
+        stepId: input.step.id,
+        loopId: input.loopId,
+        attempts: input.attempts,
+      },
+    },
+    planRepairPrompt()
+  );
+}
+
+/** A settled step whose output could not be used, resumed to fix it. */
+export async function repairStep(
+  run: EngineRun,
+  context: {
+    agent: WorkflowAgentConfig;
+    projectId: string;
+    runAsUser: { id: string; clerkId: string };
+  },
+  settled: Extract<
+    AgentStepSettlement,
+    { kind: "repairQuestions" } | { kind: "repairOutput" }
+  >
+): Promise<StepOutcome> {
+  const input: RepairStepInput = {
+    run,
+    ...context,
+    step: settled.step,
+    loopId: settled.loopId,
+    attempts: settled.attempts,
+    data: settled.data,
+  };
+  return settled.kind === "repairQuestions"
+    ? await repairStepQuestions({ ...input, error: settled.error })
+    : await repairStepOutput(input);
+}
+
+/** Resumes the session of `input.loopId` with `prompt`, recording `state`. */
+async function resumeForRepair(
+  input: RepairStepInput,
+  state: RunStepState,
+  prompt: string
+): Promise<StepOutcome> {
   const { run, step } = input;
   const snapshot = readRunProcessSnapshot(run.process);
   const documentId = run.planDocumentId ?? run.featureDocumentId;
@@ -211,25 +311,16 @@ export async function repairStepQuestions(
     return failRun(
       runError(
         WorkflowRunErrorCode.AgentConfigInvalid,
-        "The process step could not be read, so its questions cannot be rewritten."
+        "The process step could not be read, so it cannot be resumed."
       )
     );
   }
-  const state: RunStepState = {
-    waiting: null,
-    approval: null,
-    questionsRepair: {
-      stepId: step.id,
-      loopId: input.loopId,
-      attempts: input.attempts,
-    },
-  };
   const data: RunTransitionData = {
     ...input.data,
     stepState: toJsonObject(state),
   };
   // A retry after a crash between the launch and the status write: the
-  // step's latest loop is then the repair, not the loop that wrote them.
+  // step's latest loop is then the repair, not the loop being repaired.
   const latest = await findLatestRunLoop(
     run.id,
     LoopCommand.Step,
@@ -248,6 +339,7 @@ export async function repairStepQuestions(
     projectId: input.projectId,
     runAsUser: input.runAsUser,
     documentId,
+    sourceDocumentId: run.featureDocumentId,
     agent: input.agent,
     step: toLoopStepConfig({
       runId: run.id,
@@ -255,12 +347,12 @@ export async function repairStepQuestions(
       toolkit: snapshot.definition.toolkit,
       fresh: false,
     }),
-    prompt: questionsRepairPrompt(input.error),
+    prompt,
     computeTargetId: writer?.computeTargetId ?? null,
     resumeLoopId: input.loopId,
   });
   if (!launch.ok) {
-    return failRun(launch.error);
+    return stepLaunchFailure(launch.error);
   }
   return transition(WorkflowRunStatus.Running, [], data);
 }
@@ -274,4 +366,201 @@ export function questionsRepairPrompt(error: string): string {
     `Rewrite ${file} as a JSON array of {"id": "q1", "question": "...", "options": ["..."]} within these limits: at most ${LOOP_STEP_QUESTIONS_MAX} questions; each question at most ${LOOP_STEP_QUESTION_MAX} characters; at most ${LOOP_STEP_OPTIONS_MAX} options per question, each at most ${LOOP_STEP_OPTION_MAX} characters. Keep the options short and put the reasoning in the question.`,
     "Keep the same questions and change nothing else, then stop.",
   ].join("\n");
+}
+
+/** What a plan step's resumed session is told when it did not write the plan. */
+export function planRepairPrompt(): string {
+  return [
+    `The step ended without the implementation plan in ${STEP_PLAN_FILE}.`,
+    "",
+    `Write the final plan to ${STEP_PLAN_FILE} now (copy it there if you wrote it elsewhere), then stop. If you cannot plan without a decision from the developer, write your questions instead, as the workspace instructions say.`,
+  ].join("\n");
+}
+
+/**
+ * The ids of the comments the run posted on its source item: through the
+ * comment tool (instruction actions and agent steps) and through Jira comment
+ * actions.
+ */
+export async function readRunCommentIds(
+  run: Pick<EngineRun, "id" | "organizationId">
+): Promise<ReadonlySet<string>> {
+  const [calls, actionRuns] = await Promise.all([
+    withDb((db) =>
+      db.integrationToolCall.findMany({
+        where: {
+          runId: run.id,
+          organizationId: run.organizationId,
+          tool: IntegrationToolName.SourceItemComment,
+          status: IntegrationToolCallStatus.Succeeded,
+          externalRef: { not: null },
+        },
+        select: { externalRef: true },
+      })
+    ),
+    withDb((db) =>
+      db.workflowActionRun.findMany({
+        where: {
+          runId: run.id,
+          organizationId: run.organizationId,
+          actionType: JiraActionType.AddComment,
+          status: WorkflowActionRunStatus.Succeeded,
+          externalRef: { not: null },
+        },
+        select: { externalRef: true },
+      })
+    ),
+  ]);
+  return new Set(
+    [...calls, ...actionRuns].flatMap((row) =>
+      row.externalRef ? [row.externalRef] : []
+    )
+  );
+}
+
+/**
+ * Comments after the question that answer it: replies in the thread of one
+ * of the run's own comments when there are any, else the top-level comments
+ * (a reply in another thread answers someone else).
+ */
+function answerComments(
+  waiting: WaitingStep,
+  item: SourceItem,
+  ownCommentIds: ReadonlySet<string>
+): SourceItemComment[] {
+  const askedAt = Date.parse(waiting.askedAt);
+  const later = item.comments.filter((comment) => {
+    const at = comment.createdAt ? Date.parse(comment.createdAt) : Number.NaN;
+    return (
+      Number.isFinite(at) &&
+      at > askedAt &&
+      !(comment.id && ownCommentIds.has(comment.id))
+    );
+  });
+  const replies = later.filter(
+    (comment) => comment.parentId && ownCommentIds.has(comment.parentId)
+  );
+  if (replies.length > 0) {
+    return replies;
+  }
+  return later.filter((comment) => !comment.parentId);
+}
+
+export type ResumeFailedStepInput = {
+  run: EngineRun;
+  agent: WorkflowAgentConfig;
+  projectId: string;
+  runAsUser: { id: string; clerkId: string };
+  step: AgentProcessStep;
+  /** The failed loop; its agent session goes on in a fork. */
+  loop: RunLoopState;
+  /** Events of the transition back into the step. */
+  events: WorkflowRunEvent[];
+  /** Columns the transition also sets (cycle, error, step state). */
+  data: RunTransitionData;
+};
+
+/**
+ * Runs a failed agent step again in its own session: a new STEP loop on the
+ * failed loop's computer resumes the failed session in a fork (`--resume
+ * <session> --fork-session`), told what stopped it, so the agent goes on
+ * from where it stopped instead of starting the step over (a retry by a
+ * workflow administrator, or an automatic one, AgentProcessStep.retry).
+ */
+export async function resumeFailedStep(
+  input: ResumeFailedStepInput
+): Promise<StepOutcome> {
+  const { run, step, loop } = input;
+  const snapshot = readRunProcessSnapshot(run.process);
+  const documentId = run.planDocumentId ?? run.featureDocumentId;
+  if (!(snapshot && documentId && loop.sessionId)) {
+    return failRun(
+      runError(
+        WorkflowRunErrorCode.AgentConfigInvalid,
+        `The "${step.name}" step has no agent session to go on with.`
+      ),
+      input.events
+    );
+  }
+  // A retry after a crash between the launch and the status write: the
+  // step's latest loop is then the retry, not the failed loop.
+  const latest = await findLatestRunLoop(
+    run.id,
+    LoopCommand.Step,
+    undefined,
+    step.id
+  );
+  if (latest && latest.loopId !== loop.loopId) {
+    return transition(WorkflowRunStatus.Running, input.events, input.data);
+  }
+  const launch = await launchStepLoop({
+    runId: run.id,
+    organizationId: run.organizationId,
+    projectId: input.projectId,
+    runAsUser: input.runAsUser,
+    documentId,
+    sourceDocumentId: run.featureDocumentId,
+    agent: input.agent,
+    step: {
+      ...toLoopStepConfig({
+        runId: run.id,
+        step,
+        toolkit: snapshot.definition.toolkit,
+        fresh: false,
+      }),
+      forkSession: true,
+    },
+    prompt: failedStepPrompt(loop),
+    computeTargetId: loop.computeTargetId,
+    resumeLoopId: loop.loopId,
+  });
+  if (!launch.ok) {
+    return stepLaunchFailure(launch.error, input.events);
+  }
+  return transition(WorkflowRunStatus.Running, input.events, input.data);
+}
+
+/** What the forked session of a failed step is told. */
+export function failedStepPrompt(loop: Pick<RunLoopState, "error">): string {
+  const reason = loop.error?.message
+    ? `It stopped with this error: ${loop.error.message}`
+    : "It stopped before it finished.";
+  return [
+    `Your work on this step was interrupted. ${reason}`,
+    "",
+    "The problem is fixed. Continue the step from where it stopped: check what is already done (files, commits, subagents' results) and finish the rest. Do not redo finished work.",
+  ].join("\n");
+}
+
+/**
+ * The automatic retry of a step whose agent failed on the model provider,
+ * once its backoff elapsed (AgentProcessStep.retry): the failed session goes
+ * on in a fork while the run stays running; the step state counts the retries.
+ */
+export async function autoRetryStep(
+  run: EngineRun,
+  context: {
+    agent: WorkflowAgentConfig;
+    projectId: string;
+    runAsUser: { id: string; clerkId: string };
+  },
+  settled: Extract<AgentStepSettlement, { kind: "autoRetry" }>
+): Promise<StepOutcome> {
+  const state: RunStepState = {
+    waiting: null,
+    approval: null,
+    autoRetry: {
+      stepId: settled.step.id,
+      loopId: settled.loop.loopId,
+      attempts: settled.attempts,
+    },
+  };
+  return await resumeFailedStep({
+    run,
+    ...context,
+    step: settled.step,
+    loop: settled.loop,
+    events: [],
+    data: { stepState: toJsonObject(state) },
+  });
 }

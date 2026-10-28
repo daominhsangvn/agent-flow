@@ -1,0 +1,115 @@
+name: Todo delivery (Jira TODO)
+description: >-
+  A TODO issue assigned to the AgentFlow bot starts a run: plan (published to
+  Confluence for review), implement (pull request on Bitbucket for review),
+  release sign-off. People decide on the Jira issue with labels and mentions,
+  or on the run page. Every step is reported on the issue.
+project: Todo App
+triggers:
+  - connection: jira                   # project connection "Jira TODO"
+    type: jira.issue_conditions
+    config:
+      match: any                       # either condition starts (or resumes) a run
+      assigned: true                   # the issue is assigned to the bot
+      mentioned: true                  # a comment mentions the bot (answers to the plan's questions)
+      projectKeys: [TODO]
+      statuses: [To Do, In Progress]   # a mention on an issue in review or done starts nothing
+agent:
+  runAs: admin@agentflow.local
+  runner: runner-1
+  prd:
+    instruction: >-
+      PRD when the issue has the label "prd", or when its description is a
+      product requirements document: it states goals, functional requirements
+      and acceptance criteria. A bug report, a small task or a question is an
+      Issue.
+actions:
+  # Before the agent team (pre actions, in order)
+  - on: workflow.triggered
+    type: jira.transition_issue
+    continueOnError: true
+    config:
+      transitionName: In Progress
+  - on: workflow.triggered
+    type: jira.update_labels           # review labels of an earlier run must be added again to count
+    continueOnError: true
+    config:
+      add: [agentflow]
+      remove: [plan-approved, replan, code-done, fix-review, ship-it]
+  # Every later run event to the event feed (docs/workshop/event-feed.py)
+  - on: [workflow.started, plan.started, plan.completed, input.needed, execute.started, execute.completed, workflow.completed, workflow.failed]
+    connection: http
+    type: webhook.post
+    config:
+      url: http://localhost:4545/agentflow
+  # Plan rounds and every wait: questions, plan review, code review, sign-off
+  - on: plan.completed
+    type: jira.add_comment             # {{summary}}: the plan link and an excerpt
+  - on: input.needed
+    type: jira.add_comment             # {{summary}}: the questions, or how to decide (labels, mention, run link)
+  # Implement rounds: pull request (opened once, updated by every round), status, release notes
+  - on: execute.completed
+    type: bitbucket.create_pull_request
+    config:
+      title: "{{source.key}}: {{source.title}}"
+      description: |-
+        Implements {{source.key}}: {{source.title}} ({{source.url}})
+
+        Requirement: {{feature.url}}
+        Implementation plan: {{plan.url}}
+        Release notes: {{releaseNotes.url}}
+        AgentFlow run: {{run.url}}
+
+        Review: comment on this pull request, then add the label fix-review to {{source.key}} or mention the AgentFlow bot in a comment there. Add code-done when the review is over.
+  - on: execute.completed              # after the pull request action, so it sees {{pr.urls}}
+    type: jira.transition_issue
+    config:
+      transitionName: In Review
+  - on: execute.completed
+    type: jira.add_comment
+    config:
+      message: |-
+        🛠️ {{source.key}} is ready for code review.
+
+        Pull requests:
+        {{pr.urls}}
+
+        Release notes (draft): {{releaseNotes.url}}
+
+        Comment on the pull request, then add the label fix-review here or mention the AgentFlow bot with what to change. Add code-done when the review is over.
+  # Done: release notes on Jira and Confluence
+  - on: workflow.completed
+    type: jira.add_comment
+    config:
+      message: |-
+        📦 Release notes for {{source.key}}
+
+        {{releaseNotes}}
+
+        Pull requests:
+        {{pr.urls}}
+        AgentFlow run: {{run.url}}
+  - on: workflow.completed
+    connection: wiki                   # project connection "Confluence TODO"
+    type: confluence.create_page
+    config:
+      space: TODO
+      title: "{{source.key}} Release notes"
+      body: |-
+        Release notes for [{{source.key}}]({{source.url}}): {{source.title}}
+
+        {{releaseNotes}}
+
+        Pull requests:
+        {{pr.urls}}
+  - on: workflow.completed
+    type: jira.transition_issue
+    config:
+      transitionName: Done
+  # Failed: say why, back to To Do
+  - on: workflow.failed
+    type: jira.add_comment             # {{summary}}: why the run stopped + the run link
+  - on: workflow.failed
+    type: jira.transition_issue
+    config:
+      transitionName: To Do

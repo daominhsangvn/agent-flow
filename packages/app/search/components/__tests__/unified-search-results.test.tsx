@@ -152,14 +152,13 @@ describe("UnifiedSearchResults", () => {
           title: "Alpha project",
           entityType: SearchEntityType.Project,
           entityId: "proj-1",
-          teamId: "team-1",
         }),
       ],
     });
 
     expect(
       screen.getByRole("link", { name: RE_ALPHA_PROJECT })
-    ).toHaveAttribute("href", "/acme/teams/team-1/projects/proj-1");
+    ).toHaveAttribute("href", "/acme/projects/proj-1");
   });
 
   it("renders a hit missing route data (document without slug) as a plain non-link row", () => {

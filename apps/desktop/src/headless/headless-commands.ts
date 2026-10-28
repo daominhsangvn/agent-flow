@@ -7,6 +7,13 @@
  * actions on local checkouts, deploys, updates, pack installs).
  */
 
+import {
+  ORCHESTRATOR_TURN_CANCEL_OPERATION_ID,
+  ORCHESTRATOR_TURN_OPERATION_ID,
+} from "@repo/api/src/types/orchestrator";
+import { RUNNER_CAPABILITIES_REFRESH_OPERATION_ID } from "@repo/api/src/types/runner-capabilities";
+import { WORKFLOW_DECISION_OPERATION_ID } from "@repo/api/src/types/workflow-decision";
+import { WORKFLOW_INSTRUCTION_OPERATION_ID } from "@repo/api/src/types/workflow-instruction";
 import { z } from "zod";
 import {
   type OperationId,
@@ -25,6 +32,16 @@ export const HEADLESS_RUNNER_OPERATION_IDS = [
   "symphony_status",
   "symphony_logs",
   "health_check",
+  // A workflow instruction's read-only agent in a run's workspace.
+  WORKFLOW_INSTRUCTION_OPERATION_ID,
+  // A workflow decision: one answer from the model, without tools.
+  WORKFLOW_DECISION_OPERATION_ID,
+  // A turn of the project orchestrator, with its own tools only.
+  ORCHESTRATOR_TURN_OPERATION_ID,
+  // Stops a turn for a newer message.
+  ORCHESTRATOR_TURN_CANCEL_OPERATION_ID,
+  // Reads AGENTFLOW.md from a project toolkit repository and uploads it.
+  RUNNER_CAPABILITIES_REFRESH_OPERATION_ID,
 ] as const satisfies readonly OperationId[];
 
 const allowedOperations: ReadonlySet<string> = new Set(

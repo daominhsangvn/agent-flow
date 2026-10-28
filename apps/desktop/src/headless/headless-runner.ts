@@ -33,6 +33,7 @@ import {
   getBundledPluginDirs,
   getBundledPluginVersion,
 } from "../server/operations/bundled-plugins.js";
+import { excludePersonalProjectFiles } from "../server/operations/personal-runner.js";
 import { getCodePluginVersion } from "../server/operations/plugin-cache.js";
 import { computeSymphonyDir } from "../server/operations/symphony-utils.js";
 import type {
@@ -46,15 +47,14 @@ import {
   type ComputeTargetCapabilities,
   GATEWAY_PROTOCOL_VERSION,
 } from "../shared/contracts.js";
+import { startHeadlessCapabilitiesReporter } from "./headless-capabilities-reporter.js";
 import {
   classifyHeadlessCommand,
   HEADLESS_RUNNER_OPERATION_IDS,
   rewriteLoopCallbackUrl,
 } from "./headless-commands.js";
-import {
-  GATEWAY_FALLBACK_PORT_COUNT,
-  type HeadlessRunnerConfig,
-} from "./headless-config.js";
+import type { HeadlessRunnerConfig } from "./headless-config.js";
+import { createRunnerModelProviderLookup } from "./headless-model-provider.js";
 import { createHeadlessSafeStorage } from "./headless-safe-storage.js";
 import { startHeadlessSessionReporter } from "./headless-session-reporter.js";
 import {
@@ -67,6 +67,8 @@ import { ensureRunnerWorktreeSettings } from "./headless-workspace.js";
 
 const LOG_TAG = "headless-runner";
 const LOOPBACK_HOST = "127.0.0.1";
+const ANY_FREE_PORT = 0;
+const GATEWAY_PORT_FILE = "gateway-port";
 const GATEWAY_TOKEN_BYTES = 32;
 const FORBIDDEN_STATUS = 403;
 /** Gateway operations keep repos.json in <symphony dir>/config. */
@@ -116,6 +118,11 @@ export async function startHeadlessRunner(
     });
   };
   const symphonyDir = computeSymphonyDir(config.workspaceDir);
+  if (config.personal) {
+    // The runner's settings live in the project folder's `.agentflow-ai/`:
+    // keep it out of the person's `git status` from the start.
+    await excludePersonalProjectFiles(config.workspaceDir);
+  }
   await ensureRunnerWorktreeSettings(
     path.join(symphonyDir, REPOS_CONFIG_SUBDIR),
     config.workspaceDir
@@ -136,12 +143,14 @@ export async function startHeadlessRunner(
 
   const server = new DesktopGatewayServer({
     host: LOOPBACK_HOST,
-    preferredPort: config.gatewayPort,
-    fallbackPorts: Array.from(
-      { length: GATEWAY_FALLBACK_PORT_COUNT },
-      (_, index) => config.gatewayPort + index + 1
-    ),
+    // The configured port, or any free one: runners never compete for a
+    // default port, however many share the computer.
+    preferredPort: config.gatewayPort ?? ANY_FREE_PORT,
+    fallbackPorts: [],
     webAppOrigin: config.webAppUrl,
+    // In the runner's own data directory: the default file under the home
+    // directory is shared by the desktop app and every runner of the account.
+    discoveryFilePath: path.join(config.dataDir, GATEWAY_PORT_FILE),
     getGatewayAuthToken: () => gatewayAuthToken,
     getAllowedDirectories: () => allowedDirectories,
     getSymphonyDir: () => symphonyDir,
@@ -156,7 +165,18 @@ export async function startHeadlessRunner(
     schedulers,
     getGatewayId: () => gatewayId,
     getComputeTargetId: () => status.computeTargetId,
-    isPackagedBuild: () => true,
+    // Built from the repository (the image or `package:headless`), never a
+    // desktop release: its version is reported as a local build instead of
+    // being compared with the desktop release manifest.
+    isPackagedBuild: () => false,
+    systemCheckHost: {
+      headlessRunner: true,
+      getAgentFlowModelProvider: createRunnerModelProviderLookup({
+        apiUrl: config.apiUrl,
+        apiKey: config.apiKey,
+        getComputeTargetId: () => status.computeTargetId,
+      }),
+    },
   });
 
   // The executor and the socket reference each other through callbacks.
@@ -186,7 +206,17 @@ export async function startHeadlessRunner(
       ...capabilities,
       loopRunnerRefreshSupported: true,
       loopRunnerHeartbeatSupported: true,
+      loopStepForkSession: true,
+      toolkitCapabilitiesRefresh: true,
       headlessRunner: true,
+      ...(config.personal
+        ? {
+            personalRunner: {
+              projectKey: config.personal.projectKey,
+              parallel: config.personal.parallel,
+            },
+          }
+        : {}),
     }),
     getMaxInFlightCommands: () => config.maxConcurrentCommands,
     getGatewayId: () => gatewayId,
@@ -206,6 +236,8 @@ export async function startHeadlessRunner(
     },
     onHelloAck: (event: DesktopHelloAckEvent) => {
       publishStatus({ computeTargetId: event.computeTargetId });
+      // Connected (again): AgentFlow gets the runner's AGENTFLOW.md as it is now.
+      capabilitiesReporter?.report({ force: true }).catch(() => undefined);
       // AgentFlow is reachable again: finish the loops it could not be told about.
       replayPendingFinalizations([]);
       if (event.resumeFromSequence) {
@@ -235,6 +267,16 @@ export async function startHeadlessRunner(
       gatewayLog.warn(LOG_TAG, `Disconnected from AgentFlow: ${reason}`),
   });
   cloudSocket = socket;
+  // What this runner can do for its project, for the project's orchestrator.
+  const capabilitiesReporter = config.personal
+    ? startHeadlessCapabilitiesReporter({
+        apiUrl: config.apiUrl,
+        apiKey: config.apiKey,
+        projectKey: config.personal.projectKey,
+        projectDir: config.personal.projectDir,
+        getComputeTargetId: () => status.computeTargetId,
+      })
+    : null;
   // Loops as agent sessions and the runner's agent components, for the
   // Sessions and Agents pages (the desktop app reports its own the same way).
   const sessionReporter = config.reportSessions
@@ -280,6 +322,7 @@ export async function startHeadlessRunner(
     async stop() {
       clearInterval(refreshTimer);
       sessionReporter?.stop();
+      capabilitiesReporter?.stop();
       const stats = executor.getStats();
       if (stats.activeCommands > 0) {
         gatewayLog.warn(

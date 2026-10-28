@@ -105,12 +105,6 @@ enum ApiKeySource {
   DESKTOP_MANAGED
 }
 
-enum TeamRole {
-  OWNER
-  ADMIN
-  MEMBER
-}
-
 enum Priority {
   LOW
   MEDIUM
@@ -260,7 +254,7 @@ enum ArtifactSubtype {
 // ROUTINES (FEA-4365 / PRD-566)
 // =============================================================================
 // Cloud/web-side persistence for scheduled Routines and their run history, so
-// Web and cross-machine surfaces have an org/team-scoped source of truth that
+// Web and cross-machine surfaces have an org-scoped source of truth that
 // the desktop SQLite store (unreachable from cloud) can sync up to. The shapes
 // below are a SUPERSET mapping of the desktop crewd `ScheduledTask`/`RunRecord`
 // model (packages/crewd/src/model.ts) and are faithful to the frozen Routines
@@ -380,22 +374,11 @@ model Organization {
   // query path check this flag, so flipping it off stops new indexing and hides
   // any `agent_session` rows left from when it was on.
   searchIncludeTranscripts Boolean   @default(false) @map("search_include_transcripts")
-  // FEA-4169: server-owned ORG POLICY gating whether local desktop session data
-  // (session metadata + transcripts) may sync to the cloud at all. This is the
-  // OUTER gate ABOVE per-device sync consent (PRD-542/FEA-4103) — when false, NO
-  // session data egresses from any of the org's desktops regardless of the tier a
-  // user picked locally. Default false (privacy-safe): an org must be explicitly
-  // enabled before any session data leaves the machine. Enabled for the internal
-  // AgentFlow org by data migration. Surfaced to the desktop through
-  // `GET /desktop/identity`; older desktops that don't read it degrade to the
-  // prior device-consent behavior (the field is additive/optional on the wire).
-  sessionSyncPolicyEnabled Boolean   @default(false) @map("session_sync_policy_enabled")
   createdAt                DateTime  @default(now()) @map("created_at")
   updatedAt                DateTime  @updatedAt @map("updated_at")
 
   // Relations
   users                                User[]
-  teams                                Team[]
   artifactRatings                      ArtifactRating[]
   projects                             Project[]
   artifacts                            Artifact[]
@@ -404,6 +387,7 @@ model Organization {
   prompts                              Prompt[]
   computeTargets                       ComputeTarget[]
   computeTargetHealthChecks            ComputeTargetHealthCheck[]
+  computeTargetCapabilities            ComputeTargetCapabilities[]
   sessionTranscripts                   SessionTranscript[]
   chatSessions                         ChatSession[]
   judgeHumanScores                     JudgeHumanScore[]
@@ -443,6 +427,16 @@ model Organization {
   workflowRuns                         WorkflowRun[]
   projectRepositories                  ProjectRepository[]
   projectProcessVersions               ProjectProcessVersion[]
+  projectConnections                   ProjectConnection[]
+  projectConnectionScopes              ProjectConnectionScope[]
+  orchestratorCases                    OrchestratorCase[]
+  orchestratorConversations            OrchestratorConversation[]
+  orchestratorMessages                 OrchestratorMessage[]
+  orchestratorTurns                    OrchestratorTurn[]
+  orchestratorAnchors                  OrchestratorAnchor[]
+  orchestratorTasks                    OrchestratorTask[]
+  orchestratorWaits                    OrchestratorWait[]
+  orchestratorDecisions                OrchestratorDecision[]
 
   @@map("organizations")
 }
@@ -473,7 +467,6 @@ model User {
   // Relations
   organization                  Organization                        @relation(fields: [organizationId], references: [id])
   preferredComputeTarget        ComputeTarget?                      @relation("UserPreferredComputeTarget", fields: [preferredComputeTargetId], references: [id])
-  teamMemberships               TeamMember[]
   artifactRatings               ArtifactRating[]
   favoriteProjects              FavoriteProject[]
   favoriteArtifacts             FavoriteArtifact[]
@@ -488,6 +481,7 @@ model User {
   workflowsCreated              Workflow[]                          @relation("WorkflowCreatedBy")
   workflowRunsRunAs             WorkflowRun[]                       @relation("WorkflowRunRunAsUser")
   projectRepositoriesAdded      ProjectRepository[]                 @relation("ProjectRepositoryCreatedBy")
+  projectConnectionsAdded       ProjectConnection[]                 @relation("ProjectConnectionCreatedBy")
   projectProcessVersionsCreated ProjectProcessVersion[]             @relation("ProjectProcessVersionCreatedBy")
   computeTargets                ComputeTarget[]
   sessionDetails                SessionDetail[]
@@ -590,10 +584,13 @@ model ComputeTarget {
   sessionTranscripts                  SessionTranscript[]
   githubDirtyScopeNudges              GitHubDirtyScopeNudge[]
   healthCheck                         ComputeTargetHealthCheck?
+  capabilityFiles                     ComputeTargetCapabilities[]
   agentComponents                     AgentComponent[]
   sourceOccurrences                   SourceOccurrence[]
   distributionTargetStatuses          DistributionTargetStatus[]
   distributionTargetingEntries        DistributionTargetingEntry[]
+  orchestratorTurns                   OrchestratorTurn[]
+  orchestratorTasks                   OrchestratorTask[]
 
   @@unique([userId, machineName])
   @@index([organizationId, userId])
@@ -639,6 +636,276 @@ model ComputeTargetHealthCheck {
 
   @@index([organizationId, checkedAt])
   @@map("compute_target_health_checks")
+}
+
+// A runner's `AGENTFLOW.md` for one project (docs/runner.md "Capabilities
+// (AGENTFLOW.md)"): the commands and skills its owner declares, uploaded by the
+// runner, so the project's orchestrator knows what each runner can do.
+// `content` is the file as uploaded; `capabilities` is what the API parsed from
+// its front matter (null with `problems` when it does not parse); `warnings`
+// are what only the runner could check (a declared command it does not have).
+model ComputeTargetCapabilities {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  computeTargetId String   @map("compute_target_id") @db.Uuid
+  projectId       String   @map("project_id") @db.Uuid
+  /// RunnerCapabilitiesSource: personal | toolkit
+  source          String   @db.VarChar(16)
+  content         String   @db.Text
+  capabilities    Json?
+  problems        Json     @default("[]")
+  warnings        Json     @default("[]")
+  contentHash     String   @map("content_hash") @db.VarChar(64)
+  uploadedAt      DateTime @map("uploaded_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  computeTarget ComputeTarget @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+  project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // One file per runner and project (upsert key); the orchestrator lists a
+  // project's runners by project.
+  @@unique([computeTargetId, projectId])
+  @@index([projectId])
+  @@map("compute_target_capabilities")
+}
+
+// The orchestrated workflow's runtime (docs/orchestrator.md). A case is one
+// piece of work (a ticket, a thread); its conversations are where messages
+// come from and answers go (`channelKey`: a comment thread, a Teams thread,
+// a ticket). Statuses hold the const values of packages/api orchestrator.ts.
+model OrchestratorCase {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  projectId      String   @map("project_id") @db.Uuid
+  // The orchestrated workflow whose trigger opened the case.
+  workflowId     String   @map("workflow_id") @db.Uuid
+  // The source item the case is about ("jira:LD-7", "microsoft_teams:teams-…").
+  sourceKey      String?  @map("source_key") @db.VarChar(255)
+  title          String   @db.VarChar(255)
+  status         String   @default("open") @db.VarChar(16)
+  // The orchestrator's own notes (case_update_notes).
+  notes          String   @default("") @db.Text
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization  Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project       Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflow      Workflow                   @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  conversations OrchestratorConversation[]
+  tasks         OrchestratorTask[]
+  decisions     OrchestratorDecision[]
+
+  // A message about a source item joins its case: one per item per workflow.
+  @@unique([workflowId, sourceKey])
+  @@map("orchestrator_cases")
+}
+
+model OrchestratorConversation {
+  id                  String    @id @default(uuid(7)) @db.Uuid
+  organizationId      String    @map("organization_id") @db.Uuid
+  projectId           String    @map("project_id") @db.Uuid
+  caseId              String    @map("case_id") @db.Uuid
+  channelKey          String    @map("channel_key") @db.VarChar(255)
+  // The project connection replies go out through (null: AgentFlow only).
+  projectConnectionId String?   @map("project_connection_id") @db.Uuid
+  // The item answered on (SourceItemRef), the replied comment and reply extras.
+  channel             Json
+  // The Claude session the next turn resumes (a cache: the case is the truth).
+  sessionId           String?   @map("session_id") @db.VarChar(100)
+  status              String    @default("idle") @db.VarChar(16)
+  leaseUntil          DateTime? @map("lease_until")
+  // When the next turn may start (debounce of its newest message, a deadline).
+  nextWakeAt          DateTime? @map("next_wake_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  organization      Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  case              OrchestratorCase       @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  projectConnection ProjectConnection?     @relation(fields: [projectConnectionId], references: [id], onDelete: SetNull)
+  messages          OrchestratorMessage[]
+  turns             OrchestratorTurn[]
+  anchors           OrchestratorAnchor[]
+  tasks             OrchestratorTask[]
+  waits             OrchestratorWait[]
+  decisions         OrchestratorDecision[]
+
+  @@unique([caseId, channelKey])
+  // The tick: conversations whose next turn is due.
+  @@index([nextWakeAt])
+  @@map("orchestrator_conversations")
+}
+
+model OrchestratorMessage {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  conversationId String   @map("conversation_id") @db.Uuid
+  origin         String   @db.VarChar(16)
+  kind           String   @db.VarChar(16)
+  actor          String?  @db.VarChar(255)
+  text           String   @db.Text
+  payload        Json?
+  // The provider's id of the message (a comment id), when it has one.
+  externalRef    String?  @map("external_ref") @db.VarChar(255)
+  dedupKey       String   @map("dedup_key") @db.VarChar(255)
+  // The turn that took it; null: not taken yet.
+  turnId         String?  @map("turn_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation OrchestratorConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  turn         OrchestratorTurn?        @relation(fields: [turnId], references: [id], onDelete: SetNull)
+
+  // A delivery retried by the provider is one message.
+  @@unique([conversationId, dedupKey])
+  // The messages a turn takes (turnId null) and the ones it took.
+  @@index([conversationId, turnId])
+  @@map("orchestrator_messages")
+}
+
+model OrchestratorTurn {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  conversationId  String    @map("conversation_id") @db.Uuid
+  status          String    @db.VarChar(16)
+  computeTargetId String?   @map("compute_target_id") @db.Uuid
+  // The desktop command running it (commands are pruned: no relation).
+  commandId       String?   @map("command_id") @db.Uuid
+  // SHA-256 of the turn's tool session token (`ost_…`).
+  tokenHash       String?   @unique @map("token_hash") @db.VarChar(64)
+  tokenExpiresAt  DateTime? @map("token_expires_at")
+  sessionId       String?   @map("session_id") @db.VarChar(100)
+  // How it ended (OrchestratorTurnEnd), set by its tools.
+  ended           String?   @db.VarChar(16)
+  summary         String?   @db.Text
+  error           String?   @db.Text
+  usage           Json?
+  startedAt       DateTime  @map("started_at")
+  finishedAt      DateTime? @map("finished_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  organization  Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation  OrchestratorConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  computeTarget ComputeTarget?           @relation(fields: [computeTargetId], references: [id], onDelete: SetNull)
+  messages      OrchestratorMessage[]
+  tasks         OrchestratorTask[]
+
+  // The conversation's running turn.
+  @@index([conversationId, status])
+  @@map("orchestrator_turns")
+}
+
+// A message the orchestrator posted (a comment, a Teams message): a reply to
+// it continues its conversation.
+model OrchestratorAnchor {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  conversationId String   @map("conversation_id") @db.Uuid
+  provider       String   @db.VarChar(32)
+  externalRef    String   @map("external_ref") @db.VarChar(255)
+  // What it is about (plan, testcases, answer, ...) and its version.
+  artifact       String?  @db.VarChar(40)
+  version        Int?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation OrchestratorConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, provider, externalRef])
+  @@map("orchestrator_anchors")
+}
+
+// A runner command the orchestrator asked for (a STEP loop on a worker runner).
+model OrchestratorTask {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  caseId          String    @map("case_id") @db.Uuid
+  conversationId  String    @map("conversation_id") @db.Uuid
+  turnId          String?   @map("turn_id") @db.Uuid
+  computeTargetId String?   @map("compute_target_id") @db.Uuid
+  command         String    @db.VarChar(120)
+  args            String    @default("") @db.Text
+  prompt          String    @db.Text
+  // RunnerCommandMode: read | write
+  mode            String    @db.VarChar(16)
+  loopId          String?   @unique @map("loop_id") @db.Uuid
+  // The Issue its loop works on: one per case and runner (made with the
+  // case's first task there). It carries the project and its repositories,
+  // names the runner's workspace for the case, and lets one loop run on it
+  // at a time, so a runner's tasks of a case share a workspace in turn.
+  documentId      String?   @map("document_id") @db.Uuid
+  // The earlier task whose session it resumes (fork: in a copy).
+  resumeTaskId    String?   @map("resume_task_id") @db.Uuid
+  fork            Boolean   @default(false)
+  status          String    @db.VarChar(16)
+  // Reply, files, questions and error of the finished loop.
+  result          Json?
+  finishedAt      DateTime? @map("finished_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  organization  Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  case          OrchestratorCase         @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  conversation  OrchestratorConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  turn          OrchestratorTurn?        @relation(fields: [turnId], references: [id], onDelete: SetNull)
+  computeTarget ComputeTarget?           @relation(fields: [computeTargetId], references: [id], onDelete: SetNull)
+  document      Artifact?                @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  // The tick: tasks still running.
+  @@index([status])
+  // The case's earlier tasks on a runner (its Issue, a fresh workspace or not).
+  @@index([caseId, computeTargetId])
+  @@map("orchestrator_tasks")
+}
+
+// What a conversation waits for before its next turn (wait_for).
+model OrchestratorWait {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  conversationId String    @map("conversation_id") @db.Uuid
+  // OrchestratorWaitKind: all | any
+  kind           String    @db.VarChar(16)
+  taskIds        Json      @map("task_ids")
+  deadline       DateTime?
+  // Wake at once when a task fails (else wait for the others).
+  wakeOnFailure  Boolean   @default(true) @map("wake_on_failure")
+  firedAt        DateTime? @map("fired_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation OrchestratorConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  // The open waits of a conversation.
+  @@index([conversationId, firedAt])
+  @@map("orchestrator_waits")
+}
+
+// An approval the orchestrator asked people for (request_decision).
+model OrchestratorDecision {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  caseId         String    @map("case_id") @db.Uuid
+  conversationId String    @map("conversation_id") @db.Uuid
+  question       String    @db.Text
+  status         String    @default("pending") @db.VarChar(16)
+  // OrchestratorDecisionVia: button | message
+  via            String?   @db.VarChar(16)
+  decidedById    String?   @map("decided_by_id") @db.Uuid
+  decidedBy      String?   @map("decided_by") @db.VarChar(255)
+  comment        String?   @db.Text
+  decidedAt      DateTime? @map("decided_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  case         OrchestratorCase         @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  conversation OrchestratorConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  // A case's decisions (the case page, its pending ones).
+  @@index([caseId, status])
+  @@map("orchestrator_decisions")
 }
 
 // Type-specific detail for SESSION-typed artifacts (captured agent/session
@@ -1229,95 +1496,25 @@ model Project {
   updatedAt       DateTime      @updatedAt @map("updated_at")
 
   // Relations
-  organization    Organization            @relation(fields: [organizationId], references: [id])
-  workflows       Workflow[]
-  repositories    ProjectRepository[]
-  processVersions ProjectProcessVersion[]
-  assignee        User?                   @relation("ProjectAssignee", fields: [assigneeId], references: [id])
-  createdBy       User                    @relation("ProjectCreatedBy", fields: [createdById], references: [id])
-  artifacts       Artifact[]
-  teams           ProjectTeam[]
-  favoritedBy     FavoriteProject[]
-  tagProjects     TagProject[]
+  organization       Organization                @relation(fields: [organizationId], references: [id])
+  workflows          Workflow[]
+  repositories       ProjectRepository[]
+  processVersions    ProjectProcessVersion[]
+  connections        ProjectConnection[]
+  workflowTriggers   WorkflowTrigger[]
+  workflowRuns       WorkflowRun[]
+  runnerCapabilities ComputeTargetCapabilities[]
+  assignee           User?                       @relation("ProjectAssignee", fields: [assigneeId], references: [id])
+  createdBy          User                        @relation("ProjectCreatedBy", fields: [createdById], references: [id])
+  artifacts          Artifact[]
+  favoritedBy        FavoriteProject[]
+  tagProjects        TagProject[]
+  orchestratorCases  OrchestratorCase[]
 
   @@unique([organizationId, slug])
   @@index([assigneeId])
   @@index([createdById])
   @@map("projects")
-}
-
-// =============================================================================
-// TEAMS
-// =============================================================================
-
-model Team {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  name           String
-  slug           String
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-
-  // Relations
-  organization Organization     @relation(fields: [organizationId], references: [id])
-  members      TeamMember[]
-  projects     ProjectTeam[]
-  repositories TeamRepository[]
-  routines     Routine[]
-
-  @@unique([organizationId, slug])
-  @@map("teams")
-}
-
-model TeamMember {
-  id        String   @id @default(uuid(7)) @db.Uuid
-  teamId    String   @map("team_id") @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  role      TeamRole @default(MEMBER)
-  createdAt DateTime @default(now()) @map("created_at")
-
-  // Relations
-  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([teamId, userId])
-  @@index([userId])
-  @@map("team_members")
-}
-
-/// Per-team curated list of GitHub repositories with default-selection and primary designation
-model TeamRepository {
-  id                       String   @id @default(uuid(7)) @db.Uuid
-  teamId                   String   @map("team_id") @db.Uuid
-  installationRepositoryId String   @map("installation_repository_id") @db.Uuid
-  isDefaultSelected        Boolean  @default(false) @map("is_default_selected")
-  isPrimary                Boolean  @default(false) @map("is_primary")
-  createdAt                DateTime @default(now()) @map("created_at")
-  updatedAt                DateTime @updatedAt @map("updated_at")
-
-  // Relations
-  team       Team                         @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  repository GitHubInstallationRepository @relation(fields: [installationRepositoryId], references: [id], onDelete: Cascade)
-
-  @@unique([teamId, installationRepositoryId])
-  @@index([installationRepositoryId])
-  @@map("team_repositories")
-}
-
-/// Many-to-many relationship for projects belonging to multiple teams
-model ProjectTeam {
-  id        String   @id @default(uuid(7)) @db.Uuid
-  projectId String   @map("project_id") @db.Uuid
-  teamId    String   @map("team_id") @db.Uuid
-  createdAt DateTime @default(now()) @map("created_at")
-
-  // Relations
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  team    Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
-
-  @@unique([projectId, teamId])
-  @@index([teamId])
-  @@map("project_teams")
 }
 
 /// Per-user favorite projects for quick access in the sidebar
@@ -1459,6 +1656,7 @@ model Artifact {
   tagArtifacts              TagArtifact[]
   favoritedBy               FavoriteArtifact[]
   linearSubtasks            LinearSubtask[]
+  orchestratorTasks         OrchestratorTask[]
 
   @@unique([organizationId, slug])
   @@index([organizationId, projectId, type])
@@ -2562,6 +2760,8 @@ model Loop {
   tokenRefreshes                  LoopTokenRefresh[]
   executionCredentialConsumptions LoopExecutionCredentialConsumption[]
   tagLoops                        TagLoop[]
+  integrationToolSession          IntegrationToolSession?
+  integrationToolCalls            IntegrationToolCall[]
   workflowRunLoop                 WorkflowRunLoop?
 
   // NOTE: A partial unique index on (artifact_id, command, artifact_version)
@@ -2649,16 +2849,14 @@ model SearchDocument {
 
   // Route-building fields (Phase-2 navigation slice, parent FEA-3800). Nullable
   // and additive — the web app deep-links documents by TYPE + SLUG
-  // (`/prds|/features/<slug>`) and projects team-scoped
-  // (`/teams/<teamId>/projects/<projectId>`), so a raw entity UUID alone cannot
+  // (`/prds|/features/<slug>`) and projects org-level by id
+  // (`/<orgSlug>/projects/<projectId>`), so a raw entity UUID alone cannot
   // build a routable link. `slug` is the source entity's URL handle;
   // `entitySubtype` is the document `type` (PRD/IMPLEMENTATION_PLAN/FEATURE) for
-  // documents (null for projects/loops); `teamId` is a project's owning team
-  // (null for documents/loops). All three are best-effort mirrors backfilled and
-  // kept fresh by the write hooks; a hit missing them degrades to a non-link row.
+  // documents (null for projects/loops). Both are best-effort mirrors backfilled
+  // and kept fresh by the write hooks; a hit missing them degrades to a non-link row.
   slug          String? @db.Text
   entitySubtype String? @map("entity_subtype") @db.Text
-  teamId        String? @map("team_id") @db.Uuid
 
   // Route ANCHOR (FEA-3930 comment/PR/branch corpus slice). Nullable & additive.
   // For hits whose navigation target is a DIFFERENT entity than `entityId`, this
@@ -2895,7 +3093,6 @@ model GitHubInstallationRepository {
   installation       GitHubInstallation      @relation(fields: [installationId], references: [id], onDelete: Cascade)
   branchDetails      BranchDetail[]
   pullRequestDetails PullRequestDetail[]
-  teamRepositories   TeamRepository[]
   dirtyScopeNudges   GitHubDirtyScopeNudge[]
 
   @@unique([installationId, githubRepoId])
@@ -4474,7 +4671,7 @@ model AuditOutbox {
 // ROUTINES (FEA-4365 / PRD-566)
 // =============================================================================
 
-/// A scheduled Routine: an org/team-scoped, provider-driven recurring agent job.
+/// A scheduled Routine: an org-scoped, provider-driven recurring agent job.
 ///
 /// Cloud-side source of truth backing the Web Routines surface and cross-machine
 /// features. A routine is either CREATED in the UI or DISCOVERED already
@@ -4491,11 +4688,8 @@ model AuditOutbox {
 /// `providerCapabilities` gating. This keeps old/new clients skew-safe: a field a
 /// provider can't emit is simply absent.
 model Routine {
-  id             String  @id @default(uuid(7)) @db.Uuid
-  organizationId String  @map("organization_id") @db.Uuid
-  /// Team-scoping. Nullable so an org-level routine (not yet assigned to a team)
-  /// is still representable; queries scope on organizationId and optionally teamId.
-  teamId         String? @map("team_id") @db.Uuid
+  id             String @id @default(uuid(7)) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
 
   /// Desktop-source identity: the crewd `ScheduledTask.id` (an ARBITRARY string
   /// such as `task-1`, NOT a UUID) this routine was synced up from. The cloud PK
@@ -4605,7 +4799,6 @@ model Routine {
 
   // Relations
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  team         Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
   owner        User?        @relation("RoutineOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   runs         RoutineRun[]
 
@@ -4613,15 +4806,13 @@ model Routine {
   /// desktop `ScheduledTask.id` resolves to exactly one row PER ORG. NULLs are
   /// distinct in Postgres, so CREATED (null-sourced) routines never collide here.
   @@unique([organizationId, sourceId], map: "routines_organization_id_source_id_key")
-  /// Serves the primary org-scoped list (optionally further filtered by team),
-  /// newest-first.
+  /// Serves the primary org-scoped list, newest-first.
   @@index([organizationId, updatedAt])
-  @@index([organizationId, teamId, updatedAt])
   @@index([organizationId, status])
   @@map("routines")
 }
 
-/// One run of a Routine — the history the UI lists, org/team-scoped.
+/// One run of a Routine — the history the UI lists, org-scoped.
 ///
 /// Maps 1:1 to the desktop crewd `RunRecord`: `status`/`startedAt`/`finishedAt`/
 /// `harnessUsed`/`summary`/`error` are the same surface, plus the model actually
@@ -4888,6 +5079,7 @@ model IntegrationConnection {
   actions             WorkflowAction[]
   runs                WorkflowRun[]
   projectRepositories ProjectRepository[]
+  projectConnections  ProjectConnection[]
 
   @@index([organizationId, provider])
   @@index([deliveryMode, nextPollAt])
@@ -4945,6 +5137,7 @@ model Workflow {
   triggers          WorkflowTrigger[]
   actions           WorkflowAction[]
   runs              WorkflowRun[]
+  orchestratorCases OrchestratorCase[]
   /**
    * Built-in HTTP endpoint of the workflow (see IntegrationConnection.managedByWorkflowId).
    */
@@ -4955,24 +5148,33 @@ model Workflow {
 }
 
 model WorkflowTrigger {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  workflowId     String   @map("workflow_id") @db.Uuid
-  connectionId   String   @map("connection_id") @db.Uuid
+  id                  String   @id @default(uuid(7)) @db.Uuid
+  organizationId      String   @map("organization_id") @db.Uuid
+  workflowId          String   @map("workflow_id") @db.Uuid
+  // The project the trigger's runs belong to (the workflow's project or the trigger's own).
+  projectId           String   @map("project_id") @db.Uuid
+  // The project connection whose items start runs; null for the workflow's
+  // built-in HTTP endpoint (connectionId is then its managed connection).
+  projectConnectionId String?  @map("project_connection_id") @db.Uuid
+  connectionId        String   @map("connection_id") @db.Uuid
   // Trigger type key from the provider registry, e.g. "jira.issue_assigned".
-  type           String   @db.VarChar(64)
-  config         Json     @default("{}")
-  enabled        Boolean  @default(true)
-  position       Int      @default(0)
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  type                String   @db.VarChar(64)
+  config              Json     @default("{}")
+  enabled             Boolean  @default(true)
+  position            Int      @default(0)
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
 
-  workflow   Workflow              @relation(fields: [workflowId], references: [id], onDelete: Cascade)
-  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  runs       WorkflowRun[]
+  workflow          Workflow              @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  project           Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectConnection ProjectConnection?    @relation(fields: [projectConnectionId], references: [id], onDelete: Restrict)
+  connection        IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  runs              WorkflowRun[]
 
   @@index([workflowId])
   @@index([connectionId, type])
+  @@index([projectConnectionId])
+  @@index([projectId])
   @@map("workflow_triggers")
 }
 
@@ -4980,8 +5182,15 @@ model WorkflowAction {
   id              String   @id @default(uuid(7)) @db.Uuid
   organizationId  String   @map("organization_id") @db.Uuid
   workflowId      String   @map("workflow_id") @db.Uuid
-  connectionId    String   @map("connection_id") @db.Uuid
-  // Action type key from the provider registry, e.g. "jira.add_comment".
+  // Only the workflow's built-in HTTPS call names a connection here (its
+  // managed connection); project connections are named by connectionKey.
+  connectionId    String?  @map("connection_id") @db.Uuid
+  // Key of the project connection the action uses, resolved in the run's
+  // project when the action runs. Null with connectionId null: chosen per run
+  // (the run's source, a repository's connection, or the only candidate).
+  connectionKey   String?  @map("connection_key") @db.VarChar(40)
+  // Action type key from the provider registry, e.g. "jira.add_comment", or
+  // "agentflow.instruction" (config.instruction, carried out by an agent).
   type            String   @db.VarChar(64)
   config          Json     @default("{}")
   // WorkflowActionStage: pre (before the agent team, in order) | post (on run events).
@@ -4995,8 +5204,8 @@ model WorkflowAction {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
-  workflow   Workflow              @relation(fields: [workflowId], references: [id], onDelete: Cascade)
-  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  workflow   Workflow               @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  connection IntegrationConnection? @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   actionRuns WorkflowActionRun[]
 
   @@index([workflowId])
@@ -5005,69 +5214,84 @@ model WorkflowAction {
 }
 
 model WorkflowRun {
-  id                String    @id @default(uuid(7)) @db.Uuid
-  organizationId    String    @map("organization_id") @db.Uuid
-  workflowId        String    @map("workflow_id") @db.Uuid
-  triggerId         String?   @map("trigger_id") @db.Uuid
-  connectionId      String?   @map("connection_id") @db.Uuid
-  deliveryId        String?   @map("delivery_id") @db.Uuid
-  runAsUserId       String?   @map("run_as_user_id") @db.Uuid
+  id                   String    @id @default(uuid(7)) @db.Uuid
+  organizationId       String    @map("organization_id") @db.Uuid
+  workflowId           String    @map("workflow_id") @db.Uuid
+  // The trigger's project: the run's documents, process, repositories and
+  // project connections are this project's.
+  projectId            String    @map("project_id") @db.Uuid
+  triggerId            String?   @map("trigger_id") @db.Uuid
+  connectionId         String?   @map("connection_id") @db.Uuid
+  // The source project connection (the one whose item started the run);
+  // operations on the source item always go through it.
+  projectConnectionId  String?   @map("project_connection_id") @db.Uuid
+  deliveryId           String?   @map("delivery_id") @db.Uuid
+  runAsUserId          String?   @map("run_as_user_id") @db.Uuid
   // InboundEvent.dedupKey; one run per occurrence per workflow.
-  dedupKey          String    @map("dedup_key") @db.VarChar(255)
+  dedupKey             String    @map("dedup_key") @db.VarChar(255)
   // dedupKeys of later occurrences that resumed this run, so a replay cannot start a new run.
-  occurrenceKeys    String[]  @default([]) @map("occurrence_keys")
+  occurrenceKeys       String[]  @default([]) @map("occurrence_keys")
   // "<provider>:<item key>", used to refuse a second active run for the same item.
-  sourceKey         String    @map("source_key") @db.VarChar(255)
+  sourceKey            String    @map("source_key") @db.VarChar(255)
   // WorkflowRunStatus.
-  status            String    @default("received") @db.VarChar(16)
+  status               String    @default("received") @db.VarChar(16)
   // { item: SourceItemRef, inlineItem?: SourceItem, actor, attributes, extras, occurredAt }
-  source            Json
+  source               Json
   // Snapshot of the workflow's WorkflowAgentConfig when the run started.
-  agentConfig       Json      @default("{}") @map("agent_config")
-  featureDocumentId String?   @map("feature_document_id") @db.Uuid
-  planDocumentId    String?   @map("plan_document_id") @db.Uuid
-  prUrl             String?   @map("pr_url")
-  branchName        String?   @map("branch_name")
+  agentConfig          Json      @default("{}") @map("agent_config")
+  featureDocumentId    String?   @map("feature_document_id") @db.Uuid
+  planDocumentId       String?   @map("plan_document_id") @db.Uuid
+  prUrl                String?   @map("pr_url")
+  branchName           String?   @map("branch_name")
   // RunRepositorySnapshot[] (apps/api/lib/integrations/types.ts): the project
   // repositories the agent team works in, recorded when EXECUTE is launched,
   // each with the branch it was pushed to and its pull request. Runs recorded
   // earlier hold a single RunRepositorySnapshot.
-  repository        Json?
+  repository           Json?
   // ProjectProcess snapshot ({ version, definition }) taken when the run starts
   // its first step on a project that configures a process. Null: the process
   // is derived from agentConfig (the built-in AgentFlow flow).
-  process           Json?
+  process              Json?
   // Id of the process step the run is on; null for runs on a derived process
   // (the step then follows from the status).
-  stepId            String?   @map("step_id") @db.VarChar(64)
+  stepId               String?   @map("step_id") @db.VarChar(64)
   // State of the current step: questions and answers, session, approval.
-  stepState         Json?     @map("step_state")
+  stepState            Json?     @map("step_state")
+  // The PRD instruction's classification of the source item (agent.prd;
+  // apps/api/lib/workflows/engine/source-classification.ts): the command of
+  // the run's computer while it decides, then the decision. Null without an
+  // instruction (the item is an Issue).
+  sourceClassification Json?     @map("source_classification")
   // { code, message } when failed.
-  error             Json?
+  error                Json?
   // Incremented each time a needs_input run resumes (source item re-assigned, plan re-run).
-  cycle             Int       @default(1)
+  cycle                Int       @default(1)
   // Retries of the current step after a temporary failure (e.g. the source system
   // rate limited the import); reset on every status change.
-  stepAttempts      Int       @default(0) @map("step_attempts")
+  stepAttempts         Int       @default(0) @map("step_attempts")
   // Do not advance before this time (retry backoff of the current step).
-  nextStepAt        DateTime? @map("next_step_at")
+  nextStepAt           DateTime? @map("next_step_at")
   // Engine lease so a webhook-triggered advance and the sweep never step the same run twice.
-  leaseUntil        DateTime? @map("lease_until")
-  phaseStartedAt    DateTime  @default(now()) @map("phase_started_at")
-  completedAt       DateTime? @map("completed_at")
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @updatedAt @map("updated_at")
+  leaseUntil           DateTime? @map("lease_until")
+  phaseStartedAt       DateTime  @default(now()) @map("phase_started_at")
+  completedAt          DateTime? @map("completed_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
-  organization    Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  workflow        Workflow               @relation(fields: [workflowId], references: [id], onDelete: Cascade)
-  trigger         WorkflowTrigger?       @relation(fields: [triggerId], references: [id], onDelete: SetNull)
-  connection      IntegrationConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
-  delivery        IntegrationDelivery?   @relation(fields: [deliveryId], references: [id], onDelete: SetNull)
-  runAsUser       User?                  @relation("WorkflowRunRunAsUser", fields: [runAsUserId], references: [id], onDelete: SetNull)
-  featureDocument Artifact?              @relation("WorkflowRunFeatureDocument", fields: [featureDocumentId], references: [id], onDelete: SetNull)
-  planDocument    Artifact?              @relation("WorkflowRunPlanDocument", fields: [planDocumentId], references: [id], onDelete: SetNull)
-  loops           WorkflowRunLoop[]
-  actionRuns      WorkflowActionRun[]
+  organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workflow          Workflow                 @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  project           Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectConnection ProjectConnection?       @relation(fields: [projectConnectionId], references: [id], onDelete: SetNull)
+  trigger           WorkflowTrigger?         @relation(fields: [triggerId], references: [id], onDelete: SetNull)
+  connection        IntegrationConnection?   @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  delivery          IntegrationDelivery?     @relation(fields: [deliveryId], references: [id], onDelete: SetNull)
+  runAsUser         User?                    @relation("WorkflowRunRunAsUser", fields: [runAsUserId], references: [id], onDelete: SetNull)
+  featureDocument   Artifact?                @relation("WorkflowRunFeatureDocument", fields: [featureDocumentId], references: [id], onDelete: SetNull)
+  planDocument      Artifact?                @relation("WorkflowRunPlanDocument", fields: [planDocumentId], references: [id], onDelete: SetNull)
+  loops             WorkflowRunLoop[]
+  actionRuns        WorkflowActionRun[]
+  toolSessions      IntegrationToolSession[]
+  toolCalls         IntegrationToolCall[]
 
   @@unique([workflowId, dedupKey])
   @@index([organizationId, createdAt])
@@ -5119,16 +5343,96 @@ model WorkflowActionRun {
   nextAttemptAt  DateTime  @default(now()) @map("next_attempt_at")
   lastError      String?   @map("last_error") @db.Text
   externalRef    String?   @map("external_ref")
+  // Instruction actions: the desktop command running the agent while the row
+  // is waiting (no relation: commands are pruned, the row outlives them).
+  commandId      String?   @map("command_id") @db.Uuid
+  // Instruction actions: WorkflowInstructionRunDetail (the agent's note, the
+  // operations it proposed and how each went, its cost).
+  detail         Json?
   completedAt    DateTime? @map("completed_at")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  run    WorkflowRun     @relation(fields: [runId], references: [id], onDelete: Cascade)
-  action WorkflowAction? @relation(fields: [actionId], references: [id], onDelete: SetNull)
+  run          WorkflowRun              @relation(fields: [runId], references: [id], onDelete: Cascade)
+  action       WorkflowAction?          @relation(fields: [actionId], references: [id], onDelete: SetNull)
+  toolSessions IntegrationToolSession[]
+  toolCalls    IntegrationToolCall[]
 
   @@unique([runId, actionId, event, cycle])
   @@index([status, nextAttemptAt])
   @@map("workflow_action_runs")
+}
+
+// The integration tools (apps/api/app/integration-tools) one agent may call
+// through the MCP server: one attempt of an instruction action
+// (action_run_id + attempt) or one STEP loop of a process agent step
+// (loop_id), never both. Created when the agent is dispatched; the runner it
+// was dispatched to exchanges it for a bearer token (`ist_…`, only its
+// SHA-256 is stored, re-issuing replaces it). The token works while that
+// attempt or loop runs.
+model IntegrationToolSession {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  runId           String    @map("run_id") @db.Uuid
+  actionRunId     String?   @map("action_run_id") @db.Uuid
+  attempt         Int?
+  loopId          String?   @unique @map("loop_id") @db.Uuid
+  // The process agent step a loop session works for.
+  stepId          String?   @map("step_id") @db.VarChar(64)
+  computeTargetId String    @map("compute_target_id") @db.Uuid
+  tokenHash       String?   @unique @map("token_hash") @db.VarChar(64)
+  issuedAt        DateTime? @map("issued_at")
+  expiresAt       DateTime  @map("expires_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  run       WorkflowRun           @relation(fields: [runId], references: [id], onDelete: Cascade)
+  actionRun WorkflowActionRun?    @relation(fields: [actionRunId], references: [id], onDelete: Cascade)
+  loop      Loop?                 @relation(fields: [loopId], references: [id], onDelete: Cascade)
+  calls     IntegrationToolCall[]
+
+  @@unique([actionRunId, attempt])
+  @@map("integration_tool_sessions")
+}
+
+// One integration tool call of an agent: what it asked, on which project
+// connection key, and how it went (IntegrationToolCallStatus). A write is
+// recorded before it runs; `idempotency_key` makes a repeated identical call
+// return the first outcome instead of writing twice. A write whose grant
+// requires approval waits as `pending_approval` with its arguments in
+// `request` until a person decides.
+model IntegrationToolCall {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  sessionId      String    @map("session_id") @db.Uuid
+  runId          String    @map("run_id") @db.Uuid
+  actionRunId    String?   @map("action_run_id") @db.Uuid
+  loopId         String?   @map("loop_id") @db.Uuid
+  tool           String    @db.VarChar(80)
+  // The provider operation (jira.add_comment); null for reads.
+  operationType  String?   @map("operation_type") @db.VarChar(64)
+  connectionKey  String?   @map("connection_key") @db.VarChar(40)
+  idempotencyKey String    @unique @map("idempotency_key") @db.VarChar(64)
+  input          Json
+  // The full arguments of a write whose grant requires approval.
+  request        Json?
+  status         String    @db.VarChar(16)
+  externalRef    String?   @map("external_ref")
+  error          String?   @db.Text
+  decidedById    String?   @map("decided_by_id") @db.Uuid
+  decidedAt      DateTime? @map("decided_at")
+  completedAt    DateTime? @map("completed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  session   IntegrationToolSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  run       WorkflowRun            @relation(fields: [runId], references: [id], onDelete: Cascade)
+  actionRun WorkflowActionRun?     @relation(fields: [actionRunId], references: [id], onDelete: Cascade)
+  loop      Loop?                  @relation(fields: [loopId], references: [id], onDelete: Cascade)
+
+  @@index([actionRunId, createdAt])
+  @@index([runId, createdAt])
+  @@index([loopId])
+  @@index([sessionId])
+  @@map("integration_tool_calls")
 }
 
 // Repositories a project works on, each taken from an integration connection
@@ -5163,6 +5467,64 @@ model ProjectRepository {
   @@index([organizationId, projectId])
   @@index([connectionId])
   @@map("project_repositories")
+}
+
+// A project's use of an organization integration connection (Project
+// settings → Integrations). Workflows, process steps and agent tools refer to
+// it by `key`. `settings` narrows what the project works on (Jira project
+// keys, Azure DevOps projects); an optional account override replaces the
+// connection's account (e.g. a personal Jira token where the bot cannot be
+// added) while the site and deployment stay the connection's.
+model ProjectConnection {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  projectId      String   @map("project_id") @db.Uuid
+  // The organization connection, and with it the account (one Jira bot per
+  // connection): a connection is added to a project at most once.
+  connectionId   String   @map("connection_id") @db.Uuid
+  // Stable reference (PROJECT_CONNECTION_KEY_RE), unique per project, immutable.
+  key            String   @db.VarChar(40)
+  name           String   @db.VarChar(120)
+  // Provider-validated project settings, e.g. Jira { projectKeys: ["ABC"] }.
+  settings       Json     @default("{}")
+  createdById    String?  @map("created_by_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization              Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project                   Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  connection                IntegrationConnection      @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  createdBy                 User?                      @relation("ProjectConnectionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  scopes                    ProjectConnectionScope[]
+  triggers                  WorkflowTrigger[]
+  runs                      WorkflowRun[]
+  orchestratorConversations OrchestratorConversation[]
+
+  @@unique([projectId, key])
+  @@unique([projectId, connectionId])
+  @@index([organizationId, connectionId])
+  @@map("project_connections")
+}
+
+// The source items a project connection claims (one row per Jira project key
+// or Azure DevOps project). Project connections of one project may claim the
+// same items through different connections (one Jira bot per workflow); an
+// incoming item routes to the claimer of the connection it arrived on.
+// Another project never claims them.
+model ProjectConnectionScope {
+  id                  String   @id @default(uuid(7)) @db.Uuid
+  organizationId      String   @map("organization_id") @db.Uuid
+  projectConnectionId String   @map("project_connection_id") @db.Uuid
+  // "<provider>:<origin>:<container>", e.g. "jira:https://acme.atlassian.net:ABC".
+  scopeKey            String   @map("scope_key") @db.VarChar(1024)
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  projectConnection ProjectConnection @relation(fields: [projectConnectionId], references: [id], onDelete: Cascade)
+
+  @@unique([projectConnectionId, scopeKey])
+  @@index([organizationId, scopeKey])
+  @@map("project_connection_scopes")
 }
 
 // The process a project's workflow runs follow between pre and post actions

@@ -26,6 +26,8 @@ export const WORKFLOW_RUN_ERROR_MESSAGES: Record<WorkflowRunErrorCode, string> =
       "Couldn't create the Issue or the implementation plan",
     [WorkflowRunErrorCode.ComputeTargetUnavailable]:
       "The compute target is offline or not available to the run-as user",
+    [WorkflowRunErrorCode.RunnerBusy]:
+      "The personal runner is running another task; the step starts when it is free",
     [WorkflowRunErrorCode.SigningRequired]:
       "The compute target requires a browser signature, which unattended runs cannot provide",
     [WorkflowRunErrorCode.NoRepository]:
@@ -44,6 +46,7 @@ export const WORKFLOW_RUN_ERROR_MESSAGES: Record<WorkflowRunErrorCode, string> =
     [WorkflowRunErrorCode.ExecuteFailed]: "The implementation loop failed",
     [WorkflowRunErrorCode.StepFailed]: "A step of the project's process failed",
     [WorkflowRunErrorCode.ApprovalRejected]: "An approval step was rejected",
+    [WorkflowRunErrorCode.ReviewRejected]: "A step under review was rejected",
     [WorkflowRunErrorCode.PlanStateUnavailable]:
       "The plan's working state is not available for implementation",
     [WorkflowRunErrorCode.PhaseTimeout]: "The run took too long and timed out",

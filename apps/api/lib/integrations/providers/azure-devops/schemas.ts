@@ -62,6 +62,8 @@ export const adoRelationSchema = z.looseObject({
     .looseObject({
       name: lenientTextSchema,
       resourceSize: z.number().nullish().catch(null),
+      /** The title of a Hyperlink relation. */
+      comment: lenientTextSchema,
     })
     .nullish()
     .catch(null),
@@ -352,3 +354,52 @@ const MAX_WORK_ITEM_ID = 2_147_483_647;
 function isHttpProtocol(protocol: string): boolean {
   return protocol === "http:" || protocol === "https:";
 }
+
+/** GET …/pullrequests/{id}. */
+export const adoPullRequestDetailSchema = z.looseObject({
+  pullRequestId: z.number().int().positive(),
+  /** active, completed or abandoned. */
+  status: z.string().nullish(),
+  title: z.string().nullish(),
+});
+
+const adoThreadCommentSchema = z.looseObject({
+  id: z.number().int(),
+  parentCommentId: z.number().int().nullish(),
+  author: z
+    .looseObject({
+      id: z.string().nullish(),
+      displayName: z.string().nullish(),
+    })
+    .nullish(),
+  content: z.string().nullish(),
+  publishedDate: z.string().nullish(),
+  /** text, system or codeChange. */
+  commentType: z.string().nullish(),
+  isDeleted: z.boolean().nullish(),
+});
+
+/** A thread of GET …/pullrequests/{id}/threads. */
+export const adoThreadSchema = z.looseObject({
+  id: z.number().int(),
+  /** active, pending, fixed, wontFix, closed, byDesign or unknown. */
+  status: z.string().nullish(),
+  isDeleted: z.boolean().nullish(),
+  threadContext: z
+    .looseObject({
+      filePath: z.string().nullish(),
+      rightFileStart: z.looseObject({ line: z.number().int() }).nullish(),
+      leftFileStart: z.looseObject({ line: z.number().int() }).nullish(),
+    })
+    .nullish(),
+  comments: z.array(adoThreadCommentSchema).nullish(),
+});
+export type AdoThread = z.infer<typeof adoThreadSchema>;
+
+export const adoThreadListSchema = z.looseObject({
+  value: z.array(z.unknown()),
+});
+
+export const adoCreatedThreadCommentSchema = z.looseObject({
+  id: z.number().int(),
+});

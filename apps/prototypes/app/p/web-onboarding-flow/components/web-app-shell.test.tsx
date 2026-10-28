@@ -12,8 +12,8 @@ describe("WebAppShell setup checklist", () => {
       <WebAppShell projectName="Web app" workspaceName="Acme Engineering" />
     );
 
-    // Team + project arrive done from the wizard; the rest are open.
-    expect(screen.getByText("2 of 6 tasks completed")).toBeTruthy();
+    // The project arrives done from the wizard; the rest are open.
+    expect(screen.getByText("1 of 5 tasks completed")).toBeTruthy();
 
     // The whole download row is a link straight to the latest universal .dmg.
     const downloadRow = screen.getByRole("link", {
@@ -28,7 +28,7 @@ describe("WebAppShell setup checklist", () => {
 
     // Clicking the row completes the step: the count advances and the row is no
     // longer an actionable link.
-    expect(screen.getByText("3 of 6 tasks completed")).toBeTruthy();
+    expect(screen.getByText("2 of 5 tasks completed")).toBeTruthy();
     expect(screen.queryByRole("link", { name: DOWNLOAD_ROW_NAME })).toBeNull();
   });
 });

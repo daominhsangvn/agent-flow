@@ -20,12 +20,10 @@ type DefaultRepositoryStub = {
 export async function createProject(
   request: APIRequestContext,
   {
-    teamIds,
     name,
     defaultRepository,
     token,
   }: {
-    teamIds: string[];
     name: string;
     defaultRepository?: DefaultRepositoryStub;
     token: string;
@@ -33,7 +31,7 @@ export async function createProject(
 ): Promise<ProjectSummary> {
   const api = getApiBaseUrl();
   const response = await request.post(`${api}/projects`, {
-    data: { name, teamIds },
+    data: { name },
     headers: { Authorization: `Bearer ${token}` },
   });
   const body = (await response.json()) as ApiResult<ProjectSummary>;

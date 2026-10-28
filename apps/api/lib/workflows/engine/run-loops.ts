@@ -45,10 +45,18 @@ export type RunLoopState = {
   uploadedArtifacts: unknown;
   /** Times the loop went from TIMED_OUT back to RUNNING. */
   revivalCount: number;
+  /** The agent session the computer recorded; a later loop can resume it. */
+  sessionId: string | null;
   createdAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
 };
+
+/** What deciding whether a loop ended for good reads. */
+export type SettlingLoop = Pick<
+  RunLoopState,
+  "loopId" | "status" | "completedAt" | "revivalCount"
+>;
 
 const LOOP_TERMINAL_STATUSES: ReadonlySet<LoopStatus> = new Set<LoopStatus>([
   LoopStatus.Completed,
@@ -78,6 +86,7 @@ const RUN_LOOP_SELECT = {
       error: true,
       uploadedArtifacts: true,
       revivalCount: true,
+      sessionId: true,
       createdAt: true,
       startedAt: true,
       completedAt: true,
@@ -118,7 +127,7 @@ export function isLoopTerminal(status: LoopStatus): boolean {
  * the loop, so the run keeps waiting (bounded by the phase timeout).
  */
 export async function isLoopSettled(
-  loop: RunLoopState,
+  loop: SettlingLoop,
   now: Date
 ): Promise<boolean> {
   if (!isLoopTerminal(loop.status)) {
@@ -137,7 +146,7 @@ export async function isLoopSettled(
  * revived fewer than REVIVAL_MAX_PER_LOOP times.
  */
 export async function isRevivableTimedOutLoop(
-  loop: RunLoopState,
+  loop: SettlingLoop,
   now: Date
 ): Promise<boolean> {
   if (loop.status !== LoopStatus.TimedOut || !loop.completedAt) {
@@ -332,6 +341,7 @@ function toRunLoopState(row: {
     error: unknown;
     uploadedArtifacts: unknown;
     revivalCount: number;
+    sessionId?: string | null;
     createdAt: Date;
     startedAt: Date | null;
     completedAt: Date | null;
@@ -352,6 +362,7 @@ function toRunLoopState(row: {
     error: error.success ? error.data : null,
     uploadedArtifacts: row.loop.uploadedArtifacts,
     revivalCount: row.loop.revivalCount,
+    sessionId: row.loop.sessionId ?? null,
     createdAt: row.loop.createdAt,
     startedAt: row.loop.startedAt,
     completedAt: row.loop.completedAt,

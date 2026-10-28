@@ -287,7 +287,9 @@ function errorText(error: unknown): string {
  * agent's `git status`: the checkout's `.git/info/exclude` applies to all of
  * its worktrees and is never committed. Best effort.
  */
-async function excludeAgentFlowFiles(checkoutPath: string): Promise<void> {
+export async function excludeAgentFlowFiles(
+  checkoutPath: string
+): Promise<void> {
   const excludeFile = path.join(checkoutPath, ".git", "info", "exclude");
   try {
     const current = existsSync(excludeFile)

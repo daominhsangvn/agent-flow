@@ -23,7 +23,7 @@ import {
   SessionPrLifecycleStatus,
   sessionPrWithLifecycle,
 } from "@repo/lib/session-trace/derivation";
-import { sessionPrSchema } from "@/lib/desktop-agent-sessions-schema";
+import { storedSessionPrSchema } from "@/lib/desktop-agent-sessions-schema";
 import { parseJsonArray } from "./coercion";
 import type { AgentSessionListRecord } from "./records";
 
@@ -551,7 +551,7 @@ export function toSessionPullRequestProjection(
 } {
   const legacyPrs = parseJsonArray<SessionPR>(
     record.pullRequests,
-    sessionPrSchema
+    storedSessionPrSchema
   );
   const acc: SessionPrAccumulator = {
     byIdentity: new Map<string, SessionPR>(),

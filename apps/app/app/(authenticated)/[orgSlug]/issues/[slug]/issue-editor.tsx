@@ -164,7 +164,6 @@ export function IssueEditor({
         />
       )}
       hideRepositoriesInMetadataBar
-      moveDialogTeamId={feature.project?.teams?.[0]?.id ?? null}
       onVersionChange={onVersionChange}
       redirectPath={redirectPath}
       renderChatPanel={renderDocumentChatPanelSlot}
@@ -210,10 +209,9 @@ function getFeatureRedirectPath(
   feature: DocumentDetail,
   orgSlug: string
 ): string {
-  const teamId = feature.project?.teams?.[0]?.id;
   const projectId = feature.project?.id;
-  if (teamId && projectId) {
-    return `/${orgSlug}/teams/${teamId}/projects/${projectId}`;
+  if (projectId) {
+    return `/${orgSlug}/projects/${projectId}`;
   }
   return `/${orgSlug}`;
 }

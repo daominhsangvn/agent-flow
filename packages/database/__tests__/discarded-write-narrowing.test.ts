@@ -440,7 +440,7 @@ describe("characterization: the writes packages/database issues", () => {
   it("propagates a failing seed upsert out of the seed module", async () => {
     const prisma = buildResolvingMock();
     const p = prisma as AnyDelegate;
-    p.team.upsert.mockRejectedValue(recordNotFoundError());
+    p.project.upsert.mockRejectedValue(recordNotFoundError());
 
     await expect(
       seedCoreEntities(prisma as AnyDelegate, baselineContext)
@@ -453,50 +453,13 @@ describe("characterization: the writes packages/database issues", () => {
 // ---------------------------------------------------------------------------
 
 describe("narrowing: no discarded write returns every column", () => {
-  /**
-   * The one seed write ISS-6317 deliberately leaves alone. `seedCoreEntities`
-   * READS the Team it upserts — `team.id` feeds the TeamMember upsert and the
-   * returned `teamId` — so it is not a discarded write at all; the batch scan
-   * that counted it was matching the callback shape, not the consumption. It is
-   * named rather than filtered out by a predicate so that a future write which
-   * IS discarded cannot slip through under the same exemption, and the companion
-   * assertion below proves the result is genuinely consumed.
-   */
-  const CONSUMED_SEED_WRITE = "team.upsert";
-
   it("narrows every discarded seed-module write to the model primary key", async () => {
     const { prisma } = await driveSeedModules();
     const wide = recordedWrites(prisma).filter(
       (write) => write.args.select === undefined
     );
 
-    expect(wide.map((write) => `${write.model}.${write.method}`)).toEqual([
-      CONSUMED_SEED_WRITE,
-    ]);
-  });
-
-  it("still consumes the one write it leaves un-narrowed", async () => {
-    // The exemption is only legitimate while the RESOLVED row is actually read.
-    // Proving that needs the write's OUTPUT to be distinguishable from its INPUT:
-    // the default stub echoes `create.id` back, so an assertion against the call
-    // args would hold even if the seed ignored the response entirely and reused
-    // its own precomputed uuid. Resolving a sentinel id no caller could have
-    // computed makes the read observable — if `core.ts` stops threading
-    // `team.id` through, `coreResult.teamId` reverts to the deterministic uuid
-    // and this fails.
-    const prisma = buildResolvingMock();
-    const p = prisma as AnyDelegate;
-    const resolvedTeamId = "resolved-only-from-the-upsert-response";
-    p.team.upsert.mockResolvedValue({ id: resolvedTeamId });
-
-    const coreResult = await seedCoreEntities(
-      prisma as AnyDelegate,
-      baselineContext
-    );
-
-    const requestedTeamId = p.team.upsert.mock.calls[0][0].create.id as string;
-    expect(requestedTeamId).not.toBe(resolvedTeamId);
-    expect(coreResult.teamId).toBe(resolvedTeamId);
+    expect(wide.map((write) => `${write.model}.${write.method}`)).toEqual([]);
   });
 
   it("selects exactly the primary key, never a wider projection", async () => {

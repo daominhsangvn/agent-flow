@@ -52,7 +52,7 @@ export function useSessionProjectNameResolver({
     );
   }, [usage, selectedProjectIds]);
 
-  const { data: projects } = useProjects(undefined, {
+  const { data: projects } = useProjects({
     enabled: enabled && hasUnresolvedProject,
   });
 

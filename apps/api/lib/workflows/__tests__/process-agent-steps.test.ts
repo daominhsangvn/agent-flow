@@ -427,9 +427,9 @@ describe("agent steps of a project process", () => {
       "implement"
     );
     const events = await advance();
-
     expect(currentRun().status).toBe(WorkflowRunStatus.Succeeded);
-    expect(events).toEqual([WorkflowRunEvent.Succeeded]);
+    expect(events[0]).toBe(WorkflowRunEvent.ExecuteCompleted);
+    expect(events.slice(1)).toEqual([WorkflowRunEvent.Succeeded]);
     expect(currentRun().branchName).toBe("symphony/iss-7");
     expect(mocks.recordRunRepositoryBranches).toHaveBeenCalledWith(
       RUN_ID,
@@ -540,7 +540,7 @@ describe("agent steps of a project process", () => {
     const reviewEvents = await advance(); // review -> executing
     expect(currentRun().status).toBe(WorkflowRunStatus.Executing);
     expect(currentRun().stepId).toBe(AgentFlowStepId.Execute);
-    expect(reviewEvents).toEqual([]);
+    expect(reviewEvents).toEqual([WorkflowRunEvent.ExecuteStarted]);
     expect(mocks.approvePlanDocument).toHaveBeenCalledWith(
       PLAN_DOCUMENT_ID,
       expect.any(String)
@@ -906,7 +906,8 @@ describe("approval steps", () => {
 
     const events = await advance();
 
-    expect(events).toEqual([]);
+    // "implement" pushes: it is the run's implementation.
+    expect(events).toEqual([WorkflowRunEvent.ExecuteStarted]);
     expect(currentRun().status).toBe(WorkflowRunStatus.Running);
     expect(currentRun().stepId).toBe("implement");
     expect(currentRun().stepState).toBe("__db_null__");

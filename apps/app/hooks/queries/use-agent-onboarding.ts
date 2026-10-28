@@ -1,7 +1,7 @@
 "use client";
 
+import type { ComputeTarget } from "@repo/api/src/types/compute-target";
 import { useAgentComponents } from "@repo/app/agents/hooks/use-agent-components";
-import { useGitHubIntegrationStatus } from "@repo/app/github/hooks/use-github-integration";
 import { useLocalStorageState } from "@repo/app/shared/hooks/use-local-storage-state";
 import { isAdminRole } from "@repo/app/shared/lib/role-utils";
 import { useOrganization } from "@repo/auth/client";
@@ -12,8 +12,8 @@ const BOOTSTRAP_LOOP_KEY_PREFIX = "agents:bootstrap:activeLoopId";
 
 export type AgentOnboardingState = {
   needsBootstrap: boolean;
-  hasElectron: boolean;
-  hasGitHub: boolean;
+  /** The runners this user can start a loop on: their own and the org-shared ones. */
+  runner: AgentRunnerStatus;
   prereqsMet: boolean;
   isDismissed: boolean;
   isLoading: boolean;
@@ -45,26 +45,24 @@ export function useAgentOnboarding(): AgentOnboardingState {
     {},
     { enabled: shouldFetch }
   );
-  const { data: githubStatus, isLoading: githubLoading } =
-    useGitHubIntegrationStatus({ enabled: shouldFetch });
   const { data: computeTargets, isLoading: computeLoading } = useComputeTargets(
     { enabled: shouldFetch }
   );
 
   const needsBootstrap = componentData?.total === 0;
-  const hasElectron = computeTargets?.some((t) => t.isOnline) ?? false;
-  const hasGitHub = githubStatus?.connected ?? false;
-  const prereqsMet = hasElectron && hasGitHub;
-  const isLoading =
-    shouldFetch && (agentsLoading || githubLoading || computeLoading);
+  const runner = runnerStatusOf(computeTargets);
+  // Generating agents is a loop, and a loop needs a runner that is online now.
+  // Nothing else: the repositories are read by the runner, not through the
+  // GitHub integration.
+  const prereqsMet = runner === AgentRunnerStatus.Online;
+  const isLoading = shouldFetch && (agentsLoading || computeLoading);
 
   const shouldShow =
     !isLoading && needsBootstrap === true && !dismissed && isAdmin;
 
   return {
     needsBootstrap: needsBootstrap ?? false,
-    hasElectron,
-    hasGitHub,
+    runner,
     prereqsMet,
     isDismissed: dismissed,
     isLoading,
@@ -73,4 +71,24 @@ export function useAgentOnboarding(): AgentOnboardingState {
     shouldShow,
     dismiss: () => setDismissed(true),
   };
+}
+
+/** Whether a runner can take a loop now, is installed but offline, or is not installed yet. */
+export const AgentRunnerStatus = {
+  Online: "online",
+  Offline: "offline",
+  None: "none",
+} as const;
+export type AgentRunnerStatus =
+  (typeof AgentRunnerStatus)[keyof typeof AgentRunnerStatus];
+
+function runnerStatusOf(
+  targets: readonly ComputeTarget[] | undefined
+): AgentRunnerStatus {
+  if (targets?.some((target) => target.isOnline)) {
+    return AgentRunnerStatus.Online;
+  }
+  return targets && targets.length > 0
+    ? AgentRunnerStatus.Offline
+    : AgentRunnerStatus.None;
 }

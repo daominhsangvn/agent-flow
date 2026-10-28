@@ -38,17 +38,23 @@ export type ResolvedChildren = {
   actions: PersistableAction[];
 };
 
-/** Points built-in triggers and actions (connectionId null) at the workflow's endpoint, creating it once. */
+/**
+ * Points built-in triggers (no project connection) and built-in actions (no
+ * key, not automatic) at the workflow's endpoint, creating it once.
+ */
 export async function resolveBuiltInHttpChildren(
   input: BuiltInHttpInput
 ): Promise<Result<ResolvedChildren, string>> {
-  const usesEndpoint = [...input.triggers, ...input.actions].some(
-    (child) => child.connectionId === null
-  );
+  const usesEndpoint =
+    input.triggers.some((trigger) => trigger.connectionId === null) ||
+    input.actions.some(isBuiltInAction);
   if (!usesEndpoint) {
     return Result.ok({
-      triggers: input.triggers as PersistableTrigger[],
-      actions: input.actions as PersistableAction[],
+      triggers: input.triggers.map((trigger) => ({
+        ...trigger,
+        connectionId: trigger.connectionId ?? "",
+      })),
+      actions: input.actions.map(toPersistableAction(null)),
     });
   }
   const endpoint = await ensureWorkflowHttpEndpoint(input);
@@ -60,11 +66,23 @@ export async function resolveBuiltInHttpChildren(
       ...trigger,
       connectionId: trigger.connectionId ?? endpoint.value,
     })),
-    actions: input.actions.map((action) => ({
-      ...action,
-      connectionId: action.connectionId ?? endpoint.value,
-    })),
+    actions: input.actions.map(toPersistableAction(endpoint.value)),
   });
+}
+
+/** A built-in action gets the endpoint; the others keep no connection id. */
+function toPersistableAction(endpointId: string | null) {
+  return (action: ValidatedAction): PersistableAction => {
+    const { automaticConnection: _automatic, ...rest } = action;
+    return {
+      ...rest,
+      connectionId: isBuiltInAction(action) ? endpointId : null,
+    };
+  };
+}
+
+function isBuiltInAction(action: ValidatedAction): boolean {
+  return action.connectionKey === null && !action.automaticConnection;
 }
 
 /** Deletes the workflow's endpoint once no trigger or action uses it any more. */

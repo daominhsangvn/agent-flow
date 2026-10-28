@@ -10,6 +10,8 @@
  * - `AGENTFLOW_EXECUTE_REVIEW=fast` (EXECUTE): the orchestrator implements
  *   the approved plan without evaluating, critic-reviewing and finalizing it
  *   again.
+ * - `AGENTFLOW_RELEASE_NOTES=1` (EXECUTE of a workflow run): the orchestrator
+ *   writes release notes when it is done (execute-release-notes.ts).
  */
 
 import {
@@ -20,6 +22,7 @@ import {
 export const AgentPolicyEnvVar = {
   Recommendations: "AGENTFLOW_PLAN_RECOMMENDATIONS",
   Review: "AGENTFLOW_EXECUTE_REVIEW",
+  ReleaseNotes: "AGENTFLOW_RELEASE_NOTES",
 } as const;
 
 /** The variables for `policy`; none for a missing or unreadable policy. */
@@ -30,11 +33,12 @@ export function agentPolicyEnv(
   if (!parsed.success) {
     return {};
   }
-  const { recommendations, review } = parsed.data;
+  const { recommendations, review, releaseNotes } = parsed.data;
   return {
     ...(recommendations
       ? { [AgentPolicyEnvVar.Recommendations]: recommendations }
       : {}),
     ...(review ? { [AgentPolicyEnvVar.Review]: review } : {}),
+    ...(releaseNotes ? { [AgentPolicyEnvVar.ReleaseNotes]: "1" } : {}),
   };
 }

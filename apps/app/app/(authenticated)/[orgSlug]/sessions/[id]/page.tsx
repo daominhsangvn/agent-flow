@@ -1,6 +1,10 @@
 "use client";
 
-import type { SessionLinkedArtifact } from "@repo/api/src/types/agent-session";
+import type {
+  AgentSessionDetail,
+  SessionLinkedArtifact,
+} from "@repo/api/src/types/agent-session";
+import { isLiveDisplayedSessionStatus } from "@repo/api/src/types/session-status";
 import { classifySessionDetailError } from "@repo/app/agents/components/detail/agent-session-detail-states";
 import { AgentSessionDetailView } from "@repo/app/agents/components/detail/agent-session-detail-view";
 import { useAgentSessionDetail } from "@repo/app/agents/hooks/use-agent-sessions";
@@ -34,7 +38,11 @@ export default function SessionDetailPage() {
   const orgSlug = useOrgSlug();
   const params = useRouteParams();
   const sessionId = typeof params.id === "string" ? params.id : "";
-  const detailQuery = useAgentSessionDetail(sessionId);
+  // A running session keeps syncing from its computer (a runner reports every
+  // 20s), so the page follows it until it ends.
+  const detailQuery = useAgentSessionDetail(sessionId, {
+    refetchInterval: liveSessionRefetchInterval,
+  });
   const session = detailQuery.data;
   const sessionsHref = `/${orgSlug}/sessions`;
   const searchParams = useSearchParamsValue();
@@ -117,4 +125,19 @@ export default function SessionDetailPage() {
       />
     </div>
   );
+}
+
+/** How often the detail of a running session is read again. */
+const LIVE_SESSION_REFETCH_INTERVAL_MS = 10_000;
+
+/** Reads a running session again until it ends or the read fails. */
+function liveSessionRefetchInterval(query: {
+  state: { status: string; data?: AgentSessionDetail };
+}): number | false {
+  if (query.state.status === "error" || !query.state.data) {
+    return false;
+  }
+  return isLiveDisplayedSessionStatus(query.state.data.status)
+    ? LIVE_SESSION_REFETCH_INTERVAL_MS
+    : false;
 }

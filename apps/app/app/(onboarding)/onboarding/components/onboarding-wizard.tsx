@@ -14,13 +14,10 @@ import {
   type WizardState,
 } from "../lib/onboarding-constants";
 import { CreateProjectStep } from "./create-project-step";
-import { CreateTeamStep } from "./create-team-step";
 import { WizardShell } from "./wizard-shell";
 
 const DEFAULT_STATE: WizardState = {
-  currentStep: OnboardingStep.CreateTeam,
-  createdTeamId: null,
-  createdTeamName: null,
+  currentStep: OnboardingStep.CreateProject,
   createdProjectId: null,
   createdProjectName: null,
 };
@@ -49,15 +46,6 @@ export function OnboardingWizard() {
     }
   }, [currentStep]);
 
-  const handleTeamCreated = useCallback((teamId: string, teamName: string) => {
-    setState((prev) => ({
-      ...prev,
-      createdTeamId: teamId,
-      createdTeamName: teamName,
-      currentStep: OnboardingStep.CreateProject,
-    }));
-  }, []);
-
   const handleComplete = useCallback(() => {
     clearWizardState();
   }, []);
@@ -81,7 +69,6 @@ export function OnboardingWizard() {
       // own the call.
       completeWizard.mutate(
         {
-          createdTeamId: state.createdTeamId ?? undefined,
           createdProjectId: projectId,
         },
         {
@@ -92,29 +79,19 @@ export function OnboardingWizard() {
         }
       );
     },
-    [completeWizard, state.createdTeamId, handleComplete, navigation]
+    [completeWizard, handleComplete, navigation]
   );
 
   return (
     <WizardShell currentStep={currentStep} onBack={goBack}>
-      {currentStep === OnboardingStep.CreateTeam && (
-        <CreateTeamStep
-          createdTeamId={state.createdTeamId}
-          createdTeamName={state.createdTeamName}
-          onNext={handleTeamCreated}
+      {currentStep === OnboardingStep.CreateProject && (
+        <CreateProjectStep
+          completing={completeWizard.isPending}
+          createdProjectId={state.createdProjectId}
+          createdProjectName={state.createdProjectName}
+          onNext={handleProjectCreated}
         />
       )}
-
-      {currentStep === OnboardingStep.CreateProject &&
-        state.createdTeamId !== null && (
-          <CreateProjectStep
-            completing={completeWizard.isPending}
-            createdProjectId={state.createdProjectId}
-            createdProjectName={state.createdProjectName}
-            onNext={handleProjectCreated}
-            teamId={state.createdTeamId}
-          />
-        )}
     </WizardShell>
   );
 }

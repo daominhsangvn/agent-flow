@@ -15,7 +15,7 @@
  *       detectOrgConflicts returns an empty conflicts array.
  *   (4) Individual conflict detection for each of the 5 checked models:
  *       GitHubInstallation, LinearIntegration, SlackIntegration,
- *       Project, Team.
+ *       Project.
  *
  * All Prisma calls are mocked; no database connection is required.
  */
@@ -68,9 +68,6 @@ describe("detectOrgConflicts — clean org (no existing data)", () => {
     expect(p.project.count).toHaveBeenCalledWith({
       where: { organizationId: BASELINE_ORG_ID },
     });
-    expect(p.team.count).toHaveBeenCalledWith({
-      where: { organizationId: BASELINE_ORG_ID },
-    });
     expect(p.loop.findMany).toHaveBeenCalledWith({
       where: { organizationId: BASELINE_ORG_ID },
       select: { id: true, prompt: true },
@@ -96,7 +93,6 @@ describe("detectOrgConflicts — seed-owned idempotent org", () => {
       "GitHubInstallation (seed-owned)",
       "SlackIntegration (seed-owned)",
       "Project (2 rows)",
-      "Team (1 row)",
       "Artifact (4 rows)",
       "Loop (1 row)",
       "Comment (5 rows)",
@@ -187,9 +183,8 @@ describe("detectOrgConflicts — non-empty org without SEED_FORCE_OVERWRITE", ()
     expect(conflicts).toContain("GitHubInstallation (one per org)");
     expect(conflicts).toContain("LinearIntegration (one per org)");
     expect(conflicts).toContain("SlackIntegration (one per org)");
-    // Project/Team include the row count
+    // Project includes the row count
     expect(conflicts.some((c) => c.startsWith("Project ("))).toBe(true);
-    expect(conflicts.some((c) => c.startsWith("Team ("))).toBe(true);
   });
 });
 
@@ -260,16 +255,6 @@ describe("detectOrgConflicts — individual model conflict detection", () => {
     expect(conflicts).toEqual(["Project (2 rows)"]);
   });
 
-  it("detects only Team rows when they are the sole conflict", async () => {
-    const prisma = buildEmptyOrgMock();
-    const p = prisma as AnyDelegate;
-    p.team.count.mockResolvedValue(1);
-
-    const { conflicts } = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
-
-    expect(conflicts).toEqual(["Team (1 row)"]);
-  });
-
   it("conflict descriptions include the actual row count for Project", async () => {
     const prisma = buildEmptyOrgMock();
     const p = prisma as AnyDelegate;
@@ -279,16 +264,6 @@ describe("detectOrgConflicts — individual model conflict detection", () => {
 
     expect(conflicts).toContain("Project (7 rows)");
   });
-
-  it("conflict descriptions include the actual row count for Team", async () => {
-    const prisma = buildEmptyOrgMock();
-    const p = prisma as AnyDelegate;
-    p.team.count.mockResolvedValue(3);
-
-    const { conflicts } = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
-
-    expect(conflicts).toContain("Team (3 rows)");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -296,7 +271,7 @@ describe("detectOrgConflicts — individual model conflict detection", () => {
 // ---------------------------------------------------------------------------
 
 describe("detectOrgConflicts — conflict list ordering", () => {
-  it("lists conflicts in the canonical order: GitHub, Linear, Slack, Project, Team", async () => {
+  it("lists conflicts in the canonical order: GitHub, Linear, Slack, Project", async () => {
     const prisma = buildFullyConflictedOrgMock();
     const { conflicts } = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 
@@ -304,6 +279,5 @@ describe("detectOrgConflicts — conflict list ordering", () => {
     expect(conflicts[1]).toBe("LinearIntegration (one per org)");
     expect(conflicts[2]).toBe("SlackIntegration (one per org)");
     expect(conflicts[3]?.startsWith("Project (")).toBe(true);
-    expect(conflicts[4]?.startsWith("Team (")).toBe(true);
   });
 });

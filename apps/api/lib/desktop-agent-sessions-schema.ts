@@ -431,6 +431,22 @@ export const sessionPrSchema = z.object({
   status: z.string().trim().min(1).max(64),
 });
 
+const HTTP_URL_PROTOCOL_RE = /^https?$/;
+const STORED_SESSION_PR_URL_MAX_LENGTH = 2048;
+
+/**
+ * An entry of the stored `pullRequests` blob: the synced shape, plus the pull
+ * request's page when AgentFlow wrote the entry itself (a workflow's pull
+ * request action, run-session-pull-requests.ts). Desktops cannot set `url`:
+ * `sessionPrSchema` drops unknown keys from the synced payload.
+ */
+export const storedSessionPrSchema = sessionPrSchema.extend({
+  url: z
+    .url({ protocol: HTTP_URL_PROTOCOL_RE })
+    .max(STORED_SESSION_PR_URL_MAX_LENGTH)
+    .optional(),
+});
+
 export const activityBucketSchema = z.object({
   label: z.string().trim().min(1).max(80),
   cIn: z.number().finite().nonnegative(),

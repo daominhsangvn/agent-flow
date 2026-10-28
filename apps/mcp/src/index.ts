@@ -40,6 +40,11 @@ import { handleHealth } from "./health-route.js";
 import type { HttpRouteHandler } from "./http-route-types.js";
 import { SERVER_INSTRUCTIONS } from "./instructions.js";
 import {
+  defaultIntegrationToolApi,
+  extractIntegrationToken,
+  handleIntegrationMcpRequest,
+} from "./integration-session.js";
+import {
   normalizeOAuthTokenBody,
   type OAuthTokenBody,
   parseFormUrlEncoded,
@@ -1887,6 +1892,45 @@ async function connectMcpTransportOrCleanup(
   }
 }
 
+/**
+ * An instruction agent's integration tool session (`Bearer ist_…`): stateless,
+ * POST only, with only the session's tools (integration-session.ts).
+ */
+async function handleIntegrationMcp(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  token: string
+): Promise<void> {
+  if (req.method !== "POST") {
+    sendJson(
+      res,
+      405,
+      { error: "Integration sessions are stateless: use POST." },
+      { Allow: "POST" }
+    );
+    return;
+  }
+  const contentType = req.headers["content-type"] ?? "";
+  if (!contentType.includes("application/json")) {
+    sendJson(res, 415, {
+      error: "Unsupported Media Type. Expected: application/json",
+    });
+    return;
+  }
+  const parsedBody = await parseMcpJsonBody(req, res);
+  if (parsedBody === null) {
+    return;
+  }
+  await handleIntegrationMcpRequest({
+    req,
+    res,
+    token,
+    parsedBody,
+    api: defaultIntegrationToolApi(),
+    sendJson,
+  });
+}
+
 async function handleMcp(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse
@@ -1899,6 +1943,12 @@ async function handleMcp(
   if (
     handleUnauthenticatedMcpProbe(req, res, sessionId, hasAuthorizationHeader)
   ) {
+    return;
+  }
+
+  const integrationToken = extractIntegrationToken(req.headers.authorization);
+  if (integrationToken) {
+    await handleIntegrationMcp(req, res, integrationToken);
     return;
   }
 

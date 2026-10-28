@@ -1,6 +1,9 @@
 import { DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import {
+  ProcessStepRole,
+  ProcessStepType,
+  reviewGoOnLabels,
   runProcessSnapshotSchema,
   runStepStateSchema,
 } from "@repo/api/src/types/project-process";
@@ -13,7 +16,6 @@ import type {
   RunPullRequest,
   RunRepositorySnapshot,
   SourceItemRef,
-  WorkflowRunDocumentSnapshot,
   WorkflowRunSnapshot,
   WorkflowRunStepSnapshot,
 } from "@/lib/integrations/types";
@@ -36,14 +38,18 @@ import {
   listRunLoops,
   readOpenQuestions,
 } from "./run-loops";
-import { findRunReplies, type RunReplies } from "./run-process-view";
+import {
+  findRunReplies,
+  RUN_REPLY_MAX_CHARS,
+  type RunReplies,
+} from "./run-process-view";
 import { toSourceDocumentType } from "./source-document";
-import { listRunDocuments } from "./step-documents";
+import { isReleaseNotesLinkStepId, listRunDocuments } from "./step-documents";
 
 /**
  * What a pre or post action knows about the run it reports on, built when the
  * action runs (not when the event is enqueued) so it reflects the latest
- * state. Pre actions (run.triggered) run before the agent team: they see no
+ * state. Pre actions (workflow.triggered) run before the agent team: they see no
  * documents and no pull request, even when a resumed run has some from an
  * earlier cycle.
  */
@@ -113,26 +119,25 @@ export async function buildRunSnapshot(
   const stored = readRunSource(run.source);
   const source = stored?.item ?? fallbackSourceRef(run.sourceKey);
   const error = readRunError(run.error);
-  const outputs =
-    event === WorkflowRunEvent.Triggered
-      ? NO_RUN_OUTPUTS
-      : await buildRunOutputs(run, orgSlug, runUrl);
-  const { feature, plan, pullRequest } = outputs;
+  // The item is imported before the workflow.triggered actions run, so they
+  // see the run's documents too; only the process step is not theirs.
+  const { feature, plan, pullRequest } = await buildRunOutputs(
+    run,
+    orgSlug,
+    runUrl
+  );
   const mode = readAgentConfig(run.agentConfig)?.mode;
   const repositories = runRepositories(run.repository, run.branchName);
-  const pullRequests =
-    event === WorkflowRunEvent.Triggered
-      ? []
-      : runPullRequests(repositories, pullRequest);
+  const pullRequests = runPullRequests(repositories, pullRequest);
   const step =
     event === WorkflowRunEvent.Triggered ? null : runStepSnapshot(run);
   const replies =
     event === WorkflowRunEvent.Triggered || !run.process
       ? NO_REPLIES
       : findRunReplies(run.process, await listRunLoops(run.id));
-  const documents =
+  const { documents, releaseNotes } =
     event === WorkflowRunEvent.Triggered || !run.process
-      ? []
+      ? NO_DOCUMENTS
       : await buildDocumentSnapshots(run, orgSlug, runUrl);
 
   return {
@@ -164,6 +169,7 @@ export async function buildRunSnapshot(
     reply: replies.reply,
     stepReplies: replies.byStep,
     documents,
+    releaseNotes,
     summaryMarkdown: buildSummaryMarkdown({
       event,
       key: source.key,
@@ -191,10 +197,16 @@ export function buildSummaryMarkdown(input: SummaryInput): string {
       return triggeredSummary(key, input);
     case WorkflowRunEvent.Started:
       return `🤖 AgentFlow picked up ${key} and started planning. Follow the run: ${input.runUrl}`;
+    case WorkflowRunEvent.PlanStarted:
+      return `🧭 AgentFlow is writing the implementation plan for ${key}. Follow the run: ${input.runUrl}`;
     case WorkflowRunEvent.PlanReady:
       return planReadySummary(key, input);
     case WorkflowRunEvent.NeedsInput:
       return needsInputSummary(key, input);
+    case WorkflowRunEvent.ExecuteStarted:
+      return executeStartedSummary(key, input);
+    case WorkflowRunEvent.ExecuteCompleted:
+      return executeCompletedSummary(key, input);
     case WorkflowRunEvent.Succeeded:
       return succeededSummary(key, input);
     default:
@@ -236,6 +248,8 @@ export function snapshotTemplateVariables(
     "step.name": snapshot.step?.name ?? "",
     "step.questions": snapshot.step?.questions.join("\n") ?? "",
     reply: snapshot.reply ?? "",
+    releaseNotes: snapshot.releaseNotes?.text ?? "",
+    "releaseNotes.url": snapshot.releaseNotes?.url ?? "",
     ...Object.fromEntries(
       Object.entries(snapshot.stepReplies).map(([stepId, reply]) => [
         `steps.${stepId}.reply`,
@@ -262,8 +276,15 @@ function planReadySummary(key: string, input: SummaryInput): string {
 }
 
 function needsInputSummary(key: string, input: SummaryInput): string {
+  if (input.step?.review) {
+    return reviewSummary(key, input.step.name, input.step.review, input);
+  }
   if (input.step?.awaitingApproval) {
-    return `🛂 The "${input.step.name}" step for ${key} waits for an approval in AgentFlow: ${input.runUrl}`;
+    const labels = input.step.approveLabels ?? [];
+    const waits = `🛂 The "${input.step.name}" step for ${key} waits for an approval`;
+    return labels.length > 0
+      ? `${waits}: add the label ${quoteLabels(labels)} to the ticket, or approve it in AgentFlow: ${input.runUrl}`
+      : `${waits} in AgentFlow: ${input.runUrl}`;
   }
   if (input.step && input.step.questions.length > 0) {
     return [
@@ -281,6 +302,18 @@ function needsInputSummary(key: string, input: SummaryInput): string {
   ]
     .filter((part) => part !== "")
     .join("\n\n");
+}
+
+function executeStartedSummary(key: string, input: SummaryInput): string {
+  const plan = input.planUrl ? ` from the plan ${input.planUrl}` : "";
+  return `🛠️ AgentFlow started implementing ${key}${plan}. Follow the run: ${input.runUrl}`;
+}
+
+function executeCompletedSummary(key: string, input: SummaryInput): string {
+  const branch = input.pullRequest?.branch
+    ? ` and pushed branch ${input.pullRequest.branch}`
+    : "";
+  return `🛠️ AgentFlow finished implementing ${key}${branch}. Follow the run: ${input.runUrl}`;
 }
 
 function succeededSummary(key: string, input: SummaryInput): string {
@@ -317,23 +350,35 @@ function runStepSnapshot(run: SnapshotRunRow): WorkflowRunStepSnapshot | null {
   const state = parsedState.success ? parsedState.data : null;
   const waiting = state?.waiting?.stepId === step.id ? state.waiting : null;
   const approval = state?.approval?.stepId === step.id ? state.approval : null;
+  const review = state?.review?.stepId === step.id ? state.review : null;
   return {
     id: step.id,
     name: step.name,
     questions: waiting?.questions.map((question) => question.question) ?? [],
     awaitingApproval: approval !== null && approval.decision === null,
+    approveLabels:
+      step.type === ProcessStepType.Approval
+        ? (step.approve?.labels ?? [])
+        : [],
+    review:
+      review?.requestedAt &&
+      !review.decision &&
+      step.type === ProcessStepType.Agent &&
+      step.review
+        ? {
+            round: review.round,
+            planStep: step.role === ProcessStepRole.Plan,
+            goOnLabels: reviewGoOnLabels(step.review),
+            feedbackLabels: step.review.feedback.labels,
+            mention: step.review.feedback.mention,
+          }
+        : null,
   };
 }
 
 type RunOutputs = Pick<WorkflowRunSnapshot, "feature" | "plan" | "pullRequest">;
 
 const NO_REPLIES: RunReplies = { reply: null, byStep: {} };
-
-const NO_RUN_OUTPUTS: RunOutputs = {
-  feature: null,
-  plan: null,
-  pullRequest: null,
-};
 
 function loadSnapshotRun(runId: string) {
   return withDb((db) =>
@@ -396,13 +441,14 @@ async function buildDocumentSnapshots(
   run: SnapshotRunRow,
   orgSlug: string,
   runUrl: string
-): Promise<WorkflowRunDocumentSnapshot[]> {
-  const documents = await listRunDocuments({
+): Promise<RunDocumentSnapshots> {
+  const published = await listRunDocuments({
     id: run.id,
     organizationId: run.organizationId,
     featureDocumentId: run.featureDocument?.id ?? null,
   });
-  return documents.map((document) => ({
+  const snapshots = published.map((document) => ({
+    id: document.id,
     stepId: document.stepId,
     type: document.type,
     title: document.title,
@@ -411,6 +457,16 @@ async function buildDocumentSnapshots(
         ? documentPageUrl(orgSlug, document.type, document.slug)
         : null) ?? runUrl,
   }));
+  const notes = snapshots
+    .filter((document) => isReleaseNotesLinkStepId(document.stepId))
+    .at(-1);
+  const documents = snapshots
+    .filter((document) => !isReleaseNotesLinkStepId(document.stepId))
+    .map(({ id: _id, ...document }) => document);
+  return {
+    documents,
+    releaseNotes: notes ? await releaseNotesSnapshot(notes) : null,
+  };
 }
 
 function buildPlanExcerpt(content: string | null): string | null {
@@ -517,4 +573,64 @@ function runPullRequests(
       repository: repositories[0]?.fullName ?? "",
     },
   ];
+}
+
+type RunDocumentSnapshots = Pick<
+  WorkflowRunSnapshot,
+  "documents" | "releaseNotes"
+>;
+
+const NO_DOCUMENTS: RunDocumentSnapshots = {
+  documents: [],
+  releaseNotes: null,
+};
+
+/** The latest version of the release notes document, cut like replies. */
+async function releaseNotesSnapshot(document: {
+  id: string;
+  url: string;
+}): Promise<WorkflowRunSnapshot["releaseNotes"]> {
+  const latest = await documentVersionService.getLatest(document.id);
+  const text = latest?.content?.trim() ?? "";
+  return text
+    ? { text: truncateText(text, RUN_REPLY_MAX_CHARS), url: document.url }
+    : null;
+}
+
+/** input.needed of a step under review: where to look and how to decide. */
+function reviewSummary(
+  key: string,
+  stepName: string,
+  review: NonNullable<WorkflowRunStepSnapshot["review"]>,
+  input: SummaryInput
+): string {
+  const what = review.planStep
+    ? `The plan for ${key} is ready for review`
+    : `The "${stepName}" step for ${key} is ready for review`;
+  const ways: string[] = [];
+  if (review.goOnLabels.length > 0) {
+    ways.push(
+      `${review.planStep ? "Approve it" : "Finish the review"} by adding the label ${quoteLabels(review.goOnLabels)}.`
+    );
+  }
+  if (review.feedbackLabels.length > 0 || review.mention) {
+    const how = [
+      review.mention
+        ? "comment with the changes you want and mention the bot"
+        : "",
+      review.feedbackLabels.length > 0
+        ? `add the label ${quoteLabels(review.feedbackLabels)}`
+        : "",
+    ].filter((part) => part !== "");
+    ways.push(`To ask for changes, ${how.join(", or ")}.`);
+  }
+  return [
+    `🔎 ${what} (round ${review.round}): ${input.planUrl && review.planStep ? input.planUrl : input.runUrl}`,
+    ...ways,
+    `Or decide in AgentFlow: ${input.runUrl}`,
+  ].join("\n\n");
+}
+
+function quoteLabels(labels: readonly string[]): string {
+  return labels.map((label) => `"${label}"`).join(" or ");
 }

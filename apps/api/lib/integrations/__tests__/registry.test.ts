@@ -7,10 +7,12 @@ import {
 import { WorkflowRunEvent } from "@repo/api/src/types/workflow";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { LocalGitActionType } from "@/lib/integrations/providers/local-git/constants";
 import {
   findActionDefinition,
   findTriggerDefinition,
   getIntegrationProvider,
+  isRepositoryScopedActionType,
   listIntegrationProviders,
   toProviderSummary,
 } from "@/lib/integrations/registry";
@@ -61,6 +63,15 @@ describe("integration provider registry", () => {
 
     expect(new Set(triggerKeys).size).toBe(triggerKeys.length);
     expect(new Set(actionKeys).size).toBe(actionKeys.length);
+  });
+
+  it("tells a repository-scoped action type from any other by the type alone", () => {
+    expect(
+      isRepositoryScopedActionType(LocalGitActionType.CreatePullRequest)
+    ).toBe(true);
+    expect(
+      isRepositoryScopedActionType("not_a_provider.create_pull_request")
+    ).toBe(false);
   });
 
   describe.each(providerCases)("%s", (_key, provider) => {
@@ -164,6 +175,9 @@ describe("integration provider registry", () => {
       for (const action of provider.actions) {
         expect(findActionDefinition(provider.key, action.key)).toBe(action);
         expect(findActionDefinition("not_a_provider", action.key)).toBeNull();
+        expect(isRepositoryScopedActionType(action.key)).toBe(
+          action.repositoryScoped ?? false
+        );
       }
 
       const summary = toProviderSummary(provider);

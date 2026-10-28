@@ -1,33 +1,23 @@
-import type { TeamRepoWithTeamId } from "@repo/app/teams/hooks/use-team-repositories-union";
+import { IntegrationProviderKey } from "@repo/api/src/types/integration";
+import type { JobRepoPoolEntry } from "@repo/app/loops/hooks/use-resolved-job-repos";
 import { describe, expect, it } from "vitest";
 import { buildSelection, computeIncomplete } from "../selection";
 
-function makeTeamRepo(id: string, fullName: string): TeamRepoWithTeamId {
-  const [owner = "", name = ""] = fullName.split("/");
+function makeRepo(id: string, fullName: string): JobRepoPoolEntry {
   return {
-    id: `team-${id}`,
-    teamId: "team-1",
-    installationRepositoryId: id,
-    isDefaultSelected: false,
+    id,
+    fullName,
+    provider: IntegrationProviderKey.GitHub,
     isPrimary: false,
-    createdAt: new Date(0),
-    updatedAt: new Date(0),
-    repository: {
-      id,
-      installationId: "install-1",
-      githubRepoId: id,
-      name,
-      owner,
-      fullName,
-      private: false,
-    },
+    defaultBranch: null,
+    githubRepositoryId: id,
   };
 }
 
 describe("computeIncomplete", () => {
   const pool = [
-    makeTeamRepo("repo-a", "org/repo-a"),
-    makeTeamRepo("repo-b", "org/repo-b"),
+    makeRepo("repo-a", "org/repo-a"),
+    makeRepo("repo-b", "org/repo-b"),
   ];
   const branchByRepoId: Record<string, string> = {
     "repo-a": "main",
@@ -114,9 +104,9 @@ describe("computeIncomplete", () => {
 
 describe("buildSelection", () => {
   const pool = [
-    makeTeamRepo("repo-a", "org/repo-a"),
-    makeTeamRepo("repo-b", "org/repo-b"),
-    makeTeamRepo("repo-c", "org/repo-c"),
+    makeRepo("repo-a", "org/repo-a"),
+    makeRepo("repo-b", "org/repo-b"),
+    makeRepo("repo-c", "org/repo-c"),
   ];
   const branchByRepoId: Record<string, string> = {
     "repo-a": "main",

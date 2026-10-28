@@ -30,8 +30,8 @@ import { ApiError } from "../api/api-error";
  * 403 meant one forbidden sub-resource replaced the entire workspace with "Your
  * session expired" — a claim that was false, whose **Sign in** button destroyed
  * a healthy session, and whose **Retry** could not clear it. That is what
- * `GET /teams/:id/repositories` did to every org member who opened the
- * create-document modal on a team they were not on.
+ * a sub-resource read that 403'd did to every org member who opened the
+ * create-document modal.
  *
  * But status alone cannot carry the distinction, because `withAuth` also answers
  * 403 from `resolveOrgHeader` — the request named an organization this caller is

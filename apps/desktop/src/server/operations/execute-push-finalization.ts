@@ -16,6 +16,9 @@ const execFileAsync = promisify(execFile);
 const GIT_LOCAL_TIMEOUT_MS = 30_000;
 const GIT_PUSH_TIMEOUT_MS = 120_000;
 const HEADING_RE = /^#{1,3}\s+(.+?)\s*#*\s*$/m;
+// "Implementation plan — RC-1: Make it work" names the document, not the change.
+const DOCUMENT_KIND_PREFIX_RE =
+  /^(?:implementation plan|plan|prd|product requirements(?: document)?)\s*[—–:-]\s+(?=\S)/i;
 const DEFAULT_SUBJECT = "Changes from AgentFlow";
 const SUBJECT_MAX_LENGTH = 100;
 const FALLBACK_COMMITTER = {
@@ -168,7 +171,8 @@ async function gitOrNull(
 function firstHeading(filePath: string): string | null {
   try {
     const match = HEADING_RE.exec(readFileSync(filePath, "utf8"));
-    return match?.[1]?.trim() || null;
+    const heading = match?.[1]?.trim();
+    return heading ? heading.replace(DOCUMENT_KIND_PREFIX_RE, "") : null;
   } catch {
     return null;
   }

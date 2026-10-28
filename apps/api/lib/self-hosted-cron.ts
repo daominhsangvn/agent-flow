@@ -43,6 +43,8 @@ export const WORKFLOW_TICK_MIN_SECONDS = 5;
 export const TIMEOUT_LOOPS_INTERVAL_MS = 5 * 60_000;
 /** Hourly, as the hosted cron schedule runs the stale-session reaper. */
 export const STALE_SESSIONS_INTERVAL_MS = 60 * 60_000;
+/** Daily: auto runners re-read AGENTFLOW.md from the project's toolkit. */
+export const RUNNER_CAPABILITIES_INTERVAL_MS = 24 * 60 * 60_000;
 
 const LOG_PREFIX = "[self-hosted-cron]";
 
@@ -123,7 +125,8 @@ export function startSelfHostedCronRunner(
 /**
  * Jobs and intervals: workflows every WORKFLOW_TICK_SECONDS, loop reaper every
  * 5 min, and the stale-session reaper hourly (agent sessions whose machine
- * stopped reporting before it sent their end).
+ * stopped reporting before it sent their end), and the runner capabilities
+ * refresh daily (AGENTFLOW.md read from the toolkit).
  */
 export function resolveSelfHostedCronJobs(
   env: SelfHostedCronEnv
@@ -134,6 +137,10 @@ export function resolveSelfHostedCronJobs(
     {
       path: "/cron/reconcile-stale-sessions",
       intervalMs: STALE_SESSIONS_INTERVAL_MS,
+    },
+    {
+      path: "/cron/refresh-runner-capabilities",
+      intervalMs: RUNNER_CAPABILITIES_INTERVAL_MS,
     },
   ];
 }

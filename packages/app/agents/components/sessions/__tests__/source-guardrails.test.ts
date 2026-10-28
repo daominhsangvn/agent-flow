@@ -78,13 +78,12 @@ const FORBIDDEN_PACKAGE_ROUTE_RE =
 const MACHINE_SPECIFIC_ABSOLUTE_PATH_RE =
   /["'`]\/(?:Users|home)\/[^"'`]+\/(?:source|Source|repos?|workspace|code)\//;
 const PATH_SEPARATOR_RE = /[\\/]/;
-// Project and team metadata are owned by their own slices; the analytics view
-// consumes them through those slices' hooks rather than re-deriving either.
+// Project metadata is owned by its own slice; the analytics view consumes it
+// through that slice's hook rather than re-deriving it.
 // The durable contract is the import edge itself, so it is asserted on the
 // parsed AST (FEA-4112) — an explanatory comment beside the import is prose a
 // guard cannot depend on.
 const PROJECTS_HOOK_MODULE = "../../../projects/hooks/use-projects";
-const TEAMS_HOOK_MODULE = "../../../teams/hooks/use-teams";
 const TYPESCRIPT_SOURCE_RE = /\.(ts|tsx)$/;
 const DETAIL_OWNED_ANALYTICS_MODULES = new Set([
   "agent-tree-utils.ts",
@@ -141,7 +140,6 @@ describe("shared sessions list source guardrails", () => {
     expect(namesImportedFrom(imports, PROJECTS_HOOK_MODULE)).toContain(
       "useProjects"
     );
-    expect(namesImportedFrom(imports, TEAMS_HOOK_MODULE)).toContain("useTeams");
   });
 
   it("does not leave an app-local synced sessions table re-export shim", () => {

@@ -53,6 +53,7 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Run identification
 RUN_ID=""
 START_SHA=""
+START_SHAS=""
 SELF_LEARNING=false
 LAST_CLAUDE_COMMAND=""
 LAST_CLAUDE_SESSION_ID=""
@@ -213,6 +214,35 @@ classify_plan_artifact() {
     return
   fi
   printf 'present'
+}
+
+# True when an agent itself emitted the completion promise in an iteration's
+# stream-json output: the text of an assistant message (the orchestrator's or a
+# subagent's, anywhere in the stream) or a result record.
+#
+# Everything else quotes the promise as an instruction and never counts: the
+# orchestrator reads its prompt, which names the token, at the start of every
+# iteration, and Stop-hook messages repeat it. Matching those made every
+# iteration that exited 0 look COMPLETE, so one that stopped early (a background
+# plan-draft-writer cut off by Claude Code) was judged finished instead of
+# continuing in the next iteration. Lines that are not JSON are skipped.
+#
+# Args: $1 = stream file, $2 = promise word (e.g. COMPLETE)
+stream_has_completion_promise() {
+  local output_file="$1"
+  local promise="$2"
+  local agent_text
+  agent_text=$(jq -rR '
+    fromjson?
+    | if .type == "assistant" then
+        (.message.content
+          | if type == "string" then .
+            elif type == "array" then (.[] | select(.type? == "text") | .text)
+            else empty end)
+      elif .type == "result" then (.result // empty | strings)
+      else empty end
+  ' "$output_file" 2>/dev/null || true)
+  grep -qF "<promise>$promise</promise>" <<<"$agent_text"
 }
 
 # Detect a spurious COMPLETE: the orchestrator's Phase 7 contract forbids
@@ -693,6 +723,19 @@ capture_start_sha() {
     if [[ -n "$START_SHA" ]]; then
       log_progress "Start SHA: $START_SHA"
     fi
+  fi
+}
+
+# Capture the --add-dir repositories' SHAs at start: the baselines of a
+# multi-repo loop's other repositories, and the only baselines of a workspace
+# loop, whose work directory is in none of its repositories.
+capture_repo_start_shas() {
+  local workdir="$1"
+
+  START_SHAS=$(bash "$SCRIPTS_DIR/repo-baselines.sh" capture --exclude "$workdir" \
+    ${ADD_DIRS[@]+"${ADD_DIRS[@]}"} 2>/dev/null || true)
+  if [[ -n "$START_SHAS" ]]; then
+    log_progress "Repository start SHAs: $START_SHAS"
   fi
 }
 
@@ -1608,12 +1651,14 @@ EOF
   CONFIG_FILE="$WORKDIR/$AGENTFLOW_STATE_DIR/config.env"
   TMP_FILE="${CONFIG_FILE}.tmp.$$"
   if [[ -f "$CONFIG_FILE" ]]; then
-    sed -e '/^AGENTFLOW_SELF_LEARNING=/d' -e '/^AGENTFLOW_START_SHA=/d' "$CONFIG_FILE" > "$TMP_FILE"
+    sed -e '/^AGENTFLOW_SELF_LEARNING=/d' -e '/^AGENTFLOW_START_SHA=/d' \
+      -e '/^AGENTFLOW_START_SHAS=/d' "$CONFIG_FILE" > "$TMP_FILE"
   else
     : > "$TMP_FILE"
   fi
   echo "AGENTFLOW_SELF_LEARNING=${SELF_LEARNING:-false}" >> "$TMP_FILE"
   echo "AGENTFLOW_START_SHA=${START_SHA}" >> "$TMP_FILE"
+  echo "AGENTFLOW_START_SHAS=\"${START_SHAS:-}\"" >> "$TMP_FILE"
   mv "$TMP_FILE" "$CONFIG_FILE"
 
   echo -e "${GREEN}Created new AgentFlow loop state${NC}"
@@ -1661,6 +1706,7 @@ main() {
 
     # Capture start SHA for citation verification
     capture_start_sha "$WORKDIR"
+    capture_repo_start_shas "$WORKDIR"
 
     # Bootstrap learnings directory
     bootstrap_learnings "$WORKDIR"
@@ -1969,11 +2015,12 @@ main() {
       # just the final `type==result` record. It was observed that the orchestrator may
       # emit the promise in an intermediate assistant/subagent message and then continue
       # producing output (tool_use, wrap-up text), which overwrite
-      # $result and cause the completion signal to be missed. $output_file is
-      # a per-iteration mktemp, so this cannot match a stale promise from a
-      # prior iteration.
+      # $result and cause the completion signal to be missed. Only the agents'
+      # own text counts (stream_has_completion_promise): tool results and hook
+      # messages quote the token. $output_file is a per-iteration mktemp, so
+      # this cannot match a stale promise from a prior iteration.
       local promise_found=0
-      if grep -qF "<promise>$completion_promise</promise>" "$output_file"; then
+      if stream_has_completion_promise "$output_file" "$completion_promise"; then
         promise_found=1
       fi
 

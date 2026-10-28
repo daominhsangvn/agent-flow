@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { execFile, execFileSync, execSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import {
   closeSync,
@@ -98,6 +98,11 @@ import {
   getClaudeCodeShellEnv,
 } from "../otel/claude-code-env.js";
 import { validateOutboundUrlForSurface } from "../outbound-url-policy.js";
+import {
+  killProcessTree,
+  scriptLaunch,
+  toShellPath,
+} from "../platform-shell.js";
 import { readJsonFileSync } from "../read-json-file-sync.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
 import {
@@ -108,8 +113,10 @@ import {
   resolveBinaryFromLoginShellSync,
 } from "../shell-path.js";
 import { agentPolicyEnv } from "./agent-policy-env.js";
+import { startApiErrorWatchdog } from "./api-error-watchdog.js";
 import { pluginDirArgs } from "./bundled-plugins.js";
 import { withMcpTools } from "./chat-tools.js";
+import { resolveLoopHarnessBinary } from "./claude-code-version-pin.js";
 import {
   CommandPackLaunchMode,
   createAgentFlowWebCommandPackFactory,
@@ -121,6 +128,7 @@ import {
   LEGACY_CLAUDE_RUN_LOOP_COMMANDS,
 } from "./command-pack-loop-prompt.js";
 import { commitAndPushLoopBranch } from "./execute-push-finalization.js";
+import { readReleaseNotes } from "./execute-release-notes.js";
 import {
   findWorktreeForBranch as findWorktreeForBranchImpl,
   resolveRepoFullName,
@@ -136,6 +144,7 @@ import {
   buildLegacyCompletionResult,
   buildLegacyTerminalEvent,
 } from "./legacy-completion-result.js";
+import { LOOP_CLAUDE_ENV } from "./loop-claude-env.js";
 import { buildLoopGitEnv, revokeLoopGitAccess } from "./loop-git-access.js";
 import {
   postLoopEvent,
@@ -155,6 +164,7 @@ import {
   isPushingStep,
   prepareLoopStep,
   readStepOutputs,
+  recordStepSessionId,
 } from "./loop-step.js";
 import {
   closeLoopWorkspace,
@@ -173,6 +183,12 @@ import {
   type NativeLoopObservabilitySession,
 } from "./observability/native-loop-observability.js";
 import { startOutputTailer } from "./output-tailer.js";
+import {
+  getPersonalRunnerProject,
+  isPersonalProjectDir,
+  personalLoopRejection,
+  preparePersonalRunWorkDir,
+} from "./personal-runner.js";
 import { openPlanWorkDir, parentResumeArgs } from "./plan-state-sync.js";
 import { findPluginScript } from "./plugin-cache.js";
 import { addRepo } from "./repos-config-utils.js";
@@ -443,6 +459,7 @@ export const LoopOutputArtifactKey = {
   FeatureJudges: "featureJudges",
   BootstrapResult: "bootstrapResult",
   Step: "step",
+  ReleaseNotes: "releaseNotes",
 } as const;
 export type LoopOutputArtifactKey =
   (typeof LoopOutputArtifactKey)[keyof typeof LoopOutputArtifactKey];
@@ -528,8 +545,8 @@ function isValidJson(value: string): boolean {
  * Resolve the primary artifact of a given type from a list of artifacts.
  *
  * Selection priority:
- * 1. When `primaryArtifactId` is a non-empty string, find by id — preferred
- *    because it unambiguously identifies the artifact the caller cares about.
+ * 1. When `primaryArtifactId` is a non-empty string, find that id among the
+ *    artifacts of `type` (EVALUATE_PLAN's primary is the plan, not its PRD).
  * 2. Fall through to `findLast` by type — the backend's context-pack assembler
  *    (symphony-alpha apps/api/lib/loops/loop-context-pack.ts) appends the
  *    primary artifact last, so findLast returns the primary even when
@@ -551,20 +568,16 @@ export function resolvePrimaryArtifact(
 /**
  * Non-throwing variant of resolvePrimaryArtifact.
  * Returns undefined instead of throwing when no matching artifact is found.
- * Same selection priority: id match > findLast by type.
+ * Same selection priority: id match of that type > last of that type.
  */
 function findPrimaryArtifact(
   artifacts: LoopArtifact[],
   type: string,
   primaryArtifactId?: string
 ): LoopArtifact | undefined {
-  if (primaryArtifactId) {
-    const byId = artifacts.find((a) => a.id === primaryArtifactId);
-    if (byId !== undefined) {
-      return byId;
-    }
-  }
-  return artifacts.findLast((a) => a.type === type);
+  const ofType = artifacts.filter((a) => a.type === type);
+  const byId = ofType.find((a) => a.id === primaryArtifactId);
+  return (primaryArtifactId ? byId : undefined) ?? ofType.at(-1);
 }
 
 /**
@@ -1771,7 +1784,7 @@ export function additionalRepoDisambiguator(repoPath: string): string {
  * Slugify a loop ID for worktree/branch naming.
  * Matches ECS harness convention: lowercase, non-alnum to dashes, max 50 chars.
  */
-function slugifyLoopId(loopId: string): string {
+export function slugifyLoopId(loopId: string): string {
   return loopId
     .toLowerCase()
     .replaceAll(/[^a-z0-9-]/g, "-")
@@ -2047,6 +2060,16 @@ async function removeWorktreeImpl(
   expandedRepoPath: string,
   loopId?: string
 ): Promise<void> {
+  if (isPersonalProjectDir(worktreeDir)) {
+    // A personal runner's project folder is the person's own checkout.
+    if (loopId) {
+      loopLog(
+        loopId,
+        `Kept the project folder ${worktreeDir} (not a worktree)`
+      );
+    }
+    return;
+  }
   // ISS-6132: previously two `execSync` git calls on the Electron main thread.
   await removeWorktree({
     gitBin: await getResolvedGitPathAsync(),
@@ -2066,8 +2089,9 @@ async function removeWorktreeImpl(
 function getCurrentBranchImpl(worktreeDir: string): string | null {
   try {
     return (
-      execSync(
-        `${shellEscape(getResolvedGitPath())} rev-parse --abbrev-ref HEAD`,
+      execFileSync(
+        getResolvedGitPath(),
+        ["rev-parse", "--abbrev-ref", "HEAD"],
         {
           cwd: worktreeDir,
           encoding: "utf-8",
@@ -2786,6 +2810,7 @@ function readExecuteOutputs(claudeWorkDir: string): LoopOutputArtifacts {
     [LoopOutputArtifactKey.Plan]: plan ?? undefined,
     [LoopOutputArtifactKey.ExecutionResult]: executionResult ?? undefined,
     [LoopOutputArtifactKey.CodeJudges]: codeJudges ?? undefined,
+    [LoopOutputArtifactKey.ReleaseNotes]: readReleaseNotes(claudeWorkDir),
   };
 }
 
@@ -3362,6 +3387,7 @@ async function attemptLlmCommit(
     child = spawn(claudeBinary, spawnArgs, {
       cwd: worktreeDir,
       detached: true,
+      windowsHide: true,
       stdio: "pipe",
       env: spawnEnv,
     });
@@ -3434,7 +3460,7 @@ async function attemptLlmCommit(
         loopError(loopId, "LLM commit timed out after 30m — sending SIGTERM");
         onTimeout?.();
         try {
-          process.kill(-pid, "SIGTERM");
+          killProcessTree(pid, "SIGTERM");
         } catch (killErr) {
           loopError(loopId, "Failed to kill LLM commit process:", killErr);
         }
@@ -3442,7 +3468,7 @@ async function attemptLlmCommit(
         setTimeout(() => {
           try {
             process.kill(pid, 0); // check alive
-            process.kill(-pid, "SIGKILL");
+            killProcessTree(pid, "SIGKILL");
           } catch {
             // Already gone
           }
@@ -3788,7 +3814,7 @@ function persistExecutionResultArtifact(
 function getHeadCommitShaFromWorktree(worktreeDir: string): string | null {
   try {
     return (
-      execSync(`${shellEscape(getResolvedGitPath())} rev-parse HEAD`, {
+      execFileSync(getResolvedGitPath(), ["rev-parse", "HEAD"], {
         cwd: worktreeDir,
         encoding: "utf-8",
         stdio: "pipe",
@@ -4619,8 +4645,9 @@ function executeGitOperations(
   // by the gateway itself (work dir, artifacts) and must never be committed.
   const gitBin = getResolvedGitPath();
   try {
-    const status = execSync(
-      `${shellEscape(gitBin)} status --porcelain -- . ':!.claude' ':!.agentflow-ai'`,
+    const status = execFileSync(
+      gitBin,
+      ["status", "--porcelain", "--", ".", ":!.claude", ":!.agentflow-ai"],
       {
         cwd: worktreeDir,
         encoding: "utf-8",
@@ -4639,7 +4666,7 @@ function executeGitOperations(
 
   // Stage, commit, push
   try {
-    execSync(`${shellEscape(gitBin)} add -- . ':!.claude' ':!.agentflow-ai'`, {
+    execFileSync(gitBin, ["add", "--", ".", ":!.claude", ":!.agentflow-ai"], {
       cwd: worktreeDir,
       stdio: "pipe",
       env,
@@ -4648,15 +4675,16 @@ function executeGitOperations(
 
     const commitPrefix = artifactSlug ? `${artifactSlug}: ` : "";
     const fallbackTitle = `${commitPrefix}Automated changes from loop ${shortId}`;
-    execSync(`${shellEscape(gitBin)} commit -m ${shellEscape(fallbackTitle)}`, {
+    execFileSync(gitBin, ["commit", "-m", fallbackTitle], {
       cwd: worktreeDir,
       stdio: "pipe",
       env,
       timeout: 30_000,
     });
 
-    const branchName = execSync(
-      `${shellEscape(gitBin)} rev-parse --abbrev-ref HEAD`,
+    const branchName = execFileSync(
+      gitBin,
+      ["rev-parse", "--abbrev-ref", "HEAD"],
       {
         cwd: worktreeDir,
         encoding: "utf-8",
@@ -4665,17 +4693,14 @@ function executeGitOperations(
       }
     ).trim();
 
-    execSync(
-      `${shellEscape(gitBin)} push -u origin ${shellEscape(branchName)}`,
-      {
-        cwd: worktreeDir,
-        stdio: "pipe",
-        env,
-        timeout: 60_000,
-      }
-    );
+    execFileSync(gitBin, ["push", "-u", "origin", branchName], {
+      cwd: worktreeDir,
+      stdio: "pipe",
+      env,
+      timeout: 60_000,
+    });
 
-    const commitSha = execSync(`${shellEscape(gitBin)} rev-parse HEAD`, {
+    const commitSha = execFileSync(gitBin, ["rev-parse", "HEAD"], {
       cwd: worktreeDir,
       encoding: "utf-8",
       stdio: "pipe",
@@ -4730,12 +4755,13 @@ function executeGitOperations(
     writeFileSync(bodyFile, prBody);
 
     // Check for existing PR before creating (handles retries gracefully)
-    const ghBin = shellEscape(getResolvedGhPath());
+    const ghBin = getResolvedGhPath();
     let prUrl: string;
     let prNumber: number;
     try {
-      const existingPr = execSync(
-        `${ghBin} pr view --json url,number ${shellEscape(branchName)}`,
+      const existingPr = execFileSync(
+        ghBin,
+        ["pr", "view", "--json", "url,number", branchName],
         {
           cwd: worktreeDir,
           encoding: "utf-8",
@@ -4760,8 +4786,18 @@ function executeGitOperations(
       // No existing PR — create one using --body-file to avoid shell escaping.
       // Create without --label first so the PR still succeeds on repos where the
       // 'symphony' label doesn't exist yet, then attach the label best-effort.
-      const prOutput = execSync(
-        `${ghBin} pr create --title ${shellEscape(fallbackTitle)} --body-file ${shellEscape(bodyFile)} --base ${shellEscape(baseBranch)}`,
+      const prOutput = execFileSync(
+        ghBin,
+        [
+          "pr",
+          "create",
+          "--title",
+          fallbackTitle,
+          "--body-file",
+          bodyFile,
+          "--base",
+          baseBranch,
+        ],
         {
           cwd: worktreeDir,
           encoding: "utf-8",
@@ -4777,12 +4813,16 @@ function executeGitOperations(
       // Best-effort label attachment — non-fatal if the label doesn't exist
       if (prNumber) {
         try {
-          execSync(`${ghBin} pr edit ${prNumber} --add-label symphony`, {
-            cwd: worktreeDir,
-            stdio: "pipe",
-            env,
-            timeout: 15_000,
-          });
+          execFileSync(
+            ghBin,
+            ["pr", "edit", String(prNumber), "--add-label", "symphony"],
+            {
+              cwd: worktreeDir,
+              stdio: "pipe",
+              env,
+              timeout: 15_000,
+            }
+          );
         } catch {
           // Label may not exist on this repo — not critical
         }
@@ -4792,8 +4832,9 @@ function executeGitOperations(
     // Ensure the metadata footer is present on the PR body.  For existing PRs,
     // fetch the current body and append the metadata instead of replacing it.
     try {
-      const currentBody = execSync(
-        `${ghBin} pr view ${prNumber} --json body --jq .body`,
+      const currentBody = execFileSync(
+        ghBin,
+        ["pr", "view", String(prNumber), "--json", "body", "--jq", ".body"],
         {
           cwd: worktreeDir,
           encoding: "utf-8",
@@ -4809,8 +4850,9 @@ function executeGitOperations(
           ? `${currentBody}\n\n${metadataFooter}`
           : prBody;
         writeFileSync(bodyFile, updatedBody);
-        execSync(
-          `${ghBin} pr edit ${prNumber} --body-file ${shellEscape(bodyFile)}`,
+        execFileSync(
+          ghBin,
+          ["pr", "edit", String(prNumber), "--body-file", bodyFile],
           { cwd: worktreeDir, stdio: "pipe", env, timeout: 15_000 }
         );
       }
@@ -4969,6 +5011,10 @@ export async function handleProcessCompletion(
   if (exitCode !== 0) {
     // Collect diagnostics (log tail + stderr + token usage) for the failure event
     const baseDiagnostics = collectFailureDiagnostics(claudeWorkDir);
+    if (command === LoopCommand.Step) {
+      // A failed step can be retried in its own session (--resume).
+      recordStepSessionId(claudeWorkDir);
+    }
     const sessionFileForTelemetry = path.join(claudeWorkDir, "session-id.txt");
     const rawSessionId = readTextFile(sessionFileForTelemetry);
     const failureSessionId = rawSessionId ? rawSessionId.trim() : undefined;
@@ -6470,6 +6516,30 @@ async function handleLoopRequest(
     return;
   }
 
+  // A personal runner runs only its project's process steps, in its folder.
+  const personalProject = getPersonalRunnerProject();
+  const personalRejection = personalProject
+    ? personalLoopRejection(body, personalProject, runningLoops.size > 0)
+    : null;
+  if (personalRejection) {
+    gatewayLog.warn(
+      "loop-harness",
+      `Personal runner refused loopId=${body.loopId}: ${personalRejection}`
+    );
+    await postLoopEventBounded(
+      apiBaseUrl,
+      body.loopId,
+      () => body.agentFlowAuthToken,
+      {
+        type: LoopEventType.Error,
+        code: LoopErrorCode.PreRunValidationFailed,
+        message: personalRejection,
+      }
+    );
+    json(context, 409, { error: personalRejection });
+    return;
+  }
+
   // Claim the loopId immediately to prevent concurrent requests from racing
   // past the has() check. Replaced with real entry after spawn succeeds.
   runningLoops.set(body.loopId, {
@@ -6498,8 +6568,10 @@ async function handleLoopRequest(
   const additionalWorktreeDirs: AdditionalWorktreeEntry[] = [];
   try {
     const allowedDirs = getAllowedDirectories();
+    // A personal runner clones nothing: it works in the project folder with
+    // this computer's own git credentials.
     const projectRepos =
-      repoRequirement === "NOT_REQUIRED"
+      repoRequirement === "NOT_REQUIRED" || personalProject
         ? null
         : await prepareProjectRepos({
             body,
@@ -6524,7 +6596,9 @@ async function handleLoopRequest(
     }
     projectGitEnv = projectRepos?.gitEnv ?? null;
 
-    if (projectRepos?.primaryPath) {
+    if (personalProject) {
+      expandedRepoPath = personalProject.projectDir;
+    } else if (projectRepos?.primaryPath) {
       expandedRepoPath = projectRepos.primaryPath;
     } else if (repoRequirement !== "NOT_REQUIRED" && body.localRepoPath) {
       // localRepoPath takes precedence over repo.fullName lookup when present
@@ -6669,6 +6743,7 @@ async function handleLoopRequest(
     // peer repos receives the same resolution + worktree treatment. Adding a
     // new peer-aware command is a one-line table edit in @agentflow-ai/loops-api.
     if (
+      !personalProject &&
       getMultiRepoPolicy(body.command).supportsAdditionalRepos &&
       body.additionalRepos &&
       body.additionalRepos.length > 0
@@ -6882,6 +6957,30 @@ async function handleLoopRequest(
           "Repository required for PLAN, EXECUTE, REQUEST_CHANGES, and GENERATE_PRD commands",
       });
       return;
+    } else if (
+      personalProject &&
+      body.command === LoopCommand.Step &&
+      body.step
+    ) {
+      // Personal runner: the step runs in the project folder itself (no
+      // worktree, no workspace CLAUDE.md, no AgentFlow agents copied in); its
+      // work directory is its run's own, so parallel runs never share one.
+      worktreeDir = personalProject.projectDir;
+      claudeWorkDir = await preparePersonalRunWorkDir({
+        projectDir: worktreeDir,
+        runId: body.step.runId,
+        fresh: isFreshLoopRequest(body),
+      });
+      await prepareLoopStep({
+        // The person's commands and skills are already in the folder and
+        // ~/.claude: no toolkit is linked into it.
+        step: { ...body.step, toolkit: null },
+        workspaceRoot: worktreeDir,
+        claudeWorkDir,
+        artifacts: body.artifacts,
+        repos: [{ fullName: body.repo?.fullName, dir: worktreeDir }],
+        log: (message) => loopLog(body.loopId, message),
+      });
     } else if (
       body.command === LoopCommand.Plan ||
       body.command === LoopCommand.Execute ||
@@ -7446,13 +7545,12 @@ async function handleLoopRequest(
     // cache, so preflight, health checks, and sync spawn wrappers agree on
     // the selected binary.
     const harnessBinary = commandRuntime.harness.adapter.binaryName;
-    const binaryPathOverrides = getOverrideBinaryPaths();
-    const harnessOverride = binaryPathOverrides?.[harnessBinary];
-    const resolved = await resolveBinaryFromLoginShell(
-      harnessBinary,
-      harnessOverride
-    );
-    if (resolved.source === "fallback") {
+    const { resolved, error: binaryError } = await resolveLoopHarnessBinary({
+      adapter: commandRuntime.harness.adapter,
+      claudeCodeVersion: body.claudeCodeVersion,
+      override: getOverrideBinaryPaths()?.[harnessBinary],
+    });
+    if (binaryError) {
       await postLoopEvent(
         apiBaseUrl,
         body.loopId,
@@ -7460,7 +7558,7 @@ async function handleLoopRequest(
         {
           type: LoopEventType.Error,
           code: LoopErrorCode.BinaryNotFound,
-          message: `${harnessBinary} CLI not found in PATH`,
+          message: binaryError,
         }
       );
       Observability.preflightBinaryNotFound(
@@ -7469,13 +7567,11 @@ async function handleLoopRequest(
         body.loopId
       );
       await cleanupOnError();
-      json(context, 500, { error: `${harnessBinary} CLI not found in PATH` });
+      json(context, 500, { error: binaryError });
       return;
     }
-    // "override", "override_invalid", or "path": all proceed.
-    // "override_invalid" is intentionally allowed -- the user set an explicit
-    // override and should see the resulting ENOENT from the spawn, not a
-    // confusing "not found in PATH" error.
+    // Only "fallback" stops here: an invalid override proceeds, so the user
+    // sees the spawn's ENOENT instead of a confusing "not found in PATH".
 
     if (usesRunLoop && scriptPath === null) {
       scriptPath = findPluginScript("code", "run-loop.sh");
@@ -7699,6 +7795,7 @@ async function handleLoopRequest(
           ? { CLAUDE_BIN: harnessBinaryPath }
           : {}),
         ...peerEnvVars,
+        ...LOOP_CLAUDE_ENV, // wait for background subagents (loop-claude-env.ts)
         ...agentPolicyEnv(body.agentPolicy), // what the process step decided
         ...projectGitEnv, // git credentials for the project repositories
         ...body.claudeEnv, // the computer's model provider (e.g. DeepSeek)
@@ -7794,6 +7891,7 @@ async function handleLoopRequest(
         child = spawn(pipeline.cmd, pipeline.args, {
           cwd: workspaceRoot ?? worktreeDir!,
           detached: true,
+          windowsHide: true,
           stdio: ["ignore", logFd, logFd],
           env: spawnEnv,
         });
@@ -7806,6 +7904,8 @@ async function handleLoopRequest(
           stdinClaudeArgs,
           claudeWorkDir,
           harnessBin,
+          apiBaseUrl,
+          personal: personalProject,
         });
         collectedSpawnMeta.command = launch.cmd;
         collectedSpawnMeta.args = redactSpawnArgs(launch.args);
@@ -7814,8 +7914,9 @@ async function handleLoopRequest(
         child = spawn(launch.cmd, launch.args, {
           cwd: workspaceRoot ?? worktreeDir!,
           detached: true,
+          windowsHide: true,
           stdio: ["ignore", logFd, logFd],
-          env: spawnEnv,
+          env: { ...spawnEnv, ...launch.env },
         });
         child.unref();
       } else if (body.command === LoopCommand.Decompose) {
@@ -7846,6 +7947,7 @@ async function handleLoopRequest(
         child = spawn(pipeline.cmd, pipeline.args, {
           cwd: claudeWorkDir,
           detached: true,
+          windowsHide: true,
           stdio: ["ignore", logFd, logFd],
           env: spawnEnv,
         });
@@ -7891,6 +7993,7 @@ async function handleLoopRequest(
         child = spawn(pipeline.cmd, pipeline.args, {
           cwd: claudeWorkDir,
           detached: true,
+          windowsHide: true,
           stdio: ["ignore", logFd, logFd],
           env: spawnEnv,
         });
@@ -7934,6 +8037,7 @@ async function handleLoopRequest(
         child = spawn(pipeline.cmd, pipeline.args, {
           cwd: claudeWorkDir,
           detached: true,
+          windowsHide: true,
           stdio: ["ignore", logFd, logFd],
           env: spawnEnv,
         });
@@ -7979,6 +8083,7 @@ async function handleLoopRequest(
         child = spawn(pipeline.cmd, pipeline.args, {
           cwd: worktreeDir!,
           detached: true,
+          windowsHide: true,
           stdio: ["ignore", logFd, logFd],
           env: spawnEnv,
         });
@@ -8033,6 +8138,7 @@ async function handleLoopRequest(
         child = spawn(pipeline.cmd, pipeline.args, {
           cwd: worktreeDir!,
           detached: true,
+          windowsHide: true,
           stdio: ["ignore", logFd, logFd],
           env: spawnEnv,
         });
@@ -8110,7 +8216,7 @@ async function handleLoopRequest(
         const runnableRepos = manifest.filter((e) => !e.skip);
         const scriptLines: string[] = [
           "#!/bin/bash",
-          `CLAUDE_BIN=${shellEscape(harnessBin)}`,
+          `CLAUDE_BIN=${shellEscape(toShellPath(harnessBin))}`,
           "",
         ];
         for (const [i, entry] of runnableRepos.entries()) {
@@ -8119,15 +8225,15 @@ async function handleLoopRequest(
           const outputDir = path.join(claudeWorkDir, `repo-${i}-agents`);
           scriptLines.push(
             `echo "=== BOOTSTRAP ${i}: ${shellEscape(entry.fullName)} ==="`,
-            `OUTPUT_DIR=${shellEscape(outputDir)}`,
+            `OUTPUT_DIR=${shellEscape(toShellPath(outputDir))}`,
             `mkdir -p "$OUTPUT_DIR"`,
-            `if ! cd ${shellEscape(entry.localPath)}; then`,
-            `  echo "fail:cd" > ${shellEscape(marker)}`,
+            `if ! cd ${shellEscape(toShellPath(entry.localPath))}; then`,
+            `  echo "fail:cd" > ${shellEscape(toShellPath(marker))}`,
             "else",
-            `  if "$CLAUDE_BIN" ${pluginDirArgs().map(shellEscape).join(" ")} -p "/bootstrap:agent-bootstrap --output-dir $OUTPUT_DIR" 2>${shellEscape(stderrLog)}; then`,
-            `    echo "ok" > ${shellEscape(marker)}`,
+            `  if "$CLAUDE_BIN" ${pluginDirArgs().map(shellEscape).join(" ")} -p "/bootstrap:agent-bootstrap --output-dir $OUTPUT_DIR" 2>${shellEscape(toShellPath(stderrLog))}; then`,
+            `    echo "ok" > ${shellEscape(toShellPath(marker))}`,
             "  else",
-            `    echo "fail:$?" > ${shellEscape(marker)}`,
+            `    echo "fail:$?" > ${shellEscape(toShellPath(marker))}`,
             "  fi",
             "fi",
             ""
@@ -8137,12 +8243,14 @@ async function handleLoopRequest(
         const bootstrapScript = path.join(claudeWorkDir, "bootstrap.sh");
         writeFileSync(bootstrapScript, scriptLines.join("\n"), { mode: 0o755 });
 
-        collectedSpawnMeta.command = "bash";
-        collectedSpawnMeta.args = [bootstrapScript];
+        const bootstrapLaunch = scriptLaunch(bootstrapScript, []);
+        collectedSpawnMeta.command = bootstrapLaunch.command;
+        collectedSpawnMeta.args = bootstrapLaunch.args;
         spawnStartedAt = Date.now();
-        child = spawn("bash", [bootstrapScript], {
+        child = spawn(bootstrapLaunch.command, bootstrapLaunch.args, {
           cwd: claudeWorkDir,
           detached: true,
+          windowsHide: true,
           stdio: ["ignore", logFd, logFd],
           env: spawnEnv,
         });
@@ -8204,9 +8312,14 @@ async function handleLoopRequest(
           telemetryEmitter: Observability.getTelemetryEmitter(),
         });
         spawnStartedAt = Date.now();
-        child = spawn(scriptPath!, scriptArgs, {
+        const runLoopLaunch = scriptLaunch(
+          scriptPath!,
+          scriptArgs.map((arg) => toShellPath(arg))
+        );
+        child = spawn(runLoopLaunch.command, runLoopLaunch.args, {
           cwd: workspaceRoot ?? worktreeDir!,
           detached: true,
+          windowsHide: true,
           stdio: ["ignore", logFd, logFd],
           env: spawnEnv,
         });
@@ -8289,6 +8402,7 @@ async function handleLoopRequest(
       stop: () => {},
       flush: () => Promise.resolve(),
     };
+    let stopApiErrorWatchdog: () => void = () => {};
     const requestBinaryPathsResolver = getActiveBinaryPathsResolver();
     const onceComplete = async (
       code: number,
@@ -8299,6 +8413,7 @@ async function handleLoopRequest(
       }
       completionHandled = true;
       loopLog(body.loopId, `onceComplete fired, code=${code}`);
+      stopApiErrorWatchdog();
       // Persist exitCode synchronously (before any await) so the IPC
       // desktop:list-running-jobs reconciliation sees the exit handler has
       // claimed this job and does not race-override the status to STOPPED.
@@ -8431,6 +8546,21 @@ async function handleLoopRequest(
         ? (record) => nativeObservability?.onRecord(record)
         : undefined
     );
+    stopApiErrorWatchdog = startApiErrorWatchdog({
+      outputPath: tailerJsonlPath,
+      startOffset: jsonlPreSpawnOffset,
+      onStalled: (error) => {
+        loopError(
+          body.loopId,
+          `Agent stalled after a model API error, stopping pid=${pid}: ${error}`
+        );
+        gatewayLog.error(
+          "loop-harness",
+          `${body.command} stalled after a model API error, loopId=${body.loopId}: ${error}`
+        );
+        stopStalledAgent(pid);
+      },
+    });
     spawnedSuccessfully = true;
     loopLog(body.loopId, `Spawned pid=${pid}, worktree=${worktreeDir}`);
     gatewayLog.debug(
@@ -8633,11 +8763,11 @@ async function handleLoopKill(
         try {
           process.kill(job.pid, 0); // alive?
           processWasAlive = true;
-          process.kill(-job.pid, "SIGTERM");
+          killProcessTree(job.pid, "SIGTERM");
           await new Promise((resolve) => setTimeout(resolve, 3000));
           try {
             process.kill(job.pid, 0);
-            process.kill(-job.pid, "SIGKILL");
+            killProcessTree(job.pid, "SIGKILL");
           } catch {
             /* gone */
           }
@@ -8680,12 +8810,12 @@ async function handleLoopKill(
 
   try {
     process.kill(entry.pid, 0); // Check alive
-    process.kill(-entry.pid, "SIGTERM");
+    killProcessTree(entry.pid, "SIGTERM");
     await new Promise((resolve) => setTimeout(resolve, 3000));
 
     try {
       process.kill(entry.pid, 0);
-      process.kill(-entry.pid, "SIGKILL");
+      killProcessTree(entry.pid, "SIGKILL");
     } catch {
       // Already gone
     }
@@ -8759,3 +8889,22 @@ function resolveWorktreeBranch(
     ? (wt.getCurrentBranch(worktreeDir) ?? undefined)
     : undefined;
 }
+
+/**
+ * Stops an agent the API error watchdog found stalled: its process exits and
+ * the loop completes as failed (an auth challenge read from its output).
+ */
+function stopStalledAgent(pid: number): void {
+  killProcessTree(pid, "SIGTERM");
+  const forceKill = setTimeout(() => {
+    try {
+      process.kill(pid, 0);
+      killProcessTree(pid, "SIGKILL");
+    } catch {
+      /* gone */
+    }
+  }, STALLED_AGENT_KILL_GRACE_MS);
+  forceKill.unref?.();
+}
+
+const STALLED_AGENT_KILL_GRACE_MS = 10_000;

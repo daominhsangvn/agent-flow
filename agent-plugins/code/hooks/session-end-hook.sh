@@ -18,6 +18,12 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 REASON=$(echo "$INPUT" | jq -r '.reason // empty')
 
+# The hook's `cwd` is the session's current directory, which drifts after a
+# `cd` into a repository or run directory. The state directory (and the
+# session mappings session-start-hook.sh wrote there) lives at the project
+# root, which Claude Code passes as CLAUDE_PROJECT_DIR.
+CWD="${CLAUDE_PROJECT_DIR:-$CWD}"
+
 # Redirect debug logs into project dir (not shared /tmp)
 if [[ -n "$CWD" ]]; then
     mkdir -p "$CWD/$AGENTFLOW_STATE_DIR"

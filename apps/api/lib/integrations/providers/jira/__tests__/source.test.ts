@@ -49,6 +49,20 @@ describe("fetchJiraIssue", () => {
         path: "/rest/api/3/issue/10042/comment",
         respond: jsonResponse(200, restCommentsNewestFirst()),
       },
+      {
+        method: HttpMethod.Get,
+        path: "/rest/api/3/issue/10042/remotelink",
+        respond: jsonResponse(200, [
+          {
+            id: 5,
+            object: {
+              url: "https://acme.atlassian.net/wiki/spaces/ENG/pages/123",
+              title: "Implementation plan",
+            },
+          },
+          { id: 6, object: { title: "No address" } },
+        ]),
+      },
     ]);
     const item = await fetchJiraIssue(
       makeJiraContext({ http: fake.http }),
@@ -67,8 +81,16 @@ describe("fetchJiraIssue", () => {
       status: "To Do",
       priority: "High",
       labels: ["ai-ready", "reports"],
+      links: [
+        {
+          url: "https://acme.atlassian.net/wiki/spaces/ENG/pages/123",
+          title: "Implementation plan",
+        },
+      ],
       reporter: "Bea Analyst",
       assignee: "AgentFlow Bot",
+      reporterEmail: null,
+      assigneeEmail: null,
       sections: [
         {
           title: "Acceptance Criteria",
@@ -78,11 +100,15 @@ describe("fetchJiraIssue", () => {
       ],
       comments: [
         {
+          id: "20001",
+          parentId: null,
           author: "Bea Analyst",
           createdAt: "2026-10-04T11:40:00.000Z",
           bodyMarkdown: "First comment",
         },
         {
+          id: "20002",
+          parentId: "20001",
           author: "Bea Analyst",
           createdAt: "2026-10-04T11:55:00.000Z",
           bodyMarkdown: "Please also support _semicolons_.",
@@ -147,6 +173,8 @@ describe("fetchJiraIssue", () => {
     ]);
     expect(item.comments).toEqual([
       {
+        id: "1",
+        parentId: null,
         author: "Bea",
         createdAt: "2026-10-04T11:00:00.000Z",
         bodyMarkdown: "wiki *comment*",

@@ -8,8 +8,10 @@ import { vi } from "vitest";
  * In-memory stand-in for the `integrationConnection` / `integrationDelivery`
  * Prisma delegates used by lib/integrations/connection-service.ts. It
  * implements just the query shapes the service issues: equality `where`
- * clauses, the `triggers/actions/projectRepositories: { none: {} }` filters of the
- * guarded delete, `include: { _count }`, and `Prisma.DbNull` writes.
+ * clauses, the `triggers/actions/projectRepositories/projectConnections:
+ * { none: {} }` filters of the guarded delete, `include: { _count }`, upserts
+ * by id, and `Prisma.DbNull` writes. `projectConnection.updateMany` records
+ * the project accounts retired when a connection's site changes.
  */
 
 /** Value the test's `@repo/database` mock exposes as `Prisma.DbNull`. */
@@ -21,6 +23,7 @@ type Usage = {
   triggers: number;
   actions: number;
   projectRepositories: number;
+  projectConnections: number;
 };
 
 type QueryArgs = {
@@ -28,6 +31,12 @@ type QueryArgs = {
   data?: Record<string, unknown>;
   include?: { _count?: unknown };
   take?: number;
+};
+
+type UpsertArgs = {
+  where: Record<string, unknown>;
+  create: Record<string, unknown>;
+  update: Record<string, unknown>;
 };
 
 const CONNECTION_DEFAULTS = {
@@ -55,8 +64,7 @@ function createConnectionDbFake() {
   const usage = new Map<string, Usage>();
   const deliveries: FakeRow[] = [];
 
-  const usageOf = (id: string): Usage =>
-    usage.get(id) ?? { triggers: 0, actions: 0, projectRepositories: 0 };
+  const usageOf = (id: string): Usage => usage.get(id) ?? NO_USAGE;
   const findRows = (where: QueryArgs["where"]) =>
     [...connections.values()].filter((row) =>
       matchesWhere(row, where, usageOf(row.id))
@@ -66,6 +74,18 @@ function createConnectionDbFake() {
   const findFirst = (args: QueryArgs) => {
     const [row] = findRows(args.where);
     return Promise.resolve(row ? decorate(row, args.include) : null);
+  };
+  const insert = (data: Record<string, unknown>): FakeRow => {
+    const now = new Date();
+    const row: FakeRow = {
+      ...CONNECTION_DEFAULTS,
+      ...normalizeWrite(data),
+      id: String(data.id),
+      createdAt: now,
+      updatedAt: now,
+    };
+    connections.set(row.id, row);
+    return row;
   };
 
   const db = {
@@ -77,18 +97,18 @@ function createConnectionDbFake() {
       ),
       findFirst: vi.fn(findFirst),
       findUnique: vi.fn(findFirst),
-      create: vi.fn((args: QueryArgs) => {
-        const now = new Date();
-        const data = normalizeWrite(args.data);
-        const row: FakeRow = {
-          ...CONNECTION_DEFAULTS,
-          ...data,
-          id: String(data.id),
-          createdAt: now,
-          updatedAt: now,
-        };
-        connections.set(row.id, row);
-        return Promise.resolve(decorate(row, args.include));
+      create: vi.fn((args: QueryArgs) =>
+        Promise.resolve(decorate(insert(args.data ?? {}), args.include))
+      ),
+      upsert: vi.fn((args: UpsertArgs) => {
+        const [row] = findRows(args.where);
+        if (!row) {
+          return Promise.resolve({ ...insert(args.create) });
+        }
+        Object.assign(row, normalizeWrite(args.update), {
+          updatedAt: new Date(),
+        });
+        return Promise.resolve({ ...row });
       }),
       update: vi.fn((args: QueryArgs) => {
         const [row] = findRows(args.where);
@@ -117,6 +137,9 @@ function createConnectionDbFake() {
         return Promise.resolve({ count: rows.length });
       }),
     },
+    projectConnection: {
+      updateMany: vi.fn((_args: QueryArgs) => Promise.resolve({ count: 0 })),
+    },
     integrationDelivery: {
       findMany: vi.fn((args: QueryArgs) =>
         Promise.resolve(
@@ -142,7 +165,12 @@ function createConnectionDbFake() {
   };
 }
 
-const NO_USAGE: Usage = { triggers: 0, actions: 0, projectRepositories: 0 };
+const NO_USAGE: Usage = {
+  triggers: 0,
+  actions: 0,
+  projectRepositories: 0,
+  projectConnections: 0,
+};
 
 function matchesWhere(
   row: FakeRow,
@@ -169,6 +197,9 @@ function matchesClause(
   }
   if (key === "projectRepositories") {
     return rowUsage.projectRepositories === 0;
+  }
+  if (key === "projectConnections") {
+    return rowUsage.projectConnections === 0;
   }
   return row[key] === expected;
 }

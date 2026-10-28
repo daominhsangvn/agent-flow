@@ -80,11 +80,9 @@ export function sessionLinkedChipsTrackTestId(overflowTestId: string): string {
  * cell the other column exercises, not speculative machinery for a cardinality
  * this contract does not have — see the ticket comment on FEA-4209.
  *
- * No href: the project detail page is routed at
- * `/{orgSlug}/teams/{teamId}/projects/{projectId}`, and `teamId` is not on
- * `AgentSessionProjectSummary` (`{id, name, slug}`). Linking would require a
- * contract addition, so the chip names the project and stays inert rather than
- * guessing a route.
+ * No href: the project detail page is routed at `/{orgSlug}/projects/{projectId}`,
+ * but this resolver has no `orgSlug` input, so the chip names the project and
+ * stays inert rather than guessing a route.
  */
 export function resolveSessionProjectChips(
   item: AgentSessionListItem

@@ -1,7 +1,9 @@
 import { LoopCommand, LoopStatus } from "@agentflow-ai/loops-api/commands";
 import { DocumentType } from "@repo/api/src/types/document";
 import { IntegrationProviderKey } from "@repo/api/src/types/integration";
+import { DISPLAYED_SESSION_STATUS } from "@repo/api/src/types/session-status";
 import {
+  type SaveWorkflowInput,
   type Workflow,
   WorkflowActionRunStatus,
   WorkflowActionStage,
@@ -9,14 +11,16 @@ import {
   WorkflowRunEvent,
   WorkflowRunStatus,
   type WorkflowRunSummary,
+  workflowPrdRuleSchema,
 } from "@repo/api/src/types/workflow";
 import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import {
   JIRA_ADD_COMMENT,
   JIRA_CONNECTION_ID,
   JIRA_ISSUE_ASSIGNED,
+  JIRA_KEY,
   JIRA_TRANSITION_ISSUE,
-  TEAMS_CONNECTION_ID,
+  TEAMS_KEY,
   TEAMS_POST_MESSAGE,
 } from "../../integrations/__tests__/integration-fixtures";
 
@@ -33,6 +37,8 @@ export const PRE_ACTION_RUN_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 export const RUN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 export const ACTION_RUN_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 export const LOOP_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+export const LIVE_SESSION_ID = "12121212-1212-4121-8121-121212121212";
+export const ENDED_SESSION_ID = "13131313-1313-4131-8131-131313131313";
 
 export function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
   return {
@@ -46,7 +52,9 @@ export function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
       mode: WorkflowAgentMode.PlanAndExecute,
       stopOnOpenQuestions: true,
       computeTargetId: COMPUTE_TARGET_ID,
+      runners: [],
       repository: null,
+      prd: workflowPrdRuleSchema.parse({}),
       instructions: "Use pnpm.",
       titleTemplate: "{{source.key}}: {{source.title}}",
       process: null,
@@ -54,6 +62,9 @@ export function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
     triggers: [
       {
         id: TRIGGER_ID,
+        projectId: PROJECT_ID,
+        connectionKey: JIRA_KEY,
+        projectConnectionId: `pc-${JIRA_KEY}-${PROJECT_ID}`,
         connectionId: JIRA_CONNECTION_ID,
         builtInHttp: false,
         type: JIRA_ISSUE_ASSIGNED,
@@ -67,7 +78,9 @@ export function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
     actions: [
       {
         id: ACTION_ID,
-        connectionId: TEAMS_CONNECTION_ID,
+        connectionKey: TEAMS_KEY,
+        connectionId: null,
+        automaticConnection: false,
         type: TEAMS_POST_MESSAGE,
         config: { message: "{{summary}}" },
         builtInHttp: false,
@@ -79,7 +92,9 @@ export function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
       },
       {
         id: PRE_ACTION_ID,
-        connectionId: JIRA_CONNECTION_ID,
+        connectionKey: JIRA_KEY,
+        connectionId: null,
+        automaticConnection: false,
         type: JIRA_TRANSITION_ISSUE,
         config: { transition: "In Progress" },
         builtInHttp: false,
@@ -115,7 +130,7 @@ export function makeRunSummary(
       title: "Add CSV export",
       url: "https://acme.atlassian.net/browse/PROJ-7",
     },
-    prUrl: null,
+    pullRequests: [],
     error: null,
     createdAt: new Date("2026-10-01T09:00:00.000Z"),
     updatedAt: new Date("2026-10-01T09:05:00.000Z"),
@@ -135,6 +150,7 @@ export function makeRunDetail(
       title: "PROJ-7: Add CSV export",
       type: DocumentType.Feature,
     },
+    sourceClassification: null,
     plan: { id: "p-1", slug: "PLN-9", title: "Plan: Add CSV export" },
     documents: [],
     branchName: null,
@@ -150,6 +166,36 @@ export function makeRunDetail(
         completedAt: null,
       },
     ],
+    sessions: [
+      {
+        id: LIVE_SESSION_ID,
+        slug: "SES-12",
+        name: "Plan PROJ-7",
+        loopId: LOOP_ID,
+        command: LoopCommand.Plan,
+        stepId: null,
+        status: DISPLAYED_SESSION_STATUS.ACTIVE,
+        harness: "claude-code",
+        model: "claude-opus-5-5",
+        startedAt: new Date("2026-10-01T09:02:00.000Z"),
+        lastActivityAt: new Date("2026-10-01T09:05:00.000Z"),
+        endedAt: null,
+      },
+      {
+        id: ENDED_SESSION_ID,
+        slug: "SES-11",
+        name: "Plan PROJ-7 (first attempt)",
+        loopId: LOOP_ID,
+        command: LoopCommand.Plan,
+        stepId: null,
+        status: DISPLAYED_SESSION_STATUS.INACTIVE,
+        harness: "claude-code",
+        model: null,
+        startedAt: new Date("2026-10-01T09:01:00.000Z"),
+        lastActivityAt: new Date("2026-10-01T09:01:30.000Z"),
+        endedAt: new Date("2026-10-01T09:01:40.000Z"),
+      },
+    ],
     // Post row listed first on purpose: the run detail shows pre rows first.
     actionRuns: [
       {
@@ -163,6 +209,7 @@ export function makeRunDetail(
         attempts: 5,
         lastError: "Jira returned 403",
         externalRef: null,
+        instruction: null,
         completedAt: null,
         createdAt: new Date("2026-10-01T09:01:00.000Z"),
       },
@@ -177,11 +224,69 @@ export function makeRunDetail(
         attempts: 1,
         lastError: null,
         externalRef: null,
+        instruction: null,
         completedAt: new Date("2026-10-01T09:00:30.000Z"),
         createdAt: new Date("2026-10-01T09:00:10.000Z"),
       },
     ],
     process: null,
+    toolCalls: [],
+    retryStep: null,
     ...overrides,
+  };
+}
+
+/** The save body of `makeWorkflow()`: what saving its YAML unchanged sends. */
+export function makeSaveWorkflowInput(): SaveWorkflowInput {
+  return {
+    name: "Implement Jira requirements",
+    description: "BA assigns to the bot",
+    enabled: true,
+    projectId: PROJECT_ID,
+    runAsUserId: RUN_AS_USER_ID,
+    agent: {
+      mode: WorkflowAgentMode.PlanAndExecute,
+      stopOnOpenQuestions: true,
+      computeTargetId: COMPUTE_TARGET_ID,
+      runners: [],
+      repository: null,
+      prd: workflowPrdRuleSchema.parse({}),
+      instructions: "Use pnpm.",
+      titleTemplate: "{{source.key}}: {{source.title}}",
+      process: null,
+    },
+    triggers: [
+      {
+        id: TRIGGER_ID,
+        connectionKey: JIRA_KEY,
+        type: JIRA_ISSUE_ASSIGNED,
+        config: { projectKeys: ["PROJ"], label: "ai" },
+        enabled: true,
+      },
+    ],
+    actions: [
+      {
+        id: PRE_ACTION_ID,
+        connectionKey: JIRA_KEY,
+        automaticConnection: false,
+        type: JIRA_TRANSITION_ISSUE,
+        config: { transition: "In Progress" },
+        stage: WorkflowActionStage.Pre,
+        events: [],
+        continueOnError: true,
+        enabled: true,
+      },
+      {
+        id: ACTION_ID,
+        connectionKey: TEAMS_KEY,
+        automaticConnection: false,
+        type: TEAMS_POST_MESSAGE,
+        config: { message: "{{summary}}" },
+        stage: WorkflowActionStage.Post,
+        events: [WorkflowRunEvent.Succeeded, WorkflowRunEvent.Failed],
+        continueOnError: false,
+        enabled: true,
+      },
+    ],
   };
 }

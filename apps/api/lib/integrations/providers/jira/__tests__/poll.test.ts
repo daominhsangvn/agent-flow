@@ -1,16 +1,21 @@
 import { IntegrationProviderKey } from "@repo/api/src/types/integration";
 import { describe, expect, it } from "vitest";
 import { HttpMethod } from "../../../types";
-import { JiraTriggerType } from "../constants";
+import { JiraEventAttribute, JiraTriggerType } from "../constants";
 import {
   JIRA_POLL_BOT_UNKNOWN_ERROR,
   JIRA_POLL_MAX_ISSUES,
   pollJira,
 } from "../poll";
 import {
+  jiraIssueConditionsConfigSchema,
+  jiraIssueConditionsTrigger,
+} from "../triggers";
+import {
   assigneeItem,
   BOT_USER,
   history,
+  labelsItem,
   searchIssue,
 } from "./jira.test-fixtures";
 import {
@@ -154,13 +159,28 @@ describe("pollJira", () => {
         "2026-10-04T11:58:00.000Z",
       ],
       [
+        JiraTriggerType.IssueConditions,
+        "PROJ-1:conditions:h-new",
+        "2026-10-04T11:58:00.000Z",
+      ],
+      [
         JiraTriggerType.IssueAssigned,
         "PROJ-4:created",
         "2026-10-04T11:56:00.000Z",
       ],
       [
+        JiraTriggerType.IssueConditions,
+        "PROJ-4:conditions:created",
+        "2026-10-04T11:56:00.000Z",
+      ],
+      [
         JiraTriggerType.IssueAssigned,
         "PROJ-5:assignee:h5",
+        "2026-10-04T11:57:00.000Z",
+      ],
+      [
+        JiraTriggerType.IssueConditions,
+        "PROJ-5:conditions:h5",
         "2026-10-04T11:57:00.000Z",
       ],
       [
@@ -171,6 +191,16 @@ describe("pollJira", () => {
       [
         JiraTriggerType.IssueAssigned,
         "PROJ-6:assignee:h6b",
+        "2026-10-04T11:58:30.000Z",
+      ],
+      [
+        JiraTriggerType.IssueConditions,
+        "PROJ-6:conditions:created",
+        "2026-10-04T11:55:00.000Z",
+      ],
+      [
+        JiraTriggerType.IssueConditions,
+        "PROJ-6:conditions:h6b",
         "2026-10-04T11:58:30.000Z",
       ],
     ]);
@@ -281,7 +311,8 @@ describe("pollJira", () => {
     );
     const fake = routedHttp([searchRoute({ issues, isLast: true })]);
     const result = await pollJira(makeJiraContext({ http: fake.http }), null);
-    expect(result.events).toHaveLength(JIRA_POLL_MAX_ISSUES);
+    // Each issue was created assigned to the bot: assigned + conditions.
+    expect(result.events).toHaveLength(JIRA_POLL_MAX_ISSUES * 2);
     expect(result.cursor).toEqual({ since: "2026-10-04T11:56:00.000Z" });
   });
 
@@ -326,6 +357,7 @@ describe("pollJira", () => {
     );
     expect(result.events.map((event) => event.dedupKey)).toEqual([
       "OPS-7:assignee:30010",
+      "OPS-7:conditions:30010",
     ]);
     expect(result.cursor).toEqual({ since: "2026-10-04T11:58:00.000Z" });
   });
@@ -362,6 +394,7 @@ describe("pollJira", () => {
     const result = await pollJira(makeJiraContext({ http: fake.http }), null);
     expect(result.events.map((event) => event.dedupKey)).toEqual([
       "PROJ-1:assignee:h1",
+      "PROJ-1:conditions:h1",
     ]);
     expect(requestQuery(fake.requests[1]).get("expand")).toBe("changelog");
   });
@@ -404,8 +437,56 @@ describe("pollJira", () => {
     const result = await pollJira(makeJiraContext({ http: fake.http }), null);
     expect(result.events.map((event) => event.dedupKey)).toEqual([
       "PROJ-1:assignee:h-latest",
+      "PROJ-1:conditions:h-latest",
     ]);
     expect(requestQuery(fake.requests[1]).get("startAt")).toBe("50");
+  });
+
+  it("judges a combination with the issue state right after each change", async () => {
+    const issue = searchIssue({
+      id: "1001",
+      key: "PROJ-1",
+      created: "2026-10-01T09:00:00.000+0000",
+      updated: "2026-10-04T11:58:00.000+0000",
+      labels: ["ai-ready"],
+      histories: [
+        history({
+          id: "h-label",
+          created: "2026-10-04T11:56:00.000+0000",
+          items: [labelsItem("", "ai-ready")],
+        }),
+        history({
+          id: "h-assign",
+          created: "2026-10-04T11:58:00.000+0000",
+          items: [assigneeItem(HUMAN_ACCOUNT_ID, BOT_ACCOUNT_ID)],
+        }),
+      ],
+    });
+    const fake = routedHttp([searchRoute({ issues: [issue], isLast: true })]);
+    const ctx = makeJiraContext({ http: fake.http });
+
+    const result = await pollJira(ctx, null);
+    const conditions = result.events.filter(
+      (event) => event.triggerType === JiraTriggerType.IssueConditions
+    );
+    const config = jiraIssueConditionsConfigSchema.parse({
+      assigned: true,
+      labels: ["ai-ready"],
+    });
+
+    expect(
+      conditions.map((event) => [
+        event.dedupKey,
+        event.attributes[JiraEventAttribute.AssignedToBot],
+        event.attributes[JiraEventAttribute.Labels],
+        jiraIssueConditionsTrigger.matches(event, config, ctx.connection),
+      ])
+    ).toEqual([
+      // The label came first, while the issue was assigned to someone else.
+      ["PROJ-1:conditions:h-label", false, ["ai-ready"], false],
+      // Assigning it to the bot completes the combination.
+      ["PROJ-1:conditions:h-assign", true, ["ai-ready"], true],
+    ]);
   });
 
   it("throws (so the poll records lastError and retries) when Jira fails", async () => {

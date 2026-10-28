@@ -580,3 +580,14 @@ export function resolveSessionDurationLifecycle(
 export function isRecognizedSessionStatus(status: string): boolean {
   return Object.hasOwn(CANONICAL_SESSION_STATUS_FOLD, status);
 }
+
+/**
+ * Whether a DISPLAYED status is a session still going: running, or waiting for
+ * input. Stale and unknown rows are not (see {@link isDisplayOnlySessionStatus}).
+ */
+export function isLiveDisplayedSessionStatus(status: string): boolean {
+  return (
+    status === DISPLAYED_SESSION_STATUS.ACTIVE ||
+    status === DISPLAYED_SESSION_STATUS.WAITING
+  );
+}

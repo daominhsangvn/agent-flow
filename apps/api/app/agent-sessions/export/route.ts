@@ -1,18 +1,14 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { forbiddenResponse, parseQueryParams } from "@/lib/route-utils";
-import {
-  authorizeAgentSessionTeamScope,
-  resolveDisplayedStatusParity,
-} from "../route-helpers";
+import { parseQueryParams } from "@/lib/route-utils";
+import { resolveDisplayedStatusParity } from "../route-helpers";
 import { agentSessionsService } from "../service";
 import { baseAgentSessionQuerySchema } from "../validators";
 
 const CSV_HEADERS = [
   "Date",
   "User",
-  "Team",
   "Project",
   "Harness Type",
   "Model",
@@ -47,7 +43,7 @@ function buildCsvFilename(orgSlug: string): string {
 }
 
 export const GET = withAnyAuth<never, "/agent-sessions/export">(
-  async ({ user, clerkOrgId, clerkUserId }, request) => {
+  async ({ user, clerkUserId }, request) => {
     const { params: filters, errorResponse } = parseQueryParams(
       request,
       baseAgentSessionQuerySchema
@@ -57,17 +53,6 @@ export const GET = withAnyAuth<never, "/agent-sessions/export">(
     }
 
     // FEA-4155: no `monitoringEnabled` flag gate (see the sibling list route).
-    // Org/team RBAC still applies via `authorizeAgentSessionTeamScope`.
-    const teamScopeAllowed = await authorizeAgentSessionTeamScope({
-      organizationId: user.organizationId,
-      userId: user.id,
-      clerkOrgId,
-      clerkUserId,
-      filters,
-    });
-    if (!teamScopeAllowed) {
-      return forbiddenResponse();
-    }
 
     const { rows, orgSlug } = await agentSessionsService.findExportRows({
       organizationId: user.organizationId,
@@ -91,7 +76,6 @@ export const GET = withAnyAuth<never, "/agent-sessions/export">(
           const line = [
             row.date,
             row.user,
-            row.team,
             row.project,
             row.harnessType,
             row.model,

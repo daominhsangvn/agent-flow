@@ -3078,7 +3078,6 @@ function projectRecoveryRow() {
   return {
     id: "project-1",
     name: "Platform",
-    teams: [],
   };
 }
 

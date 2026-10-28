@@ -1,21 +1,42 @@
 import type { JsonObject } from "@repo/api/src/types/common";
-import { IntegrationProviderKey } from "@repo/api/src/types/integration";
+import {
+  IntegrationOperationTarget,
+  IntegrationProviderKey,
+} from "@repo/api/src/types/integration";
+import type { ProjectProcess } from "@repo/api/src/types/project-process";
+import { ProcessStepType } from "@repo/api/src/types/project-process";
 import { Result } from "@repo/api/src/types/result";
 import {
   type SaveWorkflowInput,
   WORKFLOW_DEFAULT_TITLE_TEMPLATE,
+  WORKFLOW_INSTRUCTION_ACTION_TYPE,
   WORKFLOW_POST_ACTION_EVENTS,
   WorkflowActionStage,
   type WorkflowAgentConfig,
   WorkflowRunEvent,
   workflowActionStageSchema,
+  workflowInstructionConfigSchema,
+  workflowPrdRuleSchema,
   workflowRunEventSchema,
 } from "@repo/api/src/types/workflow";
 import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
+import {
+  WORKFLOW_EMAIL_ACTION_TYPE,
+  workflowEmailConfigSchema,
+} from "@repo/api/src/types/workflow-email";
 import { withDb } from "@repo/database";
 import type { z } from "zod";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { checkProcessToolkit } from "@/app/projects/project-process-service";
+import { listProjectRepositoryCheckouts } from "@/app/projects/project-repository-checkouts";
+import {
+  checkConnectionGrants,
+  loadProjectConnectionCatalog,
+  type ProjectConnectionCatalog,
+  type ProjectConnectionEntry,
+  resolveKey,
+} from "@/lib/integrations/connection-grants";
+import { triggerContainersOutside } from "@/lib/integrations/project-connections";
 import { WebhookTriggerType } from "@/lib/integrations/providers/webhook/inbound-event";
 import { WebhookActionType } from "@/lib/integrations/providers/webhook/post-action";
 import {
@@ -23,40 +44,65 @@ import {
   findTriggerDefinition,
   getIntegrationProvider,
 } from "@/lib/integrations/registry";
+import { actionTarget } from "@/lib/integrations/types";
 import { toJsonObject } from "./engine/run-data";
 
 /**
- * Validation of a saved workflow (docs/workflows.md "API"): project and
+ * Validation of a saved workflow (docs/workflows.md "API"): projects and
  * run-as user in the org, a compute target the run-as user may use (owned or
  * org-shared when the caller runs the workflow as themselves; org-shared only
  * when it runs as another member, so an admin can never reach a member's
- * private desktop), every trigger/action on a connection of the org (a
- * disabled connection is allowed: the engine skips it at run time) with a
- * type its provider offers and a config its schema accepts. Pre actions run
- * on run.triggered; post actions need at least one other run event. Action
- * positions count per stage, in request order, and messages name actions
- * the way the editor does ("Pre action 1", "Post action 2"). Returns the
- * values to persist (parsed configs) or a user-facing message.
+ * private desktop), and every trigger and action on a project connection.
+ *
+ * - Each trigger belongs to a project (its own or the workflow's) and names a
+ *   connection key of that project; its container filter (Jira projectKeys,
+ *   Azure DevOps projects) stays within the project connection's.
+ * - An action's key must exist in every project the triggers use, with the
+ *   same provider; an action on the source item with a key only runs for
+ *   runs from that connection.
+ * - An action without a connection: an instruction (read-only unless its
+ *   `connections:` grant writes), a source item action (a trigger's provider
+ *   offers it), a pull request (a repository connection offers it), or any
+ *   other type the project has exactly one connection for.
+ * - Agent steps of the workflow's own process grant connections like
+ *   instructions.
+ *
+ * Pre actions run on workflow.triggered; post actions need at least one other
+ * run event. Actions keep their request order as their position, and
+ * messages name them the way the editor does ("Action 2"). Returns the values
+ * to persist (parsed configs) or a user-facing message.
  */
 
-type ValidatedChild = {
+type ValidatedChildBase = {
   id?: string;
-  connectionId: string;
   type: string;
   config: JsonObject;
   enabled: boolean;
   position: number;
 };
 
-/** `connectionId` null: the workflow's built-in HTTP endpoint, resolved on save. */
-export type ValidatedTrigger = Omit<ValidatedChild, "connectionId"> & {
+export type ValidatedTrigger = ValidatedChildBase & {
+  projectId: string;
+  /** Null for the workflow's built-in HTTP endpoint. */
+  projectConnectionId: string | null;
+  /** The organization connection; null: the built-in HTTP endpoint, resolved on save. */
   connectionId: string | null;
 };
 
-/** `connectionId` null: the workflow's built-in HTTPS call, resolved on save. */
-export type ValidatedAction = Omit<ValidatedChild, "connectionId"> & {
-  connectionId: string | null;
+export type ValidatedAction = ValidatedChildBase & {
+  connectionKey: string | null;
+  automaticConnection: boolean;
 } & ActionStageFields;
+
+/** A trigger whose built-in HTTP endpoint has been resolved to its connection. */
+export type PersistableTrigger = Omit<ValidatedTrigger, "connectionId"> & {
+  connectionId: string;
+};
+
+/** `connectionId` is set only for the built-in HTTPS call. */
+export type PersistableAction = Omit<ValidatedAction, "automaticConnection"> & {
+  connectionId: string | null;
+};
 
 export type ValidatedWorkflow = {
   name: string;
@@ -68,10 +114,6 @@ export type ValidatedWorkflow = {
   triggers: ValidatedTrigger[];
   actions: ValidatedAction[];
 };
-
-/** A trigger whose built-in HTTP endpoint has been resolved to its connection. */
-export type PersistableTrigger = ValidatedChild;
-export type PersistableAction = ValidatedChild & ActionStageFields;
 
 /** Ids the workflow already owns; only these may be sent back on update. */
 export type ExistingChildIds = {
@@ -98,7 +140,9 @@ export const FALLBACK_AGENT_CONFIG: WorkflowAgentConfig = {
   mode: WorkflowAgentMode.PlanAndExecute,
   stopOnOpenQuestions: true,
   computeTargetId: "",
+  runners: [],
   repository: null,
+  prd: workflowPrdRuleSchema.parse({}),
   instructions: "",
   titleTemplate: WORKFLOW_DEFAULT_TITLE_TEMPLATE,
   process: null,
@@ -110,7 +154,8 @@ export async function validateWorkflowInput(
 ): Promise<Result<ValidatedWorkflow, string>> {
   const { organizationId, existing } = context;
   const runAsUserId = input.runAsUserId ?? context.defaultRunAsUserId;
-  const scopeError = await checkScope(organizationId, input, runAsUserId);
+  const projectIds = triggerProjectIds(input);
+  const scopeError = await checkScope(organizationId, projectIds, runAsUserId);
   if (scopeError) {
     return Result.err(scopeError);
   }
@@ -123,28 +168,52 @@ export async function validateWorkflowInput(
   if (targetError) {
     return Result.err(targetError);
   }
-  // The workflow's own process: its toolkit must be a project repository,
-  // like the project's process.
-  const toolkitError = await checkProcessToolkit(
+  // Each runner rule's runner follows the same access rule as the default.
+  for (const [index, rule] of (input.agent.runners ?? []).entries()) {
+    const ruleError = await checkComputeTarget({
+      organizationId,
+      computeTargetId: rule.computeTargetId,
+      runAsUserId,
+      callerId: context.callerId,
+    });
+    if (ruleError) {
+      return Result.err(`Runner rule ${index + 1}: ${ruleError}`);
+    }
+  }
+  const orchestratedError = checkOrchestrated(input);
+  if (orchestratedError) {
+    return Result.err(orchestratedError);
+  }
+  const toolkitError = await checkToolkits(
     organizationId,
-    input.projectId,
+    projectIds,
     input.agent.process
   );
   if (toolkitError) {
     return Result.err(toolkitError);
   }
-  const connections = await loadConnections(
+  const catalog = await loadProjectConnectionCatalog(
     organizationId,
-    input,
-    context.workflowId
+    projectIds
   );
-  const triggers = validateTriggers(input, connections, existing.triggerIds);
+  const triggers = validateTriggers(input, catalog, existing.triggerIds);
   if (!triggers.ok) {
     return triggers;
   }
-  const actions = validateActions(input, connections, existing.actionIds);
+  const checks = await buildActionChecks({
+    organizationId,
+    input,
+    catalog,
+    triggers: triggers.value,
+    existingIds: existing.actionIds,
+  });
+  const actions = validateActions(input, checks);
   if (!actions.ok) {
     return actions;
+  }
+  const processError = checkProcessGrants(input.agent.process, checks);
+  if (processError) {
+    return Result.err(processError);
   }
   return Result.ok({
     name: input.name,
@@ -172,15 +241,16 @@ export function readActionStage(stage: string): WorkflowActionStage {
   return parsed.success ? parsed.data : WorkflowActionStage.Post;
 }
 
-type ConnectionSummary = {
-  id: string;
-  name: string;
-  provider: string;
-};
+export function describeIssues(issues: z.core.$ZodIssue[]): string {
+  return issues
+    .map((issue) => {
+      const path = issue.path.map(String).join(".");
+      return path ? `${path}: ${issue.message}` : issue.message;
+    })
+    .join(", ");
+}
 
 type TriggerInput = SaveWorkflowInput["triggers"][number];
-type ChildInput = Omit<TriggerInput, "connectionId"> & { connectionId: string };
-
 type ActionInput = SaveWorkflowInput["actions"][number];
 
 type ActionStageFields = {
@@ -189,15 +259,43 @@ type ActionStageFields = {
   continueOnError: boolean;
 };
 
+type ActionChecks = {
+  catalog: ProjectConnectionCatalog;
+  existingIds: ReadonlySet<string>;
+  /** The projects of the workflow's triggers. */
+  projectIds: string[];
+  /** Providers a run's source connection can have (the triggers'). */
+  sourceProviders: string[];
+  /** Providers of the trigger projects' repository connections. */
+  repositoryProviders: string[];
+};
+
+type ValidatedActionTarget = Omit<
+  ValidatedAction,
+  "position" | keyof ActionStageFields
+>;
+
+/** The workflow's project and every trigger's own project, deduplicated. */
+function triggerProjectIds(input: SaveWorkflowInput): string[] {
+  return [
+    ...new Set([
+      input.projectId,
+      ...input.triggers.flatMap((trigger) =>
+        trigger.projectId ? [trigger.projectId] : []
+      ),
+    ]),
+  ];
+}
+
 async function checkScope(
   organizationId: string,
-  input: SaveWorkflowInput,
+  projectIds: readonly string[],
   runAsUserId: string
 ): Promise<string | null> {
-  const [project, runAsUser] = await Promise.all([
+  const [projects, runAsUser] = await Promise.all([
     withDb((db) =>
-      db.project.findFirst({
-        where: { id: input.projectId, organizationId },
+      db.project.findMany({
+        where: { id: { in: [...projectIds] }, organizationId },
         select: { id: true },
       })
     ),
@@ -208,7 +306,7 @@ async function checkScope(
       })
     ),
   ]);
-  if (!project) {
+  if (projects.length !== projectIds.length) {
     return "Project not found in this organization.";
   }
   if (!runAsUser) {
@@ -255,81 +353,66 @@ async function checkComputeTarget(input: {
     : "The compute target was not found, or it is neither owned by nor shared with the run-as user.";
 }
 
-/**
- * Connections the workflow may use: the org's shared ones and its own HTTP
- * endpoint (another workflow's endpoint reads as not found).
- */
-async function loadConnections(
+/** The workflow's own process: its toolkit must be a repository of every trigger project. */
+async function checkToolkits(
   organizationId: string,
-  input: SaveWorkflowInput,
-  workflowId: string | null
-): Promise<Map<string, ConnectionSummary>> {
-  const ids = [
-    ...new Set(
-      [...input.triggers, ...input.actions].flatMap((child) =>
-        child.connectionId ? [child.connectionId] : []
-      )
-    ),
-  ];
-  const rows = await withDb((db) =>
-    db.integrationConnection.findMany({
-      where: {
-        organizationId,
-        id: { in: ids },
-        OR: [
-          { managedByWorkflowId: null },
-          ...(workflowId ? [{ managedByWorkflowId: workflowId }] : []),
-        ],
-      },
-      select: { id: true, name: true, provider: true },
-    })
-  );
-  return new Map(rows.map((row) => [row.id, row]));
+  projectIds: readonly string[],
+  process: ProjectProcess | null
+): Promise<string | null> {
+  for (const projectId of projectIds) {
+    const error = await checkProcessToolkit(organizationId, projectId, process);
+    if (error) {
+      return error;
+    }
+  }
+  return null;
 }
 
 function validateTriggers(
   input: SaveWorkflowInput,
-  connections: Map<string, ConnectionSummary>,
+  catalog: ProjectConnectionCatalog,
   existingIds: ReadonlySet<string>
 ): Result<ValidatedTrigger[], string> {
   const validated: ValidatedTrigger[] = [];
   for (const [index, trigger] of input.triggers.entries()) {
     const label = `Trigger ${index + 1}`;
-    if (trigger.connectionId === null) {
-      const builtIn = validateBuiltInHttpTrigger(label, trigger, existingIds);
-      if (!builtIn.ok) {
-        return builtIn;
-      }
-      validated.push({ ...builtIn.value, position: index });
-      continue;
+    if (trigger.id && !existingIds.has(trigger.id)) {
+      return Result.err(`${label} does not belong to this workflow.`);
     }
-    const child = { ...trigger, connectionId: trigger.connectionId };
-    const base = checkChild(label, child, connections, existingIds);
-    if (!base.ok) {
-      return base;
+    const projectId = trigger.projectId ?? input.projectId;
+    const checked =
+      trigger.connectionKey === null
+        ? validateBuiltInHttpTrigger(label, trigger)
+        : validateConnectionTrigger(label, trigger, {
+            key: trigger.connectionKey,
+            entry: catalog.find(projectId, trigger.connectionKey),
+            projectName: catalog.projectName(projectId),
+          });
+    if (!checked.ok) {
+      return checked;
     }
-    const definition = findTriggerDefinition(base.value.provider, trigger.type);
-    if (!definition) {
-      return Result.err(unsupportedType(label, trigger.type, base.value));
-    }
-    const config = parseConfig(label, definition.configSchema, trigger.config);
-    if (!config.ok) {
-      return config;
-    }
-    validated.push(toValidatedChild(child, config.value, index));
+    validated.push({
+      ...(trigger.id ? { id: trigger.id } : {}),
+      ...checked.value,
+      projectId,
+      type: trigger.type,
+      enabled: trigger.enabled,
+      position: index,
+    });
   }
   return Result.ok(validated);
 }
 
+type TriggerTarget = Pick<
+  ValidatedTrigger,
+  "projectConnectionId" | "connectionId" | "config"
+>;
+
 /** The workflow's own HTTP endpoint: only the generic webhook request trigger. */
 function validateBuiltInHttpTrigger(
   label: string,
-  trigger: TriggerInput,
-  existingIds: ReadonlySet<string>
-): Result<Omit<ValidatedTrigger, "position">, string> {
-  if (trigger.id && !existingIds.has(trigger.id)) {
-    return Result.err(`${label} does not belong to this workflow.`);
-  }
+  trigger: TriggerInput
+): Result<TriggerTarget, string> {
   if (trigger.type !== WebhookTriggerType.Request) {
     return Result.err(
       `${label}: the workflow's HTTP endpoint only offers "${WebhookTriggerType.Request}".`
@@ -347,23 +430,313 @@ function validateBuiltInHttpTrigger(
     return config;
   }
   return Result.ok({
-    ...(trigger.id ? { id: trigger.id } : {}),
+    projectConnectionId: null,
     connectionId: null,
-    type: trigger.type,
     config: config.value,
-    enabled: trigger.enabled,
   });
+}
+
+function validateConnectionTrigger(
+  label: string,
+  trigger: TriggerInput,
+  target: {
+    key: string;
+    entry: ProjectConnectionEntry | null;
+    projectName: string;
+  }
+): Result<TriggerTarget, string> {
+  const { entry } = target;
+  if (!entry) {
+    return Result.err(
+      `${label}: project ${target.projectName} has no connection "${target.key}". Add it on the project's Integrations tab.`
+    );
+  }
+  const definition = findTriggerDefinition(entry.provider, trigger.type);
+  if (!definition) {
+    return Result.err(unsupportedType(label, trigger.type, entry));
+  }
+  const config = parseConfig(label, definition.configSchema, trigger.config);
+  if (!config.ok) {
+    return config;
+  }
+  const outside = triggerContainersOutside(
+    entry.provider,
+    entry.settings,
+    config.value
+  );
+  if (outside.length > 0) {
+    return Result.err(
+      `${label}: ${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not in the settings of connection "${entry.key}". Add ${outside.length === 1 ? "it" : "them"} to the project connection or remove ${outside.length === 1 ? "it" : "them"} from the trigger.`
+    );
+  }
+  return Result.ok({
+    projectConnectionId: entry.id,
+    connectionId: entry.connectionId,
+    config: config.value,
+  });
+}
+
+async function buildActionChecks(input: {
+  organizationId: string;
+  input: SaveWorkflowInput;
+  catalog: ProjectConnectionCatalog;
+  triggers: readonly ValidatedTrigger[];
+  existingIds: ReadonlySet<string>;
+}): Promise<ActionChecks> {
+  const projectIds = [
+    ...new Set(input.triggers.map((trigger) => trigger.projectId)),
+  ];
+  const sourceProviders = input.triggers.flatMap((trigger, index) => {
+    const key = input.input.triggers[index]?.connectionKey ?? null;
+    if (key === null) {
+      return [IntegrationProviderKey.Webhook];
+    }
+    const entry = input.catalog.find(trigger.projectId, key);
+    return entry ? [entry.provider] : [];
+  });
+  const needsRepositories = input.input.actions.some(
+    (action) => action.automaticConnection
+  );
+  const repositoryProviders = needsRepositories
+    ? await loadRepositoryProviders(input.organizationId, projectIds)
+    : [];
+  return {
+    catalog: input.catalog,
+    existingIds: input.existingIds,
+    projectIds,
+    sourceProviders: [...new Set(sourceProviders)],
+    repositoryProviders,
+  };
+}
+
+async function loadRepositoryProviders(
+  organizationId: string,
+  projectIds: readonly string[]
+): Promise<string[]> {
+  const providers = new Set<string>();
+  for (const projectId of projectIds) {
+    const checkouts = await listProjectRepositoryCheckouts(
+      organizationId,
+      projectId
+    );
+    for (const checkout of checkouts) {
+      providers.add(checkout.provider);
+    }
+  }
+  return [...providers];
+}
+
+function validateActions(
+  input: SaveWorkflowInput,
+  checks: ActionChecks
+): Result<ValidatedAction[], string> {
+  const validated: ValidatedAction[] = [];
+  for (const [position, action] of input.actions.entries()) {
+    const label = `Action ${position + 1}`;
+    if (action.id && !checks.existingIds.has(action.id)) {
+      return Result.err(`${label} does not belong to this workflow.`);
+    }
+    const stageFields = toStageFields(label, action);
+    if (!stageFields.ok) {
+      return stageFields;
+    }
+    const target = validateActionTarget(label, action, checks);
+    if (!target.ok) {
+      return target;
+    }
+    validated.push({ ...target.value, position, ...stageFields.value });
+  }
+  return Result.ok(validated);
+}
+
+/** The action's connection (by key, built-in or automatic), type and config. */
+function validateActionTarget(
+  label: string,
+  action: ActionInput,
+  checks: ActionChecks
+): Result<ValidatedActionTarget, string> {
+  if (action.type === WORKFLOW_INSTRUCTION_ACTION_TYPE) {
+    return validateInstruction(label, action, checks);
+  }
+  if (action.type === WORKFLOW_EMAIL_ACTION_TYPE) {
+    return validateEmail(label, action);
+  }
+  if (action.automaticConnection) {
+    return validateAutomaticAction(label, action, checks);
+  }
+  if (action.connectionKey === null) {
+    return validateBuiltInHttpAction(label, action);
+  }
+  const resolved = resolveKey(
+    checks.catalog,
+    checks.projectIds,
+    action.connectionKey
+  );
+  if (!resolved.ok) {
+    return Result.err(`${label}: ${resolved.error}`);
+  }
+  const definition = findActionDefinition(resolved.value.provider, action.type);
+  if (!definition) {
+    return Result.err(
+      `${label}: "${action.type}" is not offered by ${providerName(resolved.value.provider)} connection "${action.connectionKey}".`
+    );
+  }
+  const config = parseConfig(label, definition.configSchema, action.config);
+  if (!config.ok) {
+    return config;
+  }
+  return Result.ok(
+    toActionTarget(action, config.value, {
+      connectionKey: action.connectionKey,
+      automaticConnection: false,
+    })
+  );
+}
+
+/**
+ * An instruction works on the run's source and reads only, unless its
+ * `connections:` grant lists writes; it never names a connection itself.
+ */
+function validateInstruction(
+  label: string,
+  action: ActionInput,
+  checks: ActionChecks
+): Result<ValidatedActionTarget, string> {
+  if (action.connectionKey !== null) {
+    return Result.err(
+      `${label}: an instruction works on the run's source item; list the other connections it may use under connections:.`
+    );
+  }
+  const config = workflowInstructionConfigSchema.safeParse(action.config);
+  if (!config.success) {
+    return Result.err(`${label}: ${describeIssues(config.error.issues)}`);
+  }
+  const grantError = checkConnectionGrants({
+    label,
+    grants: config.data.connections,
+    catalog: checks.catalog,
+    projectIds: checks.projectIds,
+    sourceProviders: checks.sourceProviders,
+  });
+  if (grantError) {
+    return Result.err(grantError);
+  }
+  return Result.ok(
+    toActionTarget(action, toJsonObject(config.data), {
+      connectionKey: null,
+      automaticConnection: true,
+    })
+  );
+}
+
+/** An email goes out through the server's mail relay: it names no connection. */
+function validateEmail(
+  label: string,
+  action: ActionInput
+): Result<ValidatedActionTarget, string> {
+  if (action.connectionKey !== null || !action.automaticConnection) {
+    return Result.err(
+      `${label}: an email is sent by AgentFlow itself; leave out connection:.`
+    );
+  }
+  const config = workflowEmailConfigSchema.safeParse(action.config);
+  if (!config.success) {
+    return Result.err(`${label}: ${describeIssues(config.error.issues)}`);
+  }
+  return Result.ok(
+    toActionTarget(action, toJsonObject(config.data), {
+      connectionKey: null,
+      automaticConnection: true,
+    })
+  );
+}
+
+/**
+ * No connection named: a source item action on a trigger's provider, a pull
+ * request on a repository connection, else the project's only connection
+ * that offers the type (in every trigger project).
+ */
+function validateAutomaticAction(
+  label: string,
+  action: ActionInput,
+  checks: ActionChecks
+): Result<ValidatedActionTarget, string> {
+  const definition = findAutomaticDefinition(action.type, checks);
+  if (!definition.ok) {
+    return Result.err(`${label}: ${definition.error}`);
+  }
+  const config = parseConfig(
+    label,
+    definition.value.configSchema,
+    action.config
+  );
+  if (!config.ok) {
+    return config;
+  }
+  return Result.ok(
+    toActionTarget(action, config.value, {
+      connectionKey: null,
+      automaticConnection: true,
+    })
+  );
+}
+
+type ActionDefinition = NonNullable<ReturnType<typeof findActionDefinition>>;
+
+function findAutomaticDefinition(
+  type: string,
+  checks: ActionChecks
+): Result<ActionDefinition, string> {
+  for (const provider of [
+    ...checks.sourceProviders,
+    ...checks.repositoryProviders,
+  ]) {
+    const definition = findActionDefinition(provider, type);
+    const target = definition ? actionTarget(definition) : null;
+    if (
+      definition &&
+      (target === IntegrationOperationTarget.SourceItem ||
+        target === IntegrationOperationTarget.Repository)
+    ) {
+      return Result.ok(definition);
+    }
+  }
+  return findSingleConnectionDefinition(type, checks);
+}
+
+/** An external type: each trigger project has exactly one connection offering it. */
+function findSingleConnectionDefinition(
+  type: string,
+  checks: ActionChecks
+): Result<ActionDefinition, string> {
+  let found: ActionDefinition | null = null;
+  for (const projectId of checks.projectIds) {
+    const candidates = checks.catalog
+      .list(projectId)
+      .filter((entry) => findActionDefinition(entry.provider, type));
+    const projectName = checks.catalog.projectName(projectId);
+    if (candidates.length === 0) {
+      return Result.err(
+        `no connection of project ${projectName} offers "${type}". Add one on the project's Integrations tab.`
+      );
+    }
+    if (candidates.length > 1) {
+      return Result.err(
+        `several connections of project ${projectName} offer "${type}" (${candidates.map((entry) => entry.key).join(", ")}). Name one with connection:.`
+      );
+    }
+    found = findActionDefinition(candidates[0].provider, type);
+  }
+  return found
+    ? Result.ok(found)
+    : Result.err(`no connection offers "${type}".`);
 }
 
 /** The workflow's built-in HTTPS call: only the generic webhook post action. */
 function validateBuiltInHttpAction(
   label: string,
-  action: ActionInput,
-  existingIds: ReadonlySet<string>
-): Result<Omit<ValidatedChild, "connectionId" | "position">, string> {
-  if (action.id && !existingIds.has(action.id)) {
-    return Result.err(`${label} does not belong to this workflow.`);
-  }
+  action: ActionInput
+): Result<ValidatedActionTarget, string> {
   if (action.type !== WebhookActionType.Post) {
     return Result.err(
       `${label}: the built-in HTTPS call only offers "${WebhookActionType.Post}".`
@@ -380,67 +753,56 @@ function validateBuiltInHttpAction(
   if (!config.ok) {
     return config;
   }
-  return Result.ok({
-    ...(action.id ? { id: action.id } : {}),
-    type: action.type,
-    config: config.value,
-    enabled: action.enabled,
-  });
+  return Result.ok(
+    toActionTarget(action, config.value, {
+      connectionKey: null,
+      automaticConnection: false,
+    })
+  );
 }
 
-function validateActions(
-  input: SaveWorkflowInput,
-  connections: Map<string, ConnectionSummary>,
-  existingIds: ReadonlySet<string>
-): Result<ValidatedAction[], string> {
-  const validated: ValidatedAction[] = [];
-  const nextPositions = new Map<WorkflowActionStage, number>();
-  for (const action of input.actions) {
-    const position = nextPositions.get(action.stage) ?? 0;
-    nextPositions.set(action.stage, position + 1);
-    const label = `${ACTION_STAGE_LABELS[action.stage]} ${position + 1}`;
-    const stageFields = toStageFields(label, action);
-    if (!stageFields.ok) {
-      return stageFields;
-    }
-    if (action.connectionId === null) {
-      const builtIn = validateBuiltInHttpAction(label, action, existingIds);
-      if (!builtIn.ok) {
-        return builtIn;
-      }
-      validated.push({
-        ...builtIn.value,
-        connectionId: null,
-        position,
-        ...stageFields.value,
-      });
+/** Agent steps of the workflow's own process grant connections like instructions. */
+function checkProcessGrants(
+  process: ProjectProcess | null,
+  checks: ActionChecks
+): string | null {
+  for (const step of process?.steps ?? []) {
+    if (step.type !== ProcessStepType.Agent) {
       continue;
     }
-    const child = { ...action, connectionId: action.connectionId };
-    const base = checkChild(label, child, connections, existingIds);
-    if (!base.ok) {
-      return base;
-    }
-    const definition = findActionDefinition(base.value.provider, action.type);
-    if (!definition) {
-      return Result.err(unsupportedType(label, action.type, base.value));
-    }
-    const config = parseConfig(label, definition.configSchema, action.config);
-    if (!config.ok) {
-      return config;
-    }
-    validated.push({
-      ...toValidatedChild(child, config.value, position),
-      ...stageFields.value,
+    const error = checkConnectionGrants({
+      label: `Process step ${step.id}`,
+      grants: step.connections,
+      catalog: checks.catalog,
+      projectIds: checks.projectIds,
+      sourceProviders: checks.sourceProviders,
     });
+    if (error) {
+      return error;
+    }
   }
-  return Result.ok(validated);
+  return null;
+}
+
+function toActionTarget(
+  action: ActionInput,
+  config: JsonObject,
+  connection: Pick<ValidatedAction, "connectionKey" | "automaticConnection">
+): ValidatedActionTarget {
+  return {
+    ...(action.id ? { id: action.id } : {}),
+    ...connection,
+    type: action.type,
+    config,
+    enabled: action.enabled,
+  };
 }
 
 /**
- * Pre actions always run on run.triggered (submitted events are ignored) and
- * keep their continueOnError flag; post actions need at least one post event
- * and store continueOnError false (the flag only applies to pre actions).
+ * Pre actions always run on workflow.triggered (submitted events are
+ * ignored) and keep their continueOnError flag; post actions need at least
+ * one post event and store continueOnError false (the flag only applies to
+ * pre actions).
  */
 function toStageFields(
   label: string,
@@ -469,28 +831,6 @@ function toStageFields(
   });
 }
 
-/**
- * Id ownership and connection checks shared by triggers and actions. A
- * disabled connection is accepted: it ignores inbound events and its actions
- * are skipped at run time, and refusing it would block every later save of
- * the workflow (including turning it off).
- */
-function checkChild(
-  label: string,
-  child: { id?: string; connectionId: string },
-  connections: Map<string, ConnectionSummary>,
-  existingIds: ReadonlySet<string>
-): Result<ConnectionSummary, string> {
-  if (child.id && !existingIds.has(child.id)) {
-    return Result.err(`${label} does not belong to this workflow.`);
-  }
-  const connection = connections.get(child.connectionId);
-  if (!connection) {
-    return Result.err(`${label}: integration connection not found.`);
-  }
-  return Result.ok(connection);
-}
-
 function parseConfig(
   label: string,
   schema: z.ZodType<unknown>,
@@ -503,43 +843,32 @@ function parseConfig(
   return Result.ok(toJsonObject(parsed.data));
 }
 
-function toValidatedChild(
-  child: ChildInput & { connectionId: string },
-  config: JsonObject,
-  position: number
-): ValidatedChild {
-  return {
-    ...(child.id ? { id: child.id } : {}),
-    connectionId: child.connectionId,
-    type: child.type,
-    config,
-    enabled: child.enabled,
-    position,
-  };
-}
-
 function unsupportedType(
   label: string,
   type: string,
-  connection: ConnectionSummary
+  entry: ProjectConnectionEntry
 ): string {
-  const providerName =
-    getIntegrationProvider(connection.provider)?.displayName ??
-    connection.provider;
-  return `${label}: "${type}" is not offered by the ${providerName} connection "${connection.name}".`;
+  return `${label}: "${type}" is not offered by ${providerName(entry.provider)} connection "${entry.key}".`;
 }
 
-/** How the editor titles action rows; positions are 1-based within the stage. */
-const ACTION_STAGE_LABELS: Record<WorkflowActionStage, string> = {
-  [WorkflowActionStage.Pre]: "Pre action",
-  [WorkflowActionStage.Post]: "Post action",
-};
+function providerName(provider: string): string {
+  return getIntegrationProvider(provider)?.displayName ?? provider;
+}
 
-export function describeIssues(issues: z.core.$ZodIssue[]): string {
-  return issues
-    .map((issue) => {
-      const path = issue.path.map(String).join(".");
-      return path ? `${path}: ${issue.message}` : issue.message;
-    })
-    .join(", ");
+/**
+ * An orchestrated workflow starts no run: its requests go to its own
+ * orchestrator (one runner, agent.runner), so it has no process of its own
+ * and no runner rules.
+ */
+function checkOrchestrated(input: SaveWorkflowInput): string | null {
+  if (input.agent.mode !== WorkflowAgentMode.Orchestrated) {
+    return null;
+  }
+  if (input.agent.process) {
+    return "A workflow handled by the orchestrator has no process of its own: remove agent.process, or choose another mode.";
+  }
+  if (input.agent.runners.length > 0) {
+    return "A workflow handled by the orchestrator runs on one runner (agent.runner): remove agent.runners.";
+  }
+  return null;
 }

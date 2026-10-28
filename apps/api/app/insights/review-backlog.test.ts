@@ -156,7 +156,7 @@ describe("fetchReviewQueue (ISS-4629)", () => {
     // is classified MERGED downstream, so mergedAt: null keeps it out of both the
     // chart and the backlog (wongk).
     expect(where.mergedAt).toBeNull();
-    // Still authorization-scoped by the branch artifact for Me/Team.
+    // Still authorization-scoped by the branch artifact for Me.
     expect(where.branchArtifact).toBeDefined();
   });
 });

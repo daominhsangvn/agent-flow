@@ -37,7 +37,6 @@ import {
 const TEST_PROJECT = {
   id: "project-1",
   name: "Project Hyperion",
-  teams: [{ id: "team-1", name: "Core Team" }],
 };
 
 function renderRow(

@@ -4,6 +4,7 @@ import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import pLimit from "p-limit";
 import { mapWithDbConcurrency } from "@/lib/db-fanout";
+import { advanceDueConversations } from "@/lib/orchestrator/advance";
 import {
   type ActionDrainCounts,
   drainActionRuns,
@@ -32,6 +33,8 @@ export type WorkflowTickResult = {
   poll: PollSummary;
   runs: { checked: number; advanced: number };
   actionRuns: ActionDrainCounts & { requeued: number };
+  /** Project orchestrator: tasks started, waits fired, conversations moved. */
+  orchestrator: { advanced: number; tasksLaunched: number; waitsFired: number };
   errors: string[];
   durationMs: number;
 };
@@ -63,10 +66,17 @@ export async function runWorkflowTick(
     () => drainActionRuns({ limit: TICK_DRAIN_LIMIT, now }),
     { claimed: 0, succeeded: 0, skipped: 0, retried: 0, failed: 0 }
   );
+  const orchestrator = await runStage(
+    errors,
+    "orchestrator",
+    () => advanceDueConversations(now),
+    { advanced: 0, tasksLaunched: 0, waitsFired: 0 }
+  );
   return {
     poll,
     runs,
     actionRuns: { ...drained, requeued },
+    orchestrator,
     errors,
     durationMs: Date.now() - startedAt,
   };

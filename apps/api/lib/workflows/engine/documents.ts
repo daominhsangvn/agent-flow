@@ -4,6 +4,7 @@ import {
   type WorkflowAgentConfig,
   type WorkflowRunError,
   WorkflowRunErrorCode,
+  type WorkflowRunSourceDocumentType,
 } from "@repo/api/src/types/workflow";
 import { withDb } from "@repo/database";
 import { parseError } from "@repo/observability/error";
@@ -28,17 +29,16 @@ import {
   deliveredSourceStatus,
   importedSourceStatus,
   sourceDocumentLabel,
-  sourceDocumentType,
 } from "./source-document";
 
 /**
  * Source and implementation-plan documents of a run. The source item is
- * imported as an Issue (FEATURE), or as a PRD when the item is a product
- * requirement (source-document.ts); the plan is generated from it. Creation
- * is idempotent: ids already stored on the run are reused, so a retried
- * `ingesting` step never creates a second pair. On resume (cycle > 1) the
- * source document is refreshed from the item and the plan document is
- * reused. The plan document is only made for a process with a AgentFlow plan
+ * imported as an Issue (FEATURE), or as a PRD when the workflow's PRD
+ * instruction found a product requirement (source-classification.ts); the
+ * plan is generated from it. Creation is idempotent: ids already stored on the run
+ * are reused, so a retried `ingesting` step never creates a second pair. On
+ * resume (cycle > 1) the source document is refreshed from the item and the
+ * plan document is reused. The plan document is only made for a process with a AgentFlow plan
  * step (the built-in flow always has one).
  */
 
@@ -55,6 +55,8 @@ export type RunDocumentsInput = {
   runAsUserId: string;
   agent: WorkflowAgentConfig;
   item: SourceItem;
+  /** The source document's type: the PRD instruction's decision, else Issue. */
+  sourceType: WorkflowRunSourceDocumentType;
   /** The run's process has a AgentFlow plan step. */
   withPlanDocument: boolean;
 };
@@ -143,7 +145,7 @@ async function prepareRunDocuments(
     workflowName: input.workflowName,
     instructions: input.agent.instructions,
   };
-  const type = sourceDocumentType(input.item);
+  const type = input.sourceType;
   const content =
     type === DocumentType.Prd
       ? buildPrdBody(bodyContext)
@@ -200,7 +202,7 @@ async function createFeatureDocument(
   content: string
 ): Promise<string | null> {
   const repository = input.agent.repository;
-  const type = sourceDocumentType(input.item);
+  const type = input.sourceType;
   const document = await documentService.create(
     input.run.organizationId,
     input.runAsUserId,

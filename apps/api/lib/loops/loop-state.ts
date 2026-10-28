@@ -637,3 +637,26 @@ export async function loopStateObjectExists(key: string): Promise<boolean> {
     throw error;
   }
 }
+
+/** Stores a runner-collected file (any type) under the loop prefix, uncompressed. */
+export async function putLoopAttachment(input: {
+  key: string;
+  bytes: Uint8Array;
+  contentType: string;
+}): Promise<void> {
+  await getStorageClient().send(
+    new PutObjectCommand({
+      Bucket: requireBucket(),
+      Key: input.key,
+      Body: input.bytes,
+      ContentLength: input.bytes.byteLength,
+      ContentType: input.contentType,
+      ...coldStorageClassInput(),
+    })
+  );
+}
+
+/** Reads a file stored by {@link putLoopAttachment}. */
+export async function getLoopAttachment(key: string): Promise<Uint8Array> {
+  return await getObject(key);
+}

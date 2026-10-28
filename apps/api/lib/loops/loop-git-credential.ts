@@ -97,7 +97,7 @@ export async function issueLoopGitCredential(input: {
   const repository = checkouts.find(
     (checkout) =>
       loopRepositories.has(checkout.fullName.toLowerCase()) &&
-      matchesRequest(checkout.cloneUrl, input.request)
+      matchesGitCredentialRequest(checkout.cloneUrl, input.request)
   );
   if (!repository) {
     return failure(
@@ -105,32 +105,15 @@ export async function issueLoopGitCredential(input: {
       "No repository of this loop matches the request"
     );
   }
-  const connection = await loadRepositoryConnection(
-    input.organizationId,
-    repository.connectionId
-  );
-  if (!connection.ok) {
-    return Result.err(connection.error);
-  }
-  try {
-    return Result.ok(
-      await connection.value.repositories.gitCredential(
-        connection.value.context,
-        toRepositoryInfo(repository)
-      )
-    );
-  } catch (error) {
-    log.warn(`${LOG_PREFIX} Could not issue a git credential`, {
-      loopId: input.loopId,
-      repository: repository.fullName,
-      error: parseError(error),
-    });
-    return failure(Status.BadGateway, "Could not issue a git credential");
-  }
+  return issueRepositoryGitCredential({
+    organizationId: input.organizationId,
+    repository,
+    logContext: { loopId: input.loopId },
+  });
 }
 
 /** Same scheme and host; same repository path when git sent one. */
-function matchesRequest(
+export function matchesGitCredentialRequest(
   cloneUrl: string,
   request: GitCredentialRequest
 ): boolean {
@@ -185,4 +168,34 @@ function failure<T>(
   message: string
 ): Result<T, GitCredentialError> {
   return Result.err({ status, message });
+}
+
+/** Issues a git credential for one project repository from its connection. */
+export async function issueRepositoryGitCredential(input: {
+  organizationId: string;
+  repository: ProjectRepositoryCheckout;
+  logContext: Record<string, string>;
+}): Promise<Result<GitCredential, GitCredentialError>> {
+  const connection = await loadRepositoryConnection(
+    input.organizationId,
+    input.repository.connectionId
+  );
+  if (!connection.ok) {
+    return Result.err(connection.error);
+  }
+  try {
+    return Result.ok(
+      await connection.value.repositories.gitCredential(
+        connection.value.context,
+        toRepositoryInfo(input.repository)
+      )
+    );
+  } catch (error) {
+    log.warn(`${LOG_PREFIX} Could not issue a git credential`, {
+      ...input.logContext,
+      repository: input.repository.fullName,
+      error: parseError(error),
+    });
+    return failure(Status.BadGateway, "Could not issue a git credential");
+  }
 }

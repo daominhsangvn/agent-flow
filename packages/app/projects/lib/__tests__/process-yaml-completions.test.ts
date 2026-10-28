@@ -1,15 +1,37 @@
+import {
+  ConnectionAccess,
+  SOURCE_CONNECTION_KEY,
+  SourceOperation,
+} from "@repo/api/src/types/connection-grants";
+import { IntegrationProviderKey } from "@repo/api/src/types/integration";
+import { ProcessStepRole } from "@repo/api/src/types/project-process";
+import { YamlCursorKind } from "@repo/app/shared/lib/yaml-cursor";
 import { describe, expect, it } from "vitest";
+import {
+  JIRA_KEY,
+  PROVIDERS,
+  TEAMS_KEY,
+  TEAMS_POST_MESSAGE,
+} from "../../../integrations/__tests__/integration-fixtures";
 import {
   PROCESS_STEP_SNIPPETS,
   type ProcessCompletionData,
   processYamlCompletions,
-  YamlCursorKind,
   yamlCursorContext,
 } from "../process-yaml-completions";
 
 const DATA: ProcessCompletionData = {
   repositories: ["brenock/ip-okf", "brenock/ip-web"],
   stepIds: ["analyze", "draft"],
+  projectConnections: [
+    { key: JIRA_KEY, name: "Acme Jira", provider: IntegrationProviderKey.Jira },
+    {
+      key: TEAMS_KEY,
+      name: "Delivery channel",
+      provider: IntegrationProviderKey.MicrosoftTeams,
+    },
+  ],
+  providers: PROVIDERS,
 };
 
 /** The context and suggestions at the "§" of the text (YAML uses "|" itself). */
@@ -48,14 +70,78 @@ describe("yamlCursorContext + processYamlCompletions", () => {
       stepType: "agent",
     });
     expect(labels).toEqual([
+      "role",
       "instruction",
       "questions",
       "artifacts",
       "reply",
       "document",
       "finish",
+      "releaseNotes",
       "timeoutMinutes",
+      "connections",
+      "review",
+      "retry",
     ]);
+  });
+
+  it("offers a step's retry attempts", () => {
+    expect(
+      at("steps:\n  - type: agent\n    id: implement\n    retry:\n      §")
+        .labels
+    ).toEqual(["attempts"]);
+  });
+
+  it("offers a review's keys, its feedback's and its signals' labels", () => {
+    const base = "steps:\n  - type: agent\n    id: plan\n    review:\n";
+
+    expect(at(`${base}      §`).labels).toEqual([
+      "approve",
+      "complete",
+      "feedback",
+      "instruction",
+      "session",
+      "consumeLabels",
+    ]);
+    expect(at(`${base}      feedback:\n        §`).labels).toEqual([
+      "labels",
+      "mention",
+    ]);
+    expect(at(`${base}      approve:\n        §`).labels).toEqual(["labels"]);
+    expect(at(`${base}      session: §`).labels).toEqual(["resume", "fresh"]);
+    const { context } = at("steps:\n  - type: agent\n    id: plan\n    §");
+    const review = context
+      ? processYamlCompletions(context, DATA).find(
+          (completion) => completion.label === "review"
+        )
+      : undefined;
+    expect(review?.insert).toBe("review:\n  ");
+  });
+
+  it("offers the roles of an agent step", () => {
+    expect(
+      at("steps:\n  - type: agent\n    id: plan\n    role: §").labels
+    ).toEqual([ProcessStepRole.Plan, ProcessStepRole.Implement]);
+  });
+
+  it("offers source and the project's connection keys in a step's grant", () => {
+    expect(
+      at("steps:\n  - type: agent\n    id: analyze\n    connections:\n      §")
+        .labels
+    ).toEqual([SOURCE_CONNECTION_KEY, JIRA_KEY, TEAMS_KEY]);
+  });
+
+  it("offers what a granted key may do", () => {
+    expect(
+      at(
+        "steps:\n  - type: agent\n    id: analyze\n    connections:\n      source: §"
+      ).labels
+    ).toContain(`[${SourceOperation.Comment}, ${SourceOperation.Transition}]`);
+    expect(
+      at(
+        `steps:\n  - type: agent\n    id: analyze\n    connections:\n      ${TEAMS_KEY}: §`
+      ).labels
+    ).toEqual([ConnectionAccess.Read, `[${TEAMS_POST_MESSAGE}]`]);
   });
 
   it("offers an approval only its own keys", () => {
@@ -63,6 +149,7 @@ describe("yamlCursorContext + processYamlCompletions", () => {
       "id",
       "name",
       "show",
+      "approve",
     ]);
   });
 
@@ -117,7 +204,10 @@ describe("yamlCursorContext + processYamlCompletions", () => {
     ).toEqual(["accept", "suggest"]);
     expect(
       at("steps:\n  - type: agentflow.execute\n    id: execute\n    §").labels
-    ).toEqual(["name", "review"]);
+    ).toEqual(["name", "review", "releaseNotes"]);
+    expect(
+      at("steps:\n  - type: agentflow.execute\n    releaseNotes: §").labels
+    ).toEqual(["true", "false"]);
     expect(
       at("steps:\n  - type: agentflow.execute\n    review: f§").labels
     ).toEqual(["full", "fast"]);

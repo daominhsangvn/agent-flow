@@ -1,12 +1,9 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-const RE_ADD_TEAM = /add team/i;
 const RE_ADD_PROJECT = /add project/i;
-const RE_CREATE_TEAM_DIALOG = /create team/i;
 const RE_CREATE_PROJECT_DIALOG = /create project/i;
 const RE_CREATE_NEW_FEATURE_DIALOG = /create new feature/i;
 const RE_CREATE_FEATURE_MENU = /create feature/i;
-const RE_CREATE_TEAM_SUBMIT = /^create team$/i;
 const RE_CREATE_PROJECT_SUBMIT = /^create project$/i;
 const RE_CREATE_FEATURE_SUBMIT = /^create feature$/i;
 
@@ -250,20 +247,6 @@ async function submitDialogForm(
     name: submitButtonName,
   });
   await clickSubmitAndWaitForClose(page, dialog, submitButton, responsePath);
-}
-
-export async function createTeamViaSidebar(
-  page: Page,
-  teamName: string
-): Promise<Locator> {
-  const dialog = await openDialog(page, RE_ADD_TEAM, RE_CREATE_TEAM_DIALOG);
-  await submitDialogForm(page, dialog, {
-    fieldSelector: "#team-name",
-    responsePath: "/teams",
-    submitButtonName: RE_CREATE_TEAM_SUBMIT,
-    value: teamName,
-  });
-  return dialog;
 }
 
 export async function createProjectViaDialog(

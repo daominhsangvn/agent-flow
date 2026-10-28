@@ -98,6 +98,7 @@ describe("buildRunProcessView", () => {
       ],
       stepId: "review",
       waiting: null,
+      review: null,
       approval: {
         stepId: "review",
         requestedAt: "2026-10-01T00:00:00.000Z",

@@ -119,7 +119,7 @@ export function orgScopedDeepLink(orgSlug: string, deepLink: string): string {
 
 /**
  * The org-RELATIVE route a hit should link to, or null when it cannot build a
- * safe route (a document missing its slug/subtype, a project missing its team).
+ * safe route (a document missing its slug/subtype).
  * A null result means "render a non-link row" so a click never lands on a 404.
  * Surfaces org-scope the result via their navigation adapter (`useOrgPath`).
  * Thin pass-through to the canonical {@link searchHitRoute} contract helper,

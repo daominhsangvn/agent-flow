@@ -1,7 +1,6 @@
 import { getApiBaseUrl } from "./helpers/api-url";
 import { isOrgAdminRole, requireOrgClaims } from "./helpers/better-auth";
 import { createProject, deleteProject } from "./helpers/create-project";
-import { createTeam, deleteTeam } from "./helpers/create-team";
 import { E2ETag } from "./helpers/tags";
 import { createUniqueName } from "./helpers/utils";
 import { expect, test } from "./test";
@@ -22,17 +21,10 @@ test("project repositories: empty state, add form and the admin API", {
   const api = getApiBaseUrl();
   const headers = { Authorization: `Bearer ${token}` };
 
-  let teamId: string | null = null;
   let projectId: string | null = null;
   try {
-    const team = await createTeam(request, {
-      name: createUniqueName("e2e-repos-team"),
-      token,
-    });
-    teamId = team.id;
     const project = await createProject(request, {
       name: createUniqueName("e2e-repos-project"),
-      teamIds: [team.id],
       token,
     });
     projectId = project.id;
@@ -53,8 +45,8 @@ test("project repositories: empty state, add form and the admin API", {
     );
     expect(add.status()).toBe(404);
 
-    await page.goto(`/${orgSlug}/teams/${team.id}/projects/${project.id}`);
-    await page.getByRole("radio", { name: "Repositories" }).click();
+    await page.goto(`/${orgSlug}/projects/${project.id}`);
+    await page.getByRole("radio", { name: "Integrations" }).click();
     await expect(page).toHaveURL(REPOSITORIES_TAB_RE);
     await expect(page.getByText(NO_REPOSITORIES_RE)).toBeVisible({
       timeout: 15_000,
@@ -100,16 +92,13 @@ test("project repositories: empty state, add form and the admin API", {
     expect((await stored.json()).data).toEqual({
       instructions: "- shop: storefront\n- api: backend",
     });
-    await page.getByRole("radio", { name: "Repositories" }).click();
+    await page.getByRole("radio", { name: "Integrations" }).click();
     await expect(
       page.getByRole("textbox", { name: "Agent instructions" })
     ).toHaveCount(0);
   } finally {
     if (projectId) {
       await deleteProject(request, projectId, token);
-    }
-    if (teamId) {
-      await deleteTeam(request, teamId, token);
     }
   }
 });

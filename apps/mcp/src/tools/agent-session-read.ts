@@ -116,14 +116,7 @@ export const agentSessionListInputSchema = {
     .enum(AGENT_SESSION_VIEWER_SCOPE_OPTIONS)
     .optional()
     .describe(
-      'Visibility scope: "self" (your own sessions), "organization" (all org sessions), or "team". Defaults to the widest scope you are authorized for.'
-    ),
-  teamId: z
-    .string()
-    .uuid()
-    .optional()
-    .describe(
-      'Team id (UUID) to scope to. Required when viewerScope is "team"; must be omitted for any other scope.'
+      'Visibility scope: "self" (your own sessions) or "organization" (all org sessions). Defaults to the widest scope you are authorized for.'
     ),
   quality: z
     .enum(SESSION_QUALITY_VALUES)
@@ -153,7 +146,6 @@ type AgentSessionListInput = {
   status?: string;
   userId?: string;
   viewerScope?: (typeof AGENT_SESSION_VIEWER_SCOPE_OPTIONS)[number];
-  teamId?: string;
   quality?: (typeof SESSION_QUALITY_VALUES)[number];
   limit?: number;
   offset?: number;
@@ -174,7 +166,6 @@ export function buildAgentSessionListQuery(
     status: input.status,
     userId: input.userId,
     viewerScope: input.viewerScope,
-    teamId: input.teamId,
     // FEA-3345: the server default is now fail-open `all`. This MCP read tool
     // keeps its documented `substantive` default (hide idle sessions) by sending
     // it explicitly when the agent omits `quality`, so the `.describe()` contract

@@ -7,6 +7,7 @@ import type {
   RunRepositorySnapshot,
 } from "@/lib/integrations/types";
 import { readRunRepositories, toJsonObject } from "./run-data";
+import { attachPullRequestsToRunSessions } from "./run-session-pull-requests";
 
 /**
  * The run's repositories (WorkflowRun.repository) and what actions report
@@ -93,7 +94,8 @@ export async function recordRunRepositoryBranches(
  * on its repository, and the first one becomes the run's pull request
  * (prUrl / branchName) unless the run already has one, so later actions see
  * it as {{pr.url}}. The run row is locked so two actions reporting at once
- * never overwrite each other's pull requests.
+ * never overwrite each other's pull requests. The pull requests are then
+ * listed on the sessions of the run's loops (run-session-pull-requests.ts).
  */
 export async function recordActionOutputs(
   runId: string,
@@ -104,16 +106,16 @@ export async function recordActionOutputs(
   if (!first) {
     return;
   }
-  await withDb.tx(async (tx) => {
+  const recorded = await withDb.tx(async (tx) => {
     await tx.$queryRaw(
       Prisma.sql`SELECT id FROM workflow_runs WHERE id = ${runId}::uuid FOR UPDATE`
     );
     const run = await tx.workflowRun.findUnique({
       where: { id: runId },
-      select: { repository: true, prUrl: true },
+      select: { organizationId: true, repository: true, prUrl: true },
     });
     if (!run) {
-      return;
+      return null;
     }
     const opened = new Map(
       pullRequests.map((pullRequest) => [pullRequest.repositoryId, pullRequest])
@@ -135,6 +137,22 @@ export async function recordActionOutputs(
         ...(run.prUrl ? {} : { prUrl: first.url, branchName: first.branch }),
       },
     });
+    return { organizationId: run.organizationId, repositories };
+  });
+  if (!recorded) {
+    return;
+  }
+  await attachPullRequestsToRunSessions({
+    runId,
+    organizationId: recorded.organizationId,
+    pullRequests: pullRequests.flatMap((pullRequest) => {
+      const repository = recorded.repositories.find(
+        (candidate) => candidate.id === pullRequest.repositoryId
+      );
+      return repository
+        ? [{ ...pullRequest, repository: repository.fullName }]
+        : [];
+    }),
   });
 }
 
@@ -195,10 +213,10 @@ async function resolveRunRepositories(
   const run = await withDb((db) =>
     db.workflowRun.findFirst({
       where: { id: input.runId, organizationId },
-      select: { workflow: { select: { projectId: true } } },
+      select: { projectId: true },
     })
   );
-  const projectId = run?.workflow.projectId;
+  const projectId = run?.projectId;
   if (!projectId) {
     return [];
   }

@@ -56,6 +56,7 @@ const mocks = vi.hoisted(() => ({
   hasEnabledPreActions: vi.fn(),
   hasPostEvents: vi.fn(),
   skipUnfinishedPreActionRuns: vi.fn(),
+  skipPendingPostActionRuns: vi.fn(),
   runPreActions: vi.fn(),
   cancelRunLoops: vi.fn(),
   waitUntil: vi.fn(),
@@ -104,6 +105,8 @@ vi.mock("@/lib/workflows/engine/actions", () => ({
   hasEnabledPreActions: mocks.hasEnabledPreActions,
   hasPostEvents: mocks.hasPostEvents,
   skipUnfinishedPreActionRuns: mocks.skipUnfinishedPreActionRuns,
+  skipPendingPostActionRuns: mocks.skipPendingPostActionRuns,
+  RUN_CANCELLED_SKIP_REASON: "The run was cancelled.",
 }));
 // The pre_actions step itself is covered end to end in pre-actions.test.ts.
 vi.mock("@/lib/workflows/engine/pre-actions", async (importOriginal) => {
@@ -208,7 +211,10 @@ describe("advanceRun — setup", () => {
       command: LoopCommand.Plan,
       agent: AGENT_CONFIG,
     });
-    expect(enqueuedEvents()).toEqual([WorkflowRunEvent.Started]);
+    expect(enqueuedEvents()).toEqual([
+      WorkflowRunEvent.Started,
+      WorkflowRunEvent.PlanStarted,
+    ]);
     expect(mocks.waitUntil).toHaveBeenCalled();
     expect(mocks.hasEnabledPreActions).toHaveBeenCalledWith(
       expect.objectContaining({ workflowId: expect.any(String) })
@@ -255,13 +261,13 @@ describe("advanceRun — setup", () => {
     });
   });
 
-  it("does not send run.started again when a resumed run plans again", async () => {
+  it("does not send workflow.started again when a resumed run plans again, only plan.started", async () => {
     fake.setRun({ status: WorkflowRunStatus.Ingesting, cycle: 2 });
 
     await advanceRun(RUN_ID, NOW);
 
     expect(run().status).toBe(WorkflowRunStatus.Planning);
-    expect(enqueuedEvents()).toEqual([]);
+    expect(enqueuedEvents()).toEqual([WorkflowRunEvent.PlanStarted]);
   });
 
   it("does not launch a second PLAN when one was launched in this phase", async () => {
@@ -277,7 +283,8 @@ describe("advanceRun — setup", () => {
   it("fails a run whose workflow was disabled", async () => {
     fake.setRun({
       status: WorkflowRunStatus.Received,
-      workflow: { name: "w", enabled: false, projectId: "p" },
+      projectId: "p",
+      workflow: { name: "w", enabled: false },
     });
 
     await advanceRun(RUN_ID, NOW);
@@ -356,7 +363,10 @@ describe("advanceRun — setup", () => {
       nextStepAt: null,
       phaseStartedAt: later,
     });
-    expect(enqueuedEvents()).toEqual([WorkflowRunEvent.Started]);
+    expect(enqueuedEvents()).toEqual([
+      WorkflowRunEvent.Started,
+      WorkflowRunEvent.PlanStarted,
+    ]);
   });
 
   it("backs off longer on later attempts and fails after the fifth", async () => {
@@ -419,7 +429,7 @@ describe("advanceRun — pre actions", () => {
     mocks.hasEnabledPreActions.mockResolvedValue(true);
   });
 
-  it("enqueues run.triggered and enters pre_actions when the workflow has pre actions", async () => {
+  it("enqueues workflow.triggered and enters pre_actions once the item is imported", async () => {
     mocks.runPreActions.mockResolvedValue({ kind: PreActionsOutcomeKind.Wait });
     fake.setRun({ status: WorkflowRunStatus.Received });
 
@@ -437,19 +447,6 @@ describe("advanceRun — pre actions", () => {
     expect(mocks.drainActionRuns).not.toHaveBeenCalled();
     expect(mocks.launchWorkflowLoop).not.toHaveBeenCalled();
     expect(run().leaseUntil).toBeNull();
-  });
-
-  it("continues with the agent team in the same call once the pre actions are done", async () => {
-    fake.setRun({ status: WorkflowRunStatus.Received });
-
-    await advanceRun(RUN_ID, NOW);
-
-    expect(run().status).toBe(WorkflowRunStatus.Planning);
-    expect(enqueuedEvents()).toEqual([
-      WorkflowRunEvent.Triggered,
-      WorkflowRunEvent.Started,
-    ]);
-    expect(mocks.launchWorkflowLoop).toHaveBeenCalledTimes(1);
   });
 
   it("fails the run with the pre action error and skips the remaining pre rows", async () => {
@@ -641,7 +638,10 @@ describe("advanceRun — planning", () => {
       expect.objectContaining({ command: LoopCommand.Execute })
     );
     expect(run().status).toBe(WorkflowRunStatus.Executing);
-    expect(enqueuedEvents()).toEqual([WorkflowRunEvent.PlanReady]);
+    expect(enqueuedEvents()).toEqual([
+      WorkflowRunEvent.PlanReady,
+      WorkflowRunEvent.ExecuteStarted,
+    ]);
   });
 
   it("fails with plan_state_unavailable when the plan cannot be approved", async () => {
@@ -795,7 +795,10 @@ describe("advanceRun — executing", () => {
       FEATURE_DOCUMENT_ID,
       ORG_ID
     );
-    expect(enqueuedEvents()).toEqual([WorkflowRunEvent.Succeeded]);
+    expect(enqueuedEvents()).toEqual([
+      WorkflowRunEvent.ExecuteCompleted,
+      WorkflowRunEvent.Succeeded,
+    ]);
   });
 
   it("falls back to the loop's linked pull request", async () => {
@@ -857,7 +860,10 @@ describe("advanceRun — executing", () => {
       status: WorkflowRunStatus.Succeeded,
       prUrl: "https://github.com/acme/app/pull/14",
     });
-    expect(enqueuedEvents()).toEqual([WorkflowRunEvent.Succeeded]);
+    expect(enqueuedEvents()).toEqual([
+      WorkflowRunEvent.ExecuteCompleted,
+      WorkflowRunEvent.Succeeded,
+    ]);
   });
 });
 
@@ -911,7 +917,7 @@ describe("advanceRun — needs_input", () => {
     expect(run().status).toBe(WorkflowRunStatus.Planning);
     expect(run().cycle).toBe(2);
     expect(mocks.hasEnabledPreActions).not.toHaveBeenCalled();
-    expect(enqueuedEvents()).toEqual([]);
+    expect(enqueuedEvents()).toEqual([WorkflowRunEvent.PlanStarted]);
   });
 
   it("keeps the cycle when it adopts an EXECUTE loop", async () => {
@@ -924,6 +930,7 @@ describe("advanceRun — needs_input", () => {
     await advanceRun(RUN_ID, NOW);
 
     expect(run().cycle).toBe(1);
+    expect(enqueuedEvents()).toEqual([WorkflowRunEvent.ExecuteStarted]);
   });
 });
 
@@ -941,6 +948,11 @@ describe("cancelRun", () => {
     expect(run().leaseUntil).toBeNull();
     expect(enqueuedEvents()).toEqual([]);
     expect(mocks.skipUnfinishedPreActionRuns).not.toHaveBeenCalled();
+    // Its earlier events no longer report, e.g. questions nobody will answer.
+    expect(mocks.skipPendingPostActionRuns).toHaveBeenCalledWith(
+      RUN_ID,
+      "The run was cancelled."
+    );
   });
 
   it("skips the pre action runs that did not run when cancelled in pre_actions", async () => {

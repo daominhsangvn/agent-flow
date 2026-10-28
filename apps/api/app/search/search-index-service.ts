@@ -65,11 +65,10 @@ export type SearchProjectionInput = {
   priority: string | null;
   updatedAt: Date;
   // Phase-2 route fields. Nullable — the type that does not carry a given field
-  // leaves it null (documents: slug + entitySubtype; projects: slug + teamId;
+  // leaves it null (documents: slug + entitySubtype; projects: slug;
   // loops: none).
   slug: string | null;
   entitySubtype: string | null;
-  teamId: string | null;
   // Route anchor (FEA-3930 comment/PR/branch slice). The id of a DIFFERENT entity
   // this row routes to (PR → owning branch; comment → anchored artifact). Null
   // for the types that route off their own `entityId`.
@@ -117,7 +116,7 @@ export const searchIndexService = {
         INSERT INTO "search_document" (
           "id", "organization_id", "entity_type", "entity_id",
           "title", "body", "project_id", "assignee_id", "status", "priority",
-          "updated_at", "slug", "entity_subtype", "team_id", "anchor_entity_id"
+          "updated_at", "slug", "entity_subtype", "anchor_entity_id"
         )
         VALUES ${rows}
         ON CONFLICT ("organization_id", "entity_type", "entity_id")
@@ -131,7 +130,6 @@ export const searchIndexService = {
           "updated_at" = EXCLUDED."updated_at",
           "slug" = EXCLUDED."slug",
           "entity_subtype" = EXCLUDED."entity_subtype",
-          "team_id" = EXCLUDED."team_id",
           "anchor_entity_id" = EXCLUDED."anchor_entity_id"
       `
     );
@@ -288,7 +286,6 @@ function projectionValuesRow(input: SearchProjectionInput): Prisma.Sql {
     ${input.updatedAt},
     ${input.slug},
     ${input.entitySubtype},
-    ${input.teamId ? Prisma.sql`${input.teamId}::uuid` : Prisma.sql`NULL`},
     ${input.anchorEntityId ? Prisma.sql`${input.anchorEntityId}::uuid` : Prisma.sql`NULL`}
   )`;
 }
@@ -366,22 +363,19 @@ export function documentProjection(
     updatedAt: doc.updatedAt,
     slug: doc.slug,
     entitySubtype: doc.entitySubtype,
-    teamId: null,
     anchorEntityId: null,
   };
 }
 
 /**
  * The minimal Project shape the projection needs. `slug` is the project's URL
- * handle; `teamId` is its owning team (the web app routes a project team-scoped
- * as `/teams/<teamId>/projects/<id>`), null when the project has no team yet.
+ * handle (the web app routes projects org-level as `/projects/<id>`).
  */
 export type ProjectProjectionSource = {
   id: string;
   organizationId: string;
   name: string;
   slug: string | null;
-  teamId: string | null;
   description: string | null;
   assigneeId: string | null;
   /** The project's status (ProjectStatus) as a string. */
@@ -411,7 +405,6 @@ export function projectProjection(
     updatedAt: project.updatedAt,
     slug: project.slug,
     entitySubtype: null,
-    teamId: project.teamId,
     anchorEntityId: null,
   };
 }
@@ -448,10 +441,9 @@ export function loopProjection(
     status: loop.status,
     priority: null,
     updatedAt: loop.updatedAt,
-    // Loops route by id (`/loops/<id>`) and carry no slug/subtype/team.
+    // Loops route by id (`/loops/<id>`) and carry no slug/subtype.
     slug: null,
     entitySubtype: null,
-    teamId: null,
     anchorEntityId: null,
   };
 }
@@ -475,7 +467,7 @@ export type AgentSessionProjectionSource = {
 
 /**
  * Map an AI session to its projection row. Sessions route by id
- * (`/sessions/<id>`) and carry no slug/subtype/team. Visibility follows the
+ * (`/sessions/<id>`) and carry no slug/subtype. Visibility follows the
  * session's owner via `assigneeId`; projectId is null (a session is not
  * directly project-scoped in the projection).
  */
@@ -496,7 +488,6 @@ export function agentSessionProjection(
     updatedAt: session.updatedAt,
     slug: null,
     entitySubtype: null,
-    teamId: null,
     anchorEntityId: null,
   };
 }
@@ -546,7 +537,6 @@ export function commentProjection(
     slug: null,
     // The anchor artifact's TYPE drives session-vs-branch route selection.
     entitySubtype: comment.anchorEntityType,
-    teamId: null,
     anchorEntityId: comment.anchorEntityId,
   };
 }
@@ -591,7 +581,6 @@ export function pullRequestProjection(
     updatedAt: pr.updatedAt,
     slug: null,
     entitySubtype: null,
-    teamId: null,
     // A PR routes to its owning branch's detail page.
     anchorEntityId: pr.branchArtifactId,
   };
@@ -614,7 +603,7 @@ export type BranchProjectionSource = {
 
 /**
  * Map a created/updated Branch to its projection row. Branches route by id
- * (`/branches/<artifactId>`) and carry no slug/subtype/team/anchor.
+ * (`/branches/<artifactId>`) and carry no slug/subtype/anchor.
  */
 export function branchProjection(
   branch: BranchProjectionSource
@@ -633,7 +622,6 @@ export function branchProjection(
     updatedAt: branch.updatedAt,
     slug: null,
     entitySubtype: null,
-    teamId: null,
     anchorEntityId: null,
   };
 }
@@ -677,7 +665,7 @@ export type AgentComponentProjectionSource = {
  * (both `componentKey` and `name` null/blank), the slug is stored NULL — an
  * empty `${kind}::` handle cannot resolve back to a detail row, so the hit
  * degrades to a non-link instead of a clickable `/agents/tool::` 404.
- * Status/priority/project/team/anchor do not apply to a component and are null;
+ * Status/priority/project/anchor do not apply to a component and are null;
  * visibility is the component's own `organizationId` (no assignee).
  */
 export function agentComponentProjection(
@@ -704,7 +692,6 @@ export function agentComponentProjection(
     // a non-link instead of a `/agents/tool::` 404. SSOT codec.
     slug: agentComponentSearchSlug(component),
     entitySubtype: component.componentKind,
-    teamId: null,
     anchorEntityId: null,
   };
 }

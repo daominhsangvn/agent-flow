@@ -464,6 +464,46 @@ describe("agentSessionsService", () => {
       expect(result?.locPerDollar).toBeCloseTo(16_000, 10);
       expect(result?.locPerDollar ?? 0).toBeGreaterThan(1);
     });
+
+    it("recomputes locPerDollar from the branch-level diff when it is the largest signal (ISS-4448)", async () => {
+      // A loop that committed its work: the branch diff (3463 lines, what
+      // "Lines changed" shows) dwarfs the lines its edits touched (1302).
+      const eventAt = new Date("2026-01-01T00:10:00.000Z");
+      installDb({
+        sessionDetail: {
+          findFirst: vi.fn().mockResolvedValue(
+            buildSessionDetailRecord({
+              linesAdded: 1280,
+              linesRemoved: 22,
+              branchLocSource: "git",
+              branchLinesAdded: 3463,
+              branchLinesRemoved: 0,
+              branchFilesChanged: 20,
+              inputTokens: 10,
+              outputTokens: 5,
+              tokenEvents: [
+                {
+                  eventCreatedAt: eventAt,
+                  estimatedCost: 0.5,
+                  costCompleteness: TokenCostCompleteness.Complete,
+                  inputTokens: 10,
+                  outputTokens: 5,
+                },
+              ],
+            })
+          ),
+        },
+        sessionTranscript: { findMany: vi.fn().mockResolvedValue([]) },
+      });
+
+      const result = await agentSessionsService.findSessionDetail({
+        id: "session-1",
+        organizationId: "org-1",
+      });
+
+      expect(result?.estimatedCost).toBe(0.5);
+      expect(result?.locPerDollar).toBeCloseTo(3463 / 0.5, 10);
+    });
   });
 
   // ISS-5075: the detail `events` select had an `orderBy` but no `take`, so a

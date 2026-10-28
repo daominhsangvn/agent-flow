@@ -28,10 +28,15 @@ describe("jiraProvider", () => {
       JiraTriggerType.IssueAssigned,
       JiraTriggerType.IssueLabeled,
       JiraTriggerType.IssueMentioned,
+      JiraTriggerType.IssueConditions,
+      JiraTriggerType.IssueStatusChanged,
     ]);
     expect(jiraProvider.actions.map((action) => action.key)).toEqual([
       JiraActionType.AddComment,
       JiraActionType.TransitionIssue,
+      JiraActionType.UpdateLabels,
+      JiraActionType.AddLink,
+      JiraActionType.CreateIssue,
     ]);
     for (const key of [
       ...jiraProvider.triggers.map((trigger) => trigger.key),

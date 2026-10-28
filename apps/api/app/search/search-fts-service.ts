@@ -113,7 +113,6 @@ type CandidateRow = {
   // can build a real web route instead of the UUID-only deepLink.
   slug: string | null;
   entity_subtype: string | null;
-  team_id: string | null;
   // Route anchor (FEA-3930 comment/PR/branch slice): the id of a different entity
   // this hit routes to (PR → owning branch; comment → anchored artifact).
   anchor_entity_id: string | null;
@@ -317,7 +316,6 @@ function runExactLookupQuery(
         "updated_at",
         "slug",
         "entity_subtype",
-        "team_id"::text AS "team_id",
         "anchor_entity_id"::text AS "anchor_entity_id"
       FROM "search_document"
       WHERE "organization_id" = ${params.organizationId}::uuid
@@ -485,7 +483,6 @@ function runCandidateQuery(
         "updated_at",
         "slug",
         "entity_subtype",
-        "team_id"::text AS "team_id",
         "anchor_entity_id"::text AS "anchor_entity_id"
       FROM "search_document"
       WHERE "organization_id" = ${params.organizationId}::uuid
@@ -937,9 +934,6 @@ function toSearchHit(row: CandidateRow): SearchHit {
   }
   if (row.entity_subtype != null) {
     hit.entitySubtype = row.entity_subtype;
-  }
-  if (row.team_id != null) {
-    hit.teamId = row.team_id;
   }
   if (row.anchor_entity_id != null) {
     hit.anchorEntityId = row.anchor_entity_id;

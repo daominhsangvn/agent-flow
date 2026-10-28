@@ -109,38 +109,33 @@ describe("runSearchDocumentBackfill", () => {
           content: "the full body of the PRD document",
         }),
       ],
-      projects: [
-        project({ id: "p1", name: "Alpha", slug: "alpha", teamIds: ["t1"] }),
-      ],
+      projects: [project({ id: "p1", name: "Alpha", slug: "alpha" })],
       loops: [loop({ id: "l1", command: "execute", prompt: "do the thing" })],
     });
 
     await runSearchDocumentBackfill(client);
 
     // Document: slug + subtype carried, body is the latest version content
-    // (Phase-2: no longer title-only), no team.
+    // (Phase-2: no longer title-only).
     const doc = store.get(`${ORG_A}|${SearchEntityType.Document}|a1`);
     expect(doc).toMatchObject({
       slug: "prd-one",
       entitySubtype: "PRD",
       body: "the full body of the PRD document",
-      teamId: null,
     });
 
-    // Project: slug + owning team carried, no subtype.
+    // Project: slug carried, no subtype.
     const proj = store.get(`${ORG_A}|${SearchEntityType.Project}|p1`);
     expect(proj).toMatchObject({
       slug: "alpha",
-      teamId: "t1",
       entitySubtype: null,
     });
 
-    // Loop: routes by id — no slug/subtype/team.
+    // Loop: routes by id — no slug/subtype.
     const lp = store.get(`${ORG_A}|${SearchEntityType.Loop}|l1`);
     expect(lp).toMatchObject({
       slug: null,
       entitySubtype: null,
-      teamId: null,
     });
   });
 
@@ -210,10 +205,10 @@ describe("runSearchDocumentBackfill", () => {
     });
   });
 
-  it("leaves a document body null when it has no versions and a project team null when unteamed", async () => {
+  it("leaves a document body null when it has no versions", async () => {
     const { client, store } = makeFakeClient({
       artifacts: [artifact({ id: "a1", slug: "d", subtype: "FEATURE" })],
-      projects: [project({ id: "p1", slug: "p", teamIds: [] })],
+      projects: [project({ id: "p1", slug: "p" })],
       loops: [],
     });
 
@@ -221,9 +216,6 @@ describe("runSearchDocumentBackfill", () => {
 
     expect(
       store.get(`${ORG_A}|${SearchEntityType.Document}|a1`)?.body
-    ).toBeNull();
-    expect(
-      store.get(`${ORG_A}|${SearchEntityType.Project}|p1`)?.teamId
     ).toBeNull();
   });
 

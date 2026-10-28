@@ -22,6 +22,9 @@ export const WORKFLOW_ID = "0199a5f0-0000-7000-8000-0000000000f1";
 export const TRIGGER_ID = "0199a5f0-0000-7000-8000-0000000000e1";
 export const RUN_AS_USER_ID = "0199a5f0-0000-7000-8000-0000000000a1";
 export const TRIGGER_TYPE = "fake.issue_assigned";
+export const PROJECT_ID = "0199a5f0-0000-7000-8000-0000000000d1";
+export const PROJECT_CONNECTION_ID = "0199a5f0-0000-7000-8000-0000000000b1";
+export const SITE_URL = "https://acme.atlassian.net";
 export const PRISMA_DB_NULL = "__db_null__";
 
 export type Row = Record<string, unknown> & { id: string };
@@ -46,11 +49,20 @@ export function createIngestDbFake() {
   const deliveries: Row[] = [];
   const runs: Row[] = [];
   const triggers: Row[] = [];
+  const scopes: Array<{
+    scopeKey: string;
+    projectConnectionId: string;
+    connectionId: string;
+  }> = [];
   const workflows = new Map<string, Row>();
   const connectionUpdates: Where[] = [];
   let nextRunId = 1;
   let failCreateWith: unknown = null;
   let createWinner: Partial<Row> | null = null;
+  const commentRefs = {
+    toolCalls: [] as CommentRef[],
+    actionRuns: [] as CommentRef[],
+  };
 
   const db = {
     $executeRaw: vi.fn(() => Promise.resolve(1)),
@@ -91,6 +103,29 @@ export function createIngestDbFake() {
         return Promise.resolve({ count: 1 });
       }),
     },
+    projectConnectionScope: {
+      findMany: vi.fn(
+        (args: {
+          where: {
+            scopeKey: { in: string[] };
+            projectConnection: { connectionId: string };
+          };
+        }) =>
+          Promise.resolve(
+            scopes
+              .filter(
+                (scope) =>
+                  args.where.scopeKey.in.includes(scope.scopeKey) &&
+                  scope.connectionId ===
+                    args.where.projectConnection.connectionId
+              )
+              .map((scope) => ({
+                scopeKey: scope.scopeKey,
+                projectConnectionId: scope.projectConnectionId,
+              }))
+          )
+      ),
+    },
     workflowTrigger: {
       findMany: vi.fn((args: { where: Where }) =>
         Promise.resolve(
@@ -114,7 +149,32 @@ export function createIngestDbFake() {
         return Promise.resolve({ count: workflow ? 1 : 0 });
       }),
     },
+    // The comments runs posted (answer-replies.ts): tool calls and actions.
+    integrationToolCall: {
+      findMany: vi.fn((args: { where: CommentRefWhere }) =>
+        Promise.resolve(matchCommentRefs(commentRefs.toolCalls, args.where))
+      ),
+    },
+    workflowActionRun: {
+      findMany: vi.fn((args: { where: CommentRefWhere }) =>
+        Promise.resolve(matchCommentRefs(commentRefs.actionRuns, args.where))
+      ),
+    },
     workflowRun: {
+      findMany: vi.fn((args: { where: Where }) =>
+        Promise.resolve(
+          runs
+            .filter(
+              (row) =>
+                row.organizationId === args.where.organizationId &&
+                row.sourceKey === args.where.sourceKey &&
+                row.status === args.where.status &&
+                (row.projectConnectionId ?? PROJECT_CONNECTION_ID) ===
+                  args.where.projectConnectionId
+            )
+            .map((row) => ({ id: row.id, workflowId: row.workflowId }))
+        )
+      ),
       findFirst: vi.fn((args: { where: RunWhere }) => {
         if (args.where.OR) {
           return Promise.resolve(findOccurrence(runs, args.where));
@@ -168,17 +228,41 @@ export function createIngestDbFake() {
         ...overrides,
       });
     },
+    /** Claims the container (a Jira project key) for a project connection of a connection. */
+    addScope(
+      container: string,
+      projectConnectionId = PROJECT_CONNECTION_ID,
+      connectionId = CONNECTION_ID
+    ) {
+      scopes.push({
+        scopeKey: `${IntegrationProviderKey.Jira}:${SITE_URL}:${container}`,
+        projectConnectionId,
+        connectionId,
+      });
+    },
     addTrigger(overrides: Partial<Row> = {}) {
       triggers.push({
         id: TRIGGER_ID,
         organizationId: ORG_ID,
         connectionId: CONNECTION_ID,
+        projectId: PROJECT_ID,
+        projectConnectionId: PROJECT_CONNECTION_ID,
         workflowId: WORKFLOW_ID,
         type: TRIGGER_TYPE,
         enabled: true,
         config: { projectKeys: ["PROJ"] },
         ...overrides,
       });
+    },
+    /** A comment the run posted, by its external ref (a tool call, else an action). */
+    addRunComment(
+      runId: string,
+      externalRef: string,
+      via: CommentVia = "tool"
+    ) {
+      const rows =
+        via === "tool" ? commentRefs.toolCalls : commentRefs.actionRuns;
+      rows.push({ runId, externalRef });
     },
     addRun(overrides: Partial<Row> & { status: string }): Row {
       const run: Row = {
@@ -199,21 +283,33 @@ export function createIngestDbFake() {
 
 export type IngestDbFake = ReturnType<typeof createIngestDbFake>;
 
-export function buildLoadedConnection(): LoadedConnection {
+export function buildLoadedConnection(
+  connectionId = CONNECTION_ID
+): LoadedConnection {
   return {
     record: {
-      id: CONNECTION_ID,
+      id: connectionId,
       organizationId: ORG_ID,
       provider: IntegrationProviderKey.Jira,
       name: "Jira",
     },
-    provider: { key: IntegrationProviderKey.Jira, displayName: "Jira" },
+    provider: {
+      key: IntegrationProviderKey.Jira,
+      displayName: "Jira",
+      project: {
+        containers: (settings: { projectKeys: string[] }) =>
+          settings.projectKeys,
+        normalizeContainer: (container: string) => container.toUpperCase(),
+        origin: (config: { siteUrl: string }) => config.siteUrl,
+        triggerContainersField: "projectKeys",
+      },
+    },
     runtime: {
-      id: CONNECTION_ID,
+      id: connectionId,
       organizationId: ORG_ID,
       provider: IntegrationProviderKey.Jira,
       name: "Jira",
-      config: {},
+      config: { siteUrl: SITE_URL },
       secrets: {},
       account: null,
     },
@@ -336,4 +432,23 @@ function applyUpdate(row: Row, data: Where): void {
       row[key] = value;
     }
   }
+}
+
+type CommentVia = "tool" | "action";
+
+type CommentRef = { runId: string; externalRef: string };
+
+type CommentRefWhere = { runId: { in: string[] }; externalRef: string };
+
+function matchCommentRefs(
+  refs: readonly CommentRef[],
+  where: CommentRefWhere
+): Array<{ runId: string }> {
+  return refs
+    .filter(
+      (ref) =>
+        where.runId.in.includes(ref.runId) &&
+        ref.externalRef === where.externalRef
+    )
+    .map((ref) => ({ runId: ref.runId }));
 }

@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   advanceRun: vi.fn(),
   requeueStaleActionRuns: vi.fn(),
   drainActionRuns: vi.fn(),
+  advanceDueConversations: vi.fn(),
   order: [] as string[],
 }));
 
@@ -34,6 +35,9 @@ vi.mock("@/lib/workflows/engine/poll", () => ({
 vi.mock("@/lib/workflows/engine/advance", () => ({
   AdvanceRunOutcome: { Skipped: "skipped", Advanced: "advanced" },
   advanceRun: mocks.advanceRun,
+}));
+vi.mock("@/lib/orchestrator/advance", () => ({
+  advanceDueConversations: mocks.advanceDueConversations,
 }));
 vi.mock("@/lib/workflows/engine/actions", () => ({
   requeueStaleActionRuns: mocks.requeueStaleActionRuns,
@@ -65,10 +69,14 @@ beforeEach(() => {
     mocks.order.push("drain");
     return Promise.resolve(DRAINED);
   });
+  mocks.advanceDueConversations.mockImplementation(() => {
+    mocks.order.push("orchestrator");
+    return Promise.resolve({ advanced: 3, tasksLaunched: 1, waitsFired: 0 });
+  });
 });
 
 describe("runWorkflowTick", () => {
-  it("polls, advances, requeues and drains in that order", async () => {
+  it("polls, advances, requeues, drains, then moves the orchestrator's conversations", async () => {
     const result = await runWorkflowTick(NOW);
 
     expect(mocks.order).toEqual([
@@ -77,11 +85,13 @@ describe("runWorkflowTick", () => {
       "advance:run-2",
       "requeue",
       "drain",
+      "orchestrator",
     ]);
     expect(result).toMatchObject({
       poll: { polled: 1, runs: 1 },
       runs: { checked: 2, advanced: 1 },
       actionRuns: { ...DRAINED, requeued: 1 },
+      orchestrator: { advanced: 3, tasksLaunched: 1, waitsFired: 0 },
       errors: [],
     });
     expect(mocks.drainActionRuns).toHaveBeenCalledWith({

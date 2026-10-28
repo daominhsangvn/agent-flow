@@ -95,7 +95,7 @@ export async function setupEphemeralDb(): Promise<EphemeralDbContext> {
   const prisma = new PrismaClient({ adapter });
 
   // ---------------------------------------------------------------------------
-  // Prerequisite parent rows. The seed graph upserts Project/TeamMember/etc.
+  // Prerequisite parent rows. The seed graph upserts Project/etc.
   // with `createdById` / `organizationId` FKs pointing at these IDs — without
   // these rows, the very first upsert fails with a foreign-key violation.
   // We upsert (not create) so calling setup twice in the same suite is safe.
@@ -238,18 +238,6 @@ async function deleteEphemeralRows(
     // (By this point pullRequestDetail rows were already deleted above, but
     // GitHubPRReview/Comment rows cascaded via PullRequestDetail onDelete.)
 
-    await tx.teamMember.deleteMany({
-      where: { team: { organizationId } },
-    });
-    // ProjectTeam: Team has no cascade on this side (Project does, but
-    // teams are deleted first below), so any ProjectTeam row would block
-    // the team delete with a FK violation. The current seed graph doesn't
-    // populate this table, but the future scale-profile / scenario layers
-    // (FEA-1329, FEA-1331) likely will — making teardown defensive now.
-    await tx.projectTeam.deleteMany({
-      where: { team: { organizationId } },
-    });
-    await tx.team.deleteMany({ where: { organizationId } });
     await tx.project.deleteMany({ where: { organizationId } });
 
     await tx.gitHubInstallationRepository.deleteMany({

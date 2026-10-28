@@ -6,7 +6,7 @@ import type {
   DocumentWithProject,
 } from "@repo/api/src/types/document";
 import { transformApiUserToSelectUser } from "@repo/app/shared/lib/user-utils";
-import { useTeamMembers } from "@repo/app/teams/hooks/use-team-members";
+import { useOrganizationUsers } from "@repo/app/users/hooks/use-users";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -83,12 +83,12 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
     [artifact.approver]
   );
 
-  // Fetch team members from artifact's project teams
-  const teamIds = useMemo(
-    () => artifact.project?.teams?.map((team) => team.id) ?? [],
-    [artifact.project?.teams]
+  // Assignable people are the organization's users
+  const { data: orgUsers } = useOrganizationUsers();
+  const teamMembers = useMemo(
+    () => (orgUsers ?? []).map(transformApiUserToSelectUser),
+    [orgUsers]
   );
-  const { members: teamMembers } = useTeamMembers({ teamIds });
 
   // Derived state
   const isUpdating = updateArtifact.isPending;

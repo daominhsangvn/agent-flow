@@ -8,10 +8,11 @@ import { vi } from "vitest";
 /**
  * In-memory stand-in for the workflow_actions / workflow_action_runs
  * delegates lib/workflows/engine/actions.ts and pre-actions.ts use. Where
- * clauses support equality, Date equality, { in, notIn, lt, lte, gte, has,
- * hasSome } and OR, which covers every query shape of the engine. updateMany
+ * clauses support equality, Date equality, { in, notIn, not, lt, lte, gte,
+ * has, hasSome } and OR, which covers every query shape of the engine. updateMany
  * and updateManyAndReturn (the claim; honours `select`) stamp updatedAt like
- * Prisma's @updatedAt.
+ * Prisma's @updatedAt; groupBy groups by runId with the smallest
+ * nextAttemptAt, oldest first (the drain's query).
  */
 
 export type FakeRow = Record<string, unknown> & { id: string };
@@ -21,6 +22,7 @@ type Where = Record<string, unknown> & { OR?: Where[] };
 type Condition = {
   in?: unknown[];
   notIn?: unknown[];
+  not?: unknown;
   lt?: unknown;
   lte?: unknown;
   gte?: unknown;
@@ -79,6 +81,28 @@ export function createActionRunsDbFake() {
         return Promise.resolve(rows.map((row) => pick(row, args.select)));
       }
     ),
+    groupBy: vi.fn((args: { where: Where; take?: number }) => {
+      const groups = new Map<string, Date>();
+      for (const row of actionRuns.filter((entry) =>
+        matchesWhere(entry, args.where)
+      )) {
+        const runId = String(row.runId);
+        const due = row.nextAttemptAt as Date;
+        const current = groups.get(runId);
+        if (!current || due.getTime() < current.getTime()) {
+          groups.set(runId, due);
+        }
+      }
+      return Promise.resolve(
+        [...groups.entries()]
+          .sort((left, right) => left[1].getTime() - right[1].getTime())
+          .slice(0, args.take ?? Number.POSITIVE_INFINITY)
+          .map(([runId, nextAttemptAt]) => ({
+            runId,
+            _min: { nextAttemptAt },
+          }))
+      );
+    }),
     createMany: vi.fn(
       (args: { data: Record<string, unknown>[]; skipDuplicates?: boolean }) => {
         let count = 0;
@@ -127,6 +151,8 @@ export function createActionRunsDbFake() {
       nextAttemptAt: now,
       lastError: null,
       externalRef: null,
+      commandId: null,
+      detail: null,
       completedAt: null,
       createdAt: now,
       updatedAt: now,
@@ -200,6 +226,9 @@ function matchesOperators(value: unknown, condition: Condition): boolean {
   }
   if (condition.notIn) {
     checks.push(!condition.notIn.includes(value));
+  }
+  if ("not" in condition) {
+    checks.push(value !== condition.not);
   }
   if (condition.lt !== undefined) {
     checks.push(compare(value, condition.lt) < 0);

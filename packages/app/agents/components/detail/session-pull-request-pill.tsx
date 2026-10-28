@@ -34,7 +34,8 @@ const PR_TITLE_MAX_LENGTH = 80 as const;
  * per the file-size rules) as a sibling of `session-linked-artifacts-row.tsx`.
  *
  * FEA-4256: the pill's whole content is the PR's identity (icon + #num + the
- * GitHub state), so a click on it opens the PR on GitHub, never a branch page.
+ * GitHub state), so a click on it opens the PR's own page (on GitHub, or the
+ * page AgentFlow recorded with it), never a branch page.
  * The session-to-branch in-app seam lives on the Branch row instead, so two PRs
  * on one branch stay two distinct destinations. A null href keeps the pill an
  * inert label.
@@ -101,10 +102,18 @@ export function PullRequestPill({
   );
 }
 
+/**
+ * The pull request's page: the one AgentFlow recorded with it (a pull request a
+ * workflow action opened, on any provider), else its GitHub page.
+ */
 export function getPullRequestHref(
   pr: SessionPR,
   repositoryFullName: string | null
 ): string | null {
+  const recordedUrl = toHttpUrl(pr.url);
+  if (recordedUrl) {
+    return recordedUrl;
+  }
   const repo = toGitHubRepoPath(repositoryFullName);
   const prNumber = normalizePullRequestNumber(pr.num);
 
@@ -215,4 +224,18 @@ function toPullRequestSubject(pr: SessionPR): string {
     return `${subject.slice(0, PR_TITLE_MAX_LENGTH).trimEnd()}…`;
   }
   return subject;
+}
+
+const HTTP_PROTOCOLS: ReadonlySet<string> = new Set(["http:", "https:"]);
+
+/**
+ * `value` when it is an absolute http(s) URL, else null. Only AgentFlow writes a
+ * pull request's `url` (the session sync schema drops it), and a value with any
+ * other scheme is still never rendered as a link.
+ */
+function toHttpUrl(value: string | undefined): string | null {
+  if (!(value && URL.canParse(value))) {
+    return null;
+  }
+  return HTTP_PROTOCOLS.has(new URL(value).protocol) ? value : null;
 }

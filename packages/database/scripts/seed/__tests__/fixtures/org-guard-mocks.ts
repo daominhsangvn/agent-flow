@@ -56,7 +56,6 @@ export function buildEmptyOrgMock() {
 
   // No entity rows
   p.project.count.mockResolvedValue(0);
-  p.team.count.mockResolvedValue(0);
 
   return prisma;
 }
@@ -73,7 +72,6 @@ export function buildFullyConflictedOrgMock() {
   p.linearIntegration.findUnique.mockResolvedValue({ id: "linear-1" });
   p.slackIntegration.findUnique.mockResolvedValue({ id: "slack-1" });
   p.project.count.mockResolvedValue(3);
-  p.team.count.mockResolvedValue(2);
 
   return prisma;
 }
@@ -100,13 +98,6 @@ export function buildSeedOwnedOrgMock() {
     {
       id: deterministicUuid(`project:${BASELINE_ORG_ID}:developer-experience`),
       slug: "developer-experience",
-    },
-  ]);
-  p.team.count.mockResolvedValue(1);
-  p.team.findMany.mockResolvedValue([
-    {
-      id: deterministicUuid(`team:${BASELINE_ORG_ID}:default`),
-      slug: "default",
     },
   ]);
   p.artifact.count.mockResolvedValue(4);

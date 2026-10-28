@@ -1,7 +1,7 @@
 /**
  * Unit tests for the ChecklistItemId const in @repo/api/src/types/onboarding.
  *
- * Verifies that ConnectLinear was removed and all remaining checklist item IDs
+ * Verifies the removed rows stay removed and the remaining checklist item IDs
  * are present with their correct string values.
  */
 
@@ -14,19 +14,23 @@ describe("ChecklistItemId", () => {
     expect(Object.values(ChecklistItemId)).not.toContain("CONNECT_LINEAR");
   });
 
-  // ISS-5490 added DownloadDesktop. The count moved from six to seven
-  // deliberately: the onboarding wizard stopped gating on the desktop download,
-  // and this row is where that step went. Raising the number is the point of the
-  // change, not a test being loosened to accommodate it.
-  it("contains the seven expected checklist item IDs", () => {
-    expect(Object.keys(ChecklistItemId)).toHaveLength(7);
+  // Runners replaced the desktop download, and the GitHub and Anthropic key
+  // rows went with the settings cards they pointed at: repositories come from
+  // integration connections, and Claude credentials from each runner's model
+  // provider.
+  it("does not contain the desktop, GitHub or Anthropic key rows", () => {
+    expect(Object.keys(ChecklistItemId)).not.toContain("DownloadDesktop");
+    expect(Object.values(ChecklistItemId)).not.toContain("DOWNLOAD_DESKTOP");
+    expect(Object.values(ChecklistItemId)).not.toContain("CONNECT_GITHUB");
+    expect(Object.values(ChecklistItemId)).not.toContain("ADD_ANTHROPIC_KEY");
+  });
+
+  it("contains the four expected checklist item IDs", () => {
+    expect(Object.keys(ChecklistItemId)).toHaveLength(4);
     expect(Object.keys(ChecklistItemId)).toEqual(
       expect.arrayContaining([
-        "CreateTeam",
         "CreateProject",
-        "DownloadDesktop",
-        "ConnectGitHub",
-        "AddAnthropicKey",
+        "InstallRunner",
         "ConnectGoogle",
         "InviteMembers",
       ])
@@ -34,11 +38,8 @@ describe("ChecklistItemId", () => {
   });
 
   it("maps each key to the correct string value", () => {
-    expect(ChecklistItemId.CreateTeam).toBe("CREATE_TEAM");
     expect(ChecklistItemId.CreateProject).toBe("CREATE_PROJECT");
-    expect(ChecklistItemId.DownloadDesktop).toBe("DOWNLOAD_DESKTOP");
-    expect(ChecklistItemId.ConnectGitHub).toBe("CONNECT_GITHUB");
-    expect(ChecklistItemId.AddAnthropicKey).toBe("ADD_ANTHROPIC_KEY");
+    expect(ChecklistItemId.InstallRunner).toBe("INSTALL_RUNNER");
     expect(ChecklistItemId.ConnectGoogle).toBe("CONNECT_GOOGLE");
     expect(ChecklistItemId.InviteMembers).toBe("INVITE_MEMBERS");
   });

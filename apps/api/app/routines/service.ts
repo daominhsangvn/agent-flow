@@ -22,14 +22,14 @@ import {
  *
  * Backend-only (apps/api). Every read and write is ORG-SCOPED: the caller's
  * `organizationId` is part of the predicate on every query so org A can never
- * read or mutate org B's routines. Team scope is an optional additional filter.
+ * read or mutate org B's routines.
  *
- * Cross-tenant relation safety: a caller from org A can pass a `teamId`/`ownerId`
+ * Cross-tenant relation safety: a caller from org A can pass an `ownerId`
  * that actually belongs to org B (they are globally-unique UUIDs guarded only by
- * single-column FKs). Before persisting we RESOLVE both relations with an
+ * single-column FKs). Before persisting we RESOLVE the relation with an
  * `organizationId` predicate inside the write transaction and reject the write
- * when either lookup fails, so a routine can never claim org A while pointing at
- * org B's team/user.
+ * when the lookup fails, so a routine can never claim org A while pointing at
+ * org B's user.
  *
  * Sync identity: desktop-origin routines/runs carry a crewd source id
  * (`ScheduledTask.id` / `RunRecord.id`) that is an ARBITRARY string, not the
@@ -41,7 +41,6 @@ import {
 
 type ListRoutinesArgs = {
   organizationId: string;
-  teamId?: string | null;
   limit?: number;
   offset?: number;
 };
@@ -67,7 +66,7 @@ function clampOffset(offset: number | undefined): number {
 
 /**
  * Create a routine owned by the caller's org. `organizationId` is applied
- * server-side and can never be overridden by the input body. Related team/owner
+ * server-side and can never be overridden by the input body. Related owner
  * tenancy is validated against the caller's org first — returns null when either
  * points at another org (route → 400/404).
  */
@@ -91,7 +90,7 @@ async function createRoutine(
  * INCLUDES `organizationId`, so the update branch can only ever match a row
  * already owned by this org — two orgs syncing the same source id land on two
  * different rows and neither can clobber the other (no cross-tenant race, no
- * findFirst-then-create). Related team/owner tenancy is validated first. Returns
+ * findFirst-then-create). Related owner tenancy is validated first. Returns
  * null when a relation points at another org.
  */
 async function upsertRoutineBySource(
@@ -121,7 +120,7 @@ async function upsertRoutineBySource(
  * Org-scoped partial update. Uses `updateMany` gated on `{ id, organizationId }`
  * so a cross-org id can never mutate another tenant's row; returns null when
  * nothing matched (wrong org or missing), which the route maps to 404. When the
- * update changes provider or supplies team/owner, those are validated/normalized
+ * update changes provider or supplies an owner, those are validated/normalized
  * inside the same transaction.
  */
 async function updateRoutine(
@@ -162,16 +161,15 @@ async function getRoutine(
   );
 }
 
-/** Org- (and optionally team-) scoped list, newest-updated first. */
+/** Org-scoped list, newest-updated first. */
 async function listRoutines(args: ListRoutinesArgs): Promise<{
   items: Routine[];
   total: number;
 }> {
-  const { organizationId, teamId } = args;
+  const { organizationId } = args;
   const limit = clampLimit(args.limit);
   const offset = clampOffset(args.offset);
-  const where =
-    teamId === undefined ? { organizationId } : { organizationId, teamId };
+  const where = { organizationId };
   return await withDb(async (db) => {
     const [items, total] = await Promise.all([
       db.routine.findMany({
@@ -264,26 +262,17 @@ async function listRuns(args: {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve a routine's optional `teamId`/`ownerId` against the caller's org.
- * Returns false when either is present but belongs to a DIFFERENT org (or does
+ * Resolve a routine's optional `ownerId` against the caller's org.
+ * Returns false when it is present but belongs to a DIFFERENT org (or does
  * not exist), so the caller refuses the write rather than persisting a routine
- * that claims one org while referencing another org's team/user. An absent
+ * that claims one org while referencing another org's user. An absent
  * relation is fine (returns true).
  */
 async function relationsBelongToOrg(
   tx: TransactionClient,
   organizationId: string,
-  input: { teamId?: string | null; ownerId?: string | null }
+  input: { ownerId?: string | null }
 ): Promise<boolean> {
-  if (input.teamId) {
-    const team = await tx.team.findFirst({
-      where: { id: input.teamId, organizationId },
-      select: { id: true },
-    });
-    if (!team) {
-      return false;
-    }
-  }
   if (input.ownerId) {
     const owner = await tx.user.findFirst({
       where: { id: input.ownerId, organizationId },

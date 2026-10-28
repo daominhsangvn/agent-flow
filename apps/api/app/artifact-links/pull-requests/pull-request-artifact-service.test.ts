@@ -369,7 +369,6 @@ describe("pullRequestArtifactLinkService", () => {
     });
     mockLoadProjectPrLinkRepositories.mockResolvedValue([
       {
-        installationRepositoryId: "repo-1",
         fullName: "acme/repo",
       },
     ]);
@@ -403,8 +402,7 @@ describe("pullRequestArtifactLinkService", () => {
       repositoryDb.gitHubInstallationRepository.findFirst
     ).toHaveBeenCalledWith({
       where: {
-        id: "repo-1",
-        fullName: "acme/repo",
+        fullName: { equals: "acme/repo", mode: "insensitive" },
         removedAt: null,
         installation: {
           organizationId: "org-1",
@@ -455,7 +453,7 @@ describe("pullRequestArtifactLinkService label propagation", () => {
       .mockResolvedValueOnce({ id: "project-1", settings: {} })
       .mockImplementationOnce((callback) => callback(repositoryDb));
     mockLoadProjectPrLinkRepositories.mockResolvedValue([
-      { installationRepositoryId: "repo-1", fullName: "acme/repo" },
+      { fullName: "acme/repo" },
     ]);
     mockGetSinglePullRequest.mockResolvedValue(makeLivePr());
     mockBranchService.upsertBranchArtifact.mockResolvedValue(

@@ -137,7 +137,7 @@ export function AuditView() {
     data: projectRecords = [],
     isLoading: projectsLoading,
     isError: projectsError,
-  } = useProjects(undefined, {
+  } = useProjects({
     enabled: fileDialogOpen,
   });
   const { users: assignees, isLoading: assigneesLoading } =

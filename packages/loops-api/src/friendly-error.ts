@@ -322,10 +322,10 @@ const loopErrorMessages = {
   [LoopErrorCode.RepoNotInProjectPool]: {
     title: "Repository is not in this project's pool",
     description:
-      "One or more requested repositories aren't part of any team curated on this project.",
+      "One or more requested repositories aren't among this project's repositories.",
     remediation: [
-      "Add the repository to a team that curates this project.",
-      "Pick a repository from the project's available pool and retry.",
+      "Add the repository to the project under Project → Repositories.",
+      "Pick one of the project's repositories and retry.",
     ],
   },
 } satisfies Record<LoopErrorCode, FriendlyErrorTemplate>;

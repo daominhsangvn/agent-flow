@@ -10,9 +10,6 @@ export const updateOrganizationValidator = z.object({
   // Transcript-content search privacy gate (FEA-3930). Admin-only — the route
   // enforces org-admin before persisting this field (see updateOrganizationForRoute).
   searchIncludeTranscripts: z.boolean().optional(),
-  // Org session-sync privacy policy (FEA-4169). Admin-only — the route enforces
-  // org-admin before persisting this field (see updateOrganizationForRoute).
-  sessionSyncPolicyEnabled: z.boolean().optional(),
 });
 
 export type UpdateOrganizationBody = z.infer<

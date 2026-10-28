@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# The developer's own Jira command line (their Atlassian account and API
+# token), as a dev would have on their computer. The personal runner's
+# commands use it; AgentFlow never sees the token.
+#
+#   jira login                       site, email, API token -> ~/.config/jira/credentials
+#   jira whoami
+#   jira attachments KEY             list the attachments of an issue
+#   jira attachment KEY NAME [OUT]   download the newest attachment named NAME
+#   jira attach KEY FILE             upload FILE as an attachment
+#   jira comment KEY FILE            add the Markdown-ish text of FILE as a comment
+set -euo pipefail
+
+CONFIG="${JIRA_CONFIG:-$HOME/.config/jira/credentials}"
+
+die() {
+  echo "jira: $*" >&2
+  exit 1
+}
+
+load() {
+  [[ -f "$CONFIG" ]] || die "not logged in: run 'jira login'"
+  # shellcheck disable=SC1090
+  source "$CONFIG"
+  [[ -n "${JIRA_SITE:-}" && -n "${JIRA_EMAIL:-}" && -n "${JIRA_TOKEN:-}" ]] ||
+    die "incomplete credentials in $CONFIG: run 'jira login'"
+}
+
+api() {
+  curl -fsS -u "$JIRA_EMAIL:$JIRA_TOKEN" -H "Accept: application/json" "$@"
+}
+
+login() {
+  local site email token
+  read -r -p "Jira site [shawn-team.atlassian.net]: " site
+  site="${site:-shawn-team.atlassian.net}"
+  site="${site#https://}"
+  site="${site%/}"
+  read -r -p "Atlassian account email: " email
+  read -r -s -p "API token (id.atlassian.com > Security > API tokens): " token
+  echo
+  JIRA_SITE="$site" JIRA_EMAIL="$email" JIRA_TOKEN="$token"
+  local name
+  name="$(api "https://$JIRA_SITE/rest/api/3/myself" | jq -r .displayName)" ||
+    die "Jira refused these credentials"
+  mkdir -p "$(dirname "$CONFIG")"
+  (
+    umask 077
+    printf 'JIRA_SITE=%q\nJIRA_EMAIL=%q\nJIRA_TOKEN=%q\n' "$site" "$email" "$token" >"$CONFIG"
+  )
+  echo "Logged in to $site as $name"
+}
+
+attachments_json() {
+  api "https://$JIRA_SITE/rest/api/3/issue/$1?fields=attachment" | jq '.fields.attachment'
+}
+
+case "${1:-}" in
+  login)
+    login
+    ;;
+  whoami)
+    load
+    api "https://$JIRA_SITE/rest/api/3/myself" | jq -r '"\(.displayName) <\(.emailAddress // "hidden")> on '"$JIRA_SITE"'"'
+    ;;
+  attachments)
+    [[ $# -eq 2 ]] || die "usage: jira attachments KEY"
+    load
+    attachments_json "$2" | jq -r '.[] | "\(.filename)\t\(.size) bytes\t\(.created)"'
+    ;;
+  attachment)
+    [[ $# -ge 3 ]] || die "usage: jira attachment KEY NAME [OUT]"
+    load
+    url="$(attachments_json "$2" |
+      jq -r --arg name "$3" '[.[] | select(.filename == $name)] | sort_by(.created) | last | .content // empty')"
+    [[ -n "$url" ]] || die "$2 has no attachment named $3"
+    if [[ -n "${4:-}" ]]; then
+      api -L -o "$4" "$url"
+      echo "Saved $3 to $4"
+    else
+      api -L "$url"
+    fi
+    ;;
+  attach)
+    [[ $# -eq 3 ]] || die "usage: jira attach KEY FILE"
+    load
+    [[ -f "$3" ]] || die "no such file: $3"
+    api -X POST -H "X-Atlassian-Token: no-check" -F "file=@$3" \
+      "https://$JIRA_SITE/rest/api/3/issue/$2/attachments" |
+      jq -r '.[] | "Attached \(.filename) (id \(.id))"'
+    ;;
+  comment)
+    [[ $# -eq 3 ]] || die "usage: jira comment KEY FILE"
+    load
+    body="$(jq -n --rawfile text "$3" '{body: $text}')"
+    api -X POST -H "Content-Type: application/json" --data "$body" \
+      "https://$JIRA_SITE/rest/api/2/issue/$2/comment" | jq -r '"Commented (id \(.id))"'
+    ;;
+  *)
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

@@ -57,6 +57,19 @@ export type ModelPricing = {
 // Anthropic Claude — https://platform.claude.com/docs/en/about-claude/pricing
 // ---------------------------------------------------------------------------
 export const MODEL_PRICING: Record<string, ModelPricing> = {
+  // Sonnet 5.5 / Haiku 5.5 (the list rates Claude Code prices them at)
+  "claude-sonnet-5-5": {
+    input: 2,
+    output: 10,
+    cacheWrite: 2.5,
+    cacheRead: 0.1,
+  },
+  "claude-haiku-5-5": {
+    input: 0.1,
+    output: 0.5,
+    cacheWrite: 0.125,
+    cacheRead: 0.01,
+  },
   // Opus 4.7 / 4.6 / 4.5
   "claude-opus-4-7": { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
   "claude-opus-4-6": { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
@@ -178,6 +191,8 @@ export const DEFAULT_PRICING: ModelPricing = {
 const RE_DATE_SUFFIX = /-\d{8}$/;
 
 const CANONICAL_MODEL_NAMES: Record<string, string> = {
+  "claude-sonnet-5-5": "claude-sonnet-5-5",
+  "claude-haiku-5-5": "claude-haiku-5-5",
   "claude-opus-4-7": "claude-opus-4-7",
   "claude-opus-4-6": "claude-opus-4-6",
   "claude-opus-4-5": "claude-opus-4-5",
@@ -385,6 +400,8 @@ function displayNameToModelKey(displayName: string): string | null {
     "Big Pickle": "big-pickle",
     "DeepSeek V4 Flash Free": "deepseek-v4-flash-free",
     "Nemotron 3 Super Free": "nemotron-3-super-free",
+    "Claude Sonnet 5.5": "claude-sonnet-5-5",
+    "Claude Haiku 5.5": "claude-haiku-5-5",
     "Claude Opus 4.7": "claude-opus-4-7",
     "Claude Opus 4.6": "claude-opus-4-6",
     "Claude Opus 4.5": "claude-opus-4-5",

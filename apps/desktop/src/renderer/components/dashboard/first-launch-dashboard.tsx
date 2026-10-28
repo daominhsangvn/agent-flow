@@ -189,19 +189,9 @@ export function FirstLaunchDashboard() {
   // import grows. (The old `settled || !grew` gate was a SQLite-era mitigation
   // for the single-connection engine blocking the UI during ingest.)
   const insightsEnabled = true;
-  const delivery = useDeliveryInsights(
-    period,
-    scope,
-    undefined,
-    insightsEnabled
-  );
-  const utilization = useUtilizationInsights(
-    period,
-    scope,
-    undefined,
-    insightsEnabled
-  );
-  const agents = useAgentsInsights(period, scope, undefined, insightsEnabled);
+  const delivery = useDeliveryInsights(period, scope, insightsEnabled);
+  const utilization = useUtilizationInsights(period, scope, insightsEnabled);
+  const agents = useAgentsInsights(period, scope, insightsEnabled);
 
   // All three insights sections resolved — the data behind every tile and the
   // tour summary (KPIs, model breakdown) is ready. The first-launch tour waits

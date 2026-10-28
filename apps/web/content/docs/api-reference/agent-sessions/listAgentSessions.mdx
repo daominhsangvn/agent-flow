@@ -11,9 +11,8 @@ _openapi:
       - content: >-
           Returns the organization's agent sessions (captured harness runs) with
           pagination and rich filtering. Use `viewerScope` to scope the read:
-          `self` pins to the caller's sessions, `team` (which **requires**
-          `teamId`) scopes to a team, and `organization` returns all sessions
-          the caller may see. The default `quality=all` view returns every
+          `self` pins to the caller's sessions and `organization` returns all
+          sessions the caller may see. The default `quality=all` view returns every
           session; pass `quality=substantive` to hide idle (0 turns, 0 tokens,
           and 0 tool uses) sessions, or `quality=idle` to return only those idle
           sessions. Requires the `read` scope.

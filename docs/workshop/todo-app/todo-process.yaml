@@ -1,0 +1,78 @@
+# Todo App delivery process (AgentFlow workshop 2)
+#
+# 1. Plan (role: plan): an agent writes the implementation plan, asks on the
+#    Jira issue when the requirement leaves a decision open, and publishes the
+#    plan to Confluence (space TODO) with a link on the issue. People review
+#    the plan page: "plan-approved" approves it; "replan" or a comment that
+#    mentions the bot runs the step again, which applies the page's comments,
+#    answers and resolves them.
+# 2. Implement (role: implement): an agent builds the approved plan with
+#    tests, pushes the branch and writes release notes; the workflow opens the
+#    pull request on Bitbucket. Reviewers comment on the pull request:
+#    "fix-review" or a comment that mentions the bot runs the step again,
+#    which fixes the code, replies to and resolves the threads and pushes to
+#    the same branch. "code-done" ends the code review.
+# 3. Release sign-off: the product owner adds "ship-it" (or approves in
+#    AgentFlow); the workflow then posts the release notes.
+#
+# Every decision can also be taken on the run page in AgentFlow (Approve /
+# Replan, Done / Request changes, Approve / Reject).
+steps:
+  - type: agent
+    id: plan
+    name: Plan
+    role: plan                    # writes the run's Implementation Plan (versions per round)
+    questions: ask                # open questions stop the run; answer on Jira with @bot
+    instruction: |
+      Plan {{issue.key}} "{{issue.title}}" for the Todo App. The requirement is in {{issue.file}}; the repository may already hold earlier work on `main`.
+
+      1. Read the requirement and explore the repository (code, tests, README).
+      2. Write the implementation plan as the plan step contract describes. Name every acceptance criterion of the requirement in the task that covers it and in the test that proves it.
+      3. Ask only about decisions the requirement leaves open and that change what users see or what the code stores. Give each question 2-4 options and your recommendation. Do not ask about anything the requirement or the project instructions already decide.
+      4. When the plan is final (no open questions left), publish it to Confluence with the tools of the `wiki` connection:
+         - look for the page titled "{{issue.key}} Implementation plan" in space TODO (confluence_find_pages);
+         - if it exists, read it with format storage (confluence_get_page) and update it (confluence_update_page) with the version you read; else create it (confluence_create_page, space TODO, Markdown);
+         - add a web link to the issue (source_item_link) to that page, titled "Implementation plan (Confluence)".
+         The page holds the same plan as the plan file, with one line at the top: "Review this plan here: comment on it, then add the label replan to {{issue.key}} (or mention the AgentFlow bot in a comment on {{issue.key}}). Add the label plan-approved when it is ready."
+    review:
+      approve: { labels: [plan-approved] }            # Approve in AgentFlow too
+      feedback: { labels: [replan], mention: true }   # Replan in AgentFlow too
+      instruction: |
+        Apply the review of the plan:
+        1. Read the open comments of the Confluence page "{{issue.key}} Implementation plan" (confluence_list_comments, status open): comments below the page and inline comments on highlighted text. Comments marked mine are yours: skip them.
+        2. Change the plan in .agentflow-ai/work/plan.md for the feedback above and for every comment you agree with. Ask again (questions) only if a comment opens a decision the plan cannot settle.
+        3. Update the page: read it with format storage (confluence_get_page), edit the storage XHTML and save it with format storage and the version you read (confluence_update_page), so inline comments stay anchored to their text.
+        4. Answer every comment you read (confluence_comment with replyTo): what you changed, or why you did not. Resolve the inline comments you applied (confluence_resolve_comment); leave the others open.
+    connections:
+      source: [comment, link]
+      wiki: [confluence.create_page, confluence.update_page, confluence.comment, confluence.resolve_comment]
+
+  - type: agent
+    id: implement
+    name: Implement
+    role: implement               # loads the approved plan, pushes, writes release notes
+    instruction: |
+      Implement the approved plan for {{issue.key}} "{{issue.title}}" in the Todo App. The requirement is in {{issue.file}}.
+
+      - Work task by task; every acceptance criterion of the requirement gets a test.
+      - Before you finish: npm ci, npm run typecheck, npm test and npm run build pass, and README.md is current.
+      - Release notes are for the people who use the app: what is new, how to try it, known limitations.
+    review:
+      complete: { labels: [code-done] }               # Done in AgentFlow too
+      feedback: { labels: [fix-review], mention: true }  # Request changes in AgentFlow too
+      instruction: |
+        Address the code review of the pull request:
+        1. List the run's pull requests (pull_requests_list) and read their open review threads (pull_request_threads). A thread whose last comment is mine was answered already: skip it unless a reviewer wrote after it.
+        2. For each thread: fix the code when you agree (with a test when it changes behaviour); when you do not agree, for example because the requirement or the project instructions say otherwise, do not change the code.
+        3. Run npm run typecheck, npm test and npm run build again.
+        4. Reply to every thread you read (pull_request_reply): "Fixed: <what changed>" or why you did not change it. Resolve the threads you fixed (pull_request_resolve); leave the others open for the reviewer.
+        5. Update the release notes when the change is visible to users.
+        Your commits are pushed to the same branch when the step ends, so the pull request updates.
+    connections:
+      source: [comment]
+      pull_requests: [reply, resolve]
+
+  - type: approval
+    id: release-sign-off
+    name: Release sign-off
+    approve: { labels: [ship-it] }                    # or Approve in AgentFlow

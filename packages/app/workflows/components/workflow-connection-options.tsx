@@ -1,47 +1,8 @@
 "use client";
 
-import {
-  type IntegrationConnection,
-  IntegrationConnectionStatus,
-} from "@repo/api/src/types/integration";
-// Cross-slice: connection rows show the integrations slice's provider glyph.
-import { ProviderIcon } from "@repo/app/integrations/components/provider-icon";
-import { SelectItem } from "@repo/design-system/components/ui/select";
 import { Link } from "@repo/navigation/link";
 import { useOrgPath } from "@repo/navigation/use-org-path";
 import { InfoIcon } from "lucide-react";
-
-/** Select items for the connections a trigger or action row can use. */
-export function ConnectionSelectItems({
-  connections,
-  selectedId,
-}: Readonly<{
-  connections: readonly IntegrationConnection[];
-  selectedId: string;
-}>) {
-  const isKnown =
-    selectedId === "" ||
-    connections.some((connection) => connection.id === selectedId);
-
-  return (
-    <>
-      {connections.map((connection) => (
-        <SelectItem key={connection.id} value={connection.id}>
-          <span className="flex items-center gap-2">
-            <ProviderIcon provider={connection.provider} />
-            {connection.name}
-            {connection.status === IntegrationConnectionStatus.Disabled
-              ? " (disabled)"
-              : null}
-          </span>
-        </SelectItem>
-      ))}
-      {isKnown ? null : (
-        <SelectItem value={selectedId}>Unavailable connection</SelectItem>
-      )}
-    </>
-  );
-}
 
 /**
  * Shown when no connection can serve a trigger or an action yet, pointing the

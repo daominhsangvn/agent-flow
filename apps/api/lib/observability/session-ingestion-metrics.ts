@@ -12,62 +12,21 @@ import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
 // contract lives in exactly one place.
 //
 // WHY THIS FAMILY EXISTS. ISS-4537 froze cloud session ingestion for an entire
-// org for ~2 days and was found only by manual inspection: FEA-4169's
-// fail-closed `Organization.sessionSyncPolicyEnabled` gate denied every ingest
-// attempt, silently, and nothing measured "is session data still arriving?".
-// These metrics make that class of stall observable:
-//
-//   • policy_denied — the FAST detector, and the one that would have caught
-//     ISS-4537 in minutes. Emitted at the single org-policy choke point in
-//     front of all three ingest boundaries, so a desktop fleet actively trying
-//     to sync into a denied org produces a continuous signal instead of
-//     silence. A stall caused by the gate is visible on the first denied
-//     request, not N hours later.
-//   • staleness / stalled_orgs / active_orgs — the BACKSTOP, sampled by the
-//     `/cron/sample-session-ingestion-health` cron. These catch any ingestion
-//     stall, including ones the gate has nothing to do with (broken ingest
-//     route, dead desktop fleet, sync queue wedged), at the cost of taking the
-//     stall threshold to fire.
+// org for ~2 days and was found only by manual inspection: nothing measured
+// "is session data still arriving?". staleness / stalled_orgs / active_orgs,
+// sampled by the `/cron/sample-session-ingestion-health` cron, make that class
+// of stall observable (broken ingest route, dead desktop fleet, sync queue
+// wedged), at the cost of taking the stall threshold to fire. Session ingestion
+// itself is always on: no org policy or flag denies it.
 //
 // Emitting these does NOT create a queryable Datadog metric on its own: each
 // needs a paired `datadog_logs_metric` generator plus a `datadog_monitor` in
 // `agentflow-ai/af-tofu-aws-live` (PRD-159). See packages/observability/README.md.
 // ---------------------------------------------------------------------------
 
-/**
- * Why an ingest attempt was denied by the org session-sync policy. Wire-level
- * snake_case values are consumed verbatim by the telemetry pipeline; do not
- * rename them without coordinating the change in `af-tofu-aws-live`.
- *
- * The split matters operationally: `policy_disabled` is a CONFIGURATION state
- * an org admin can fix from Settings → Organization, while `org_not_found`
- * means the caller authenticated against an org row that no longer resolves —
- * a different, harder failure. Collapsing them would make the ISS-4537 signal
- * indistinguishable from ordinary deleted-org noise.
- */
-export const SessionIngestionDenialReason = {
-  PolicyDisabled: "policy_disabled",
-  OrgNotFound: "org_not_found",
-} as const;
-export type SessionIngestionDenialReason =
-  (typeof SessionIngestionDenialReason)[keyof typeof SessionIngestionDenialReason];
-
-// `count` is an ADDITIVE counter: a monitor pages on `sum(count)` over a short
-// window. The first denial in a throttle window (ISS-4707) emits `count: 1`; a
-// suppressed burst is later flushed as a single event whose `count` is the
-// total suppressed, so the sum still reflects the true denial volume. The count
-// is therefore `number`, not the literal `1`.
-type SessionIngestionPolicyDeniedMetric = {
-  metric: typeof FilterToken.SessionIngestionPolicyDenied;
-  orgId: string;
-  reason: SessionIngestionDenialReason;
-  count: number;
-};
-
 type SessionIngestionStalenessMetric = {
   metric: typeof FilterToken.SessionIngestionStaleness;
   orgId: string;
-  policyEnabled: boolean;
   value: number;
 };
 
@@ -97,44 +56,6 @@ type SessionIngestionActiveOrgsMetric = {
 };
 
 /**
- * One ingest attempt refused by the org session-sync policy. Counter — alarm on
- * a non-zero sum over a short window to page on a fail-closed org within
- * minutes of its desktops first trying to sync.
- */
-export function emitSessionIngestionPolicyDenied(
-  orgId: string,
-  reason: SessionIngestionDenialReason
-): void {
-  emitTelemetryMetric<SessionIngestionPolicyDeniedMetric>({
-    metric: FilterToken.SessionIngestionPolicyDenied,
-    orgId,
-    reason,
-    count: 1,
-  });
-}
-
-/**
- * ISS-4707: the aggregate rollup for a throttled burst. When a per-(org,reason)
- * throttle window closes, the denials it suppressed are flushed here as ONE
- * event carrying their total, so `sum(count)` stays faithful to the real denial
- * volume while the process-local emit rate stays bounded. `suppressedCount` is
- * the number of denials suppressed after the first (which already emitted its
- * own `count: 1`); callers must only invoke this with a positive count.
- */
-export function emitSessionIngestionPolicyDeniedAggregate(
-  orgId: string,
-  reason: SessionIngestionDenialReason,
-  suppressedCount: number
-): void {
-  emitTelemetryMetric<SessionIngestionPolicyDeniedMetric>({
-    metric: FilterToken.SessionIngestionPolicyDenied,
-    orgId,
-    reason,
-    count: suppressedCount,
-  });
-}
-
-/**
  * Milliseconds since this org last ingested any session data. Gauge — emitted
  * only for orgs that have ingested at least once, because an org with no
  * ingest history has no baseline to be stale against.
@@ -150,13 +71,11 @@ export function emitSessionIngestionPolicyDeniedAggregate(
  */
 export function emitSessionIngestionStaleness(
   orgId: string,
-  stalenessMs: number,
-  policyEnabled: boolean
+  stalenessMs: number
 ): void {
   emitTelemetryMetric<SessionIngestionStalenessMetric>({
     metric: FilterToken.SessionIngestionStaleness,
     orgId,
-    policyEnabled,
     value: stalenessMs,
   });
 }

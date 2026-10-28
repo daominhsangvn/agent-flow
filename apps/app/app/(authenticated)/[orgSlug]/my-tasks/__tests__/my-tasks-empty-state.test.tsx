@@ -5,15 +5,15 @@ import { describe, expect, it, vi } from "vitest";
 // The modals this state can open reach for host-app route context; the branch
 // under test is which STATE renders, not the modals' guts.
 vi.mock(
-  "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-document-modal",
+  "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/create-document-modal",
   () => ({ CreateDocumentModal: () => null })
 );
 vi.mock(
-  "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-issue-modal",
+  "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/create-issue-modal",
   () => ({ CreateIssueModal: () => null })
 );
-vi.mock("@/app/(authenticated)/[orgSlug]/teams/components/team-modal", () => ({
-  TeamModal: () => null,
+vi.mock("@/hooks/use-org-slug", () => ({
+  useOrgSlug: () => "test-org",
 }));
 
 import {
@@ -24,9 +24,7 @@ import { MyTasksEmptyState } from "../components/my-tasks-empty-state";
 
 const QUEUE_CLEAR_TITLE = "Your queue is clear";
 
-const projects = [
-  { id: "project-1", teams: [{ id: "team-1" }] },
-] as unknown as ProjectWithDetails[];
+const projects = [{ id: "project-1" }] as unknown as ProjectWithDetails[];
 
 // FEA-1626 (agentflow-ai-stage): "there is nothing assigned to you" and
 // "everything assigned to you fell outside the window" are two different facts.

@@ -4,30 +4,37 @@ import {
   type IntegrationConnectionsResponse,
 } from "@repo/api/src/types/integration";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { ADMIN_VIEWER } from "@/lib/integrations/connection/url-redaction";
 import { integrationConnectionService } from "@/lib/integrations/connection-service";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import {
   CONNECTION_BODY_MAX_BYTES,
   connectionErrorResponse,
   denyUnlessOrgAdmin,
-  resolveConfigViewer,
 } from "./route-helpers";
 
 const ROUTE = "/integrations/connections";
 
 /**
  * GET /integrations/connections
- * Every integration connection of the organization. Any org member; members
- * who are not org admins see url-kind config fields as their origin only.
+ * Every integration connection of the organization. Org admins only:
+ * connections carry the organization's integration settings.
  */
 export const GET = withAnyAuth<
   IntegrationConnectionsResponse,
   "/integrations/connections"
->(async (auth) => {
+>(async (auth, request) => {
   try {
+    const denied = await denyUnlessOrgAdmin(auth, {
+      method: request.method,
+      route: ROUTE,
+    });
+    if (denied) {
+      return denied;
+    }
     const connections = await integrationConnectionService.list(
       auth.user.organizationId,
-      await resolveConfigViewer(auth)
+      ADMIN_VIEWER
     );
     return successResponse({ connections });
   } catch (error) {

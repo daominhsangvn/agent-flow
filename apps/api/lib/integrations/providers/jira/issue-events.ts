@@ -2,6 +2,7 @@ import { IntegrationProviderKey } from "@repo/api/src/types/integration";
 import type {
   InboundEvent,
   InboundEventAttributeValue,
+  InboundItemChange,
   IntegrationAccount,
   SourceItemRef,
 } from "../../types";
@@ -9,6 +10,7 @@ import { jiraIssueBrowseUrl } from "./client";
 import {
   JiraChangelogField,
   JiraEventAttribute,
+  JiraSignalType,
   JiraTriggerType,
 } from "./constants";
 import { isJiraBotIdentity } from "./identity";
@@ -20,18 +22,29 @@ import type { JiraChangeItem, JiraIssue } from "./schemas";
  * polling and manual runs all go through here, so an occurrence gets the
  * same dedupKey whichever way it arrives:
  *   assigned to the bot by a change -> "{key}:assignee:{changelogId}"
- *   labels added by a change         -> "{key}:labels:{changelogId}"
+ *   labels added or removed by a change -> "{key}:labels:{changelogId}"
+ *   status changed by a change       -> "{key}:status:{changelogId}"
  *   created assigned to the bot / with labels / mentioning it -> "{key}:created"
  *   description edited to mention the bot -> "{key}:mention:{changelogId}"
  *   comment mentioning the bot       -> "{key}:mention:comment-{commentId}"
+ *   reply in a comment thread        -> "{key}:reply:{commentId}" (jira.comment_reply)
  *   manual run                       -> "{key}:manual"
+ *
+ * Every occurrence that assigns the issue to the bot, adds labels or
+ * mentions the bot also yields one jira.issue_conditions event
+ * ("{key}:conditions:{changelogId | created | comment-{commentId}}") that
+ * carries all three facts and the issue state after the occurrence, so a
+ * conditions trigger can combine them.
  */
 
 export const JiraDedupKind = {
   Assignee: "assignee",
   Labels: "labels",
+  Status: "status",
   Created: "created",
   Mention: "mention",
+  Conditions: "conditions",
+  Reply: "reply",
   Manual: "manual",
 } as const;
 export type JiraDedupKind = (typeof JiraDedupKind)[keyof typeof JiraDedupKind];
@@ -88,7 +101,7 @@ export function jiraAssignedEvent(
 /** `changeId` null means the issue was created with these labels. */
 export function jiraLabeledEvent(
   occurrence: JiraIssueOccurrence,
-  addedLabels: string[],
+  labels: { added: string[]; removed: string[] },
   changeId: string | null
 ): InboundEvent {
   return {
@@ -101,8 +114,10 @@ export function jiraLabeledEvent(
     item: jiraItemRef(occurrence.siteUrl, occurrence.issue),
     attributes: {
       ...jiraIssueAttributes(occurrence.issue),
-      [JiraEventAttribute.AddedLabels]: addedLabels,
+      [JiraEventAttribute.AddedLabels]: labels.added,
+      [JiraEventAttribute.RemovedLabels]: labels.removed,
     },
+    itemChange: { labels },
   };
 }
 
@@ -134,19 +149,22 @@ export function jiraChangeEvents(
   account: IntegrationAccount
 ): InboundEvent[] {
   const events: InboundEvent[] = [];
-  if (items.some((item) => assignsToBot(item, account))) {
+  const assigned = items.some((item) => assignsToBot(item, account));
+  if (assigned) {
     events.push(jiraAssignedEvent(occurrence, changeId));
   }
-  const added = uniqueStrings(
-    items.filter(isLabelsChange).flatMap((item) => addedLabels(item))
-  );
-  if (added.length > 0) {
-    events.push(jiraLabeledEvent(occurrence, added, changeId));
-  }
-  if (descriptionMentionsBot(items, account)) {
+  const { added } = labelChangesOf(items);
+  events.push(...itemChangeEvents(occurrence, items, changeId));
+  const mentioned = descriptionMentionsBot(items, account);
+  if (mentioned) {
     events.push(jiraMentionedEvent(occurrence, changeId));
   }
-  return events;
+  return withConditionsEvent(events, {
+    occurrence,
+    facts: { becameAssigned: assigned, addedLabels: added, mentioned },
+    state: jiraIssueState(occurrence.issue, account),
+    changeId,
+  });
 }
 
 /** Events of a jira:issue_created webhook: assigned to the bot, and/or created with labels. */
@@ -155,17 +173,29 @@ export function jiraCreatedEvents(
   account: IntegrationAccount
 ): InboundEvent[] {
   const events: InboundEvent[] = [];
-  if (isAssignedToBot(occurrence.issue, account)) {
+  const assigned = isAssignedToBot(occurrence.issue, account);
+  if (assigned) {
     events.push(jiraAssignedEvent(occurrence, null));
   }
   const labels = uniqueStrings(occurrence.issue.fields.labels ?? []);
   if (labels.length > 0) {
-    events.push(jiraLabeledEvent(occurrence, labels, null));
+    events.push(
+      jiraLabeledEvent(occurrence, { added: labels, removed: [] }, null)
+    );
   }
-  if (mentionsJiraBot(occurrence.issue.fields.description, account)) {
+  const mentioned = mentionsJiraBot(
+    occurrence.issue.fields.description,
+    account
+  );
+  if (mentioned) {
     events.push(jiraMentionedEvent(occurrence, null));
   }
-  return events;
+  return withConditionsEvent(events, {
+    occurrence,
+    facts: { becameAssigned: assigned, addedLabels: labels, mentioned },
+    state: { assignedToBot: assigned, labels },
+    changeId: null,
+  });
 }
 
 /** `changeId` null means the issue was created with a description that mentions the bot. */
@@ -185,7 +215,11 @@ export function jiraMentionedEvent(
   };
 }
 
-/** A comment_created / comment_updated webhook whose comment mentions the bot. */
+/**
+ * A comment_created / comment_updated webhook whose comment mentions the bot.
+ * `occurrence.issue` should be the issue as REST returns it: the issue of a
+ * comment webhook lacks fields such as the labels.
+ */
 export function jiraCommentMentionEvents(
   occurrence: JiraIssueOccurrence,
   comment: { id: string; body?: unknown },
@@ -194,7 +228,13 @@ export function jiraCommentMentionEvents(
   if (!mentionsJiraBot(comment.body, account)) {
     return [];
   }
-  return [jiraMentionedEvent(occurrence, `comment-${comment.id}`)];
+  const changeId = `comment-${comment.id}`;
+  return withConditionsEvent([jiraMentionedEvent(occurrence, changeId)], {
+    occurrence,
+    facts: { becameAssigned: false, addedLabels: [], mentioned: true },
+    state: jiraIssueState(occurrence.issue, account),
+    changeId,
+  });
 }
 
 export function isAssignedToBot(
@@ -255,6 +295,84 @@ export function addedLabels(item: JiraChangeItem): string[] {
   );
 }
 
+/** Labels present before the change but not after (the mirror of addedLabels). */
+export function removedLabels(item: JiraChangeItem): string[] {
+  const after = new Set(labelTokens(item.toText ?? item.to));
+  return labelTokens(item.fromText ?? item.from).filter(
+    (label) => !after.has(label)
+  );
+}
+
+export function isStatusChange(item: JiraChangeItem): boolean {
+  return changedField(item) === JiraChangelogField.Status;
+}
+
+/** The first status change of the items (status names, not ids), else null. */
+export function statusChangeOf(
+  items: readonly JiraChangeItem[]
+): { from: string | null; to: string | null } | null {
+  const item = items.find(isStatusChange);
+  if (!item) {
+    return null;
+  }
+  return { from: item.fromText ?? null, to: item.toText ?? null };
+}
+
+/** Labels added and removed by the labels items of one changelog entry. */
+export function labelChangesOf(items: readonly JiraChangeItem[]): {
+  added: string[];
+  removed: string[];
+} {
+  const labelItems = items.filter(isLabelsChange);
+  return {
+    added: uniqueStrings(labelItems.flatMap((item) => addedLabels(item))),
+    removed: uniqueStrings(labelItems.flatMap((item) => removedLabels(item))),
+  };
+}
+
+/** The status and label events of one changelog entry (not the conditions fact events). */
+export function itemChangeEvents(
+  occurrence: JiraIssueOccurrence,
+  items: readonly JiraChangeItem[],
+  changeId: string
+): InboundEvent[] {
+  const events: InboundEvent[] = [];
+  const status = statusChangeOf(items);
+  if (status) {
+    events.push(jiraStatusChangedEvent(occurrence, status, changeId));
+  }
+  const labels = labelChangesOf(items);
+  if (labels.added.length > 0 || labels.removed.length > 0) {
+    events.push(jiraLabeledEvent(occurrence, labels, changeId));
+  }
+  return events;
+}
+
+export function jiraStatusChangedEvent(
+  occurrence: JiraIssueOccurrence,
+  change: { from: string | null; to: string | null },
+  changeId: string
+): InboundEvent {
+  const itemChange: InboundItemChange = { status: change };
+  return {
+    triggerType: JiraTriggerType.IssueStatusChanged,
+    dedupKey: jiraDedupKey(
+      occurrence.issue.key,
+      JiraDedupKind.Status,
+      changeId
+    ),
+    occurredAt: occurrence.occurredAt,
+    actor: occurrence.actor,
+    item: jiraItemRef(occurrence.siteUrl, occurrence.issue),
+    attributes: {
+      ...jiraIssueAttributes(occurrence.issue),
+      [JiraEventAttribute.FromStatus]: change.from,
+      [JiraEventAttribute.ToStatus]: change.to,
+    },
+    itemChange,
+  };
+}
+
 export function jiraDedupKey(
   issueKey: string,
   kind: JiraDedupKind,
@@ -269,7 +387,8 @@ function changedField(item: JiraChangeItem): string {
   return (item.fieldId ?? item.field ?? "").trim().toLowerCase();
 }
 
-function labelTokens(value: string | null | undefined): string[] {
+/** Labels of a changelog value (space-separated). */
+export function labelTokens(value: string | null | undefined): string[] {
   return (value ?? "").split(WHITESPACE_RE).filter((token) => token !== "");
 }
 
@@ -280,4 +399,111 @@ function projectKeyOf(issueKey: string): string | null {
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+/** `events` plus the occurrence's jira.issue_conditions event, when it has facts. */
+function withConditionsEvent(
+  events: InboundEvent[],
+  input: Parameters<typeof jiraConditionsEvent>[0]
+): InboundEvent[] {
+  return hasConditionFacts(input.facts)
+    ? [...events, jiraConditionsEvent(input)]
+    : events;
+}
+
+/** What an occurrence did, as jira.issue_conditions triggers see it. */
+export type JiraConditionFacts = {
+  /** The occurrence assigned the issue to the bot (or created it assigned). */
+  becameAssigned: boolean;
+  /** Labels the occurrence added (all labels for a creation). */
+  addedLabels: string[];
+  /** The occurrence is a mention of the bot. */
+  mentioned: boolean;
+};
+
+/** The condition-relevant state of an issue right after an occurrence. */
+export type JiraIssueState = {
+  assignedToBot: boolean;
+  labels: string[];
+};
+
+/**
+ * The jira.issue_conditions event of an occurrence. `changeId` null means
+ * the issue was created (dedupKey "{key}:conditions:created").
+ */
+export function jiraConditionsEvent(input: {
+  occurrence: JiraIssueOccurrence;
+  facts: JiraConditionFacts;
+  state: JiraIssueState;
+  changeId: string | null;
+}): InboundEvent {
+  const { occurrence, facts, state } = input;
+  return {
+    triggerType: JiraTriggerType.IssueConditions,
+    dedupKey: jiraDedupKey(
+      occurrence.issue.key,
+      JiraDedupKind.Conditions,
+      input.changeId ?? JiraDedupKind.Created
+    ),
+    occurredAt: occurrence.occurredAt,
+    actor: occurrence.actor,
+    item: jiraItemRef(occurrence.siteUrl, occurrence.issue),
+    attributes: {
+      ...jiraIssueAttributes(occurrence.issue),
+      [JiraEventAttribute.Labels]: state.labels,
+      [JiraEventAttribute.AssignedToBot]: state.assignedToBot,
+      [JiraEventAttribute.BecameAssigned]: facts.becameAssigned,
+      [JiraEventAttribute.AddedLabels]: facts.addedLabels,
+      [JiraEventAttribute.Mentioned]: facts.mentioned,
+    },
+  };
+}
+
+/** The issue's assignee (the bot or not) and labels as the issue data shows them. */
+export function jiraIssueState(
+  issue: JiraIssue,
+  account: IntegrationAccount
+): JiraIssueState {
+  return {
+    assignedToBot: isAssignedToBot(issue, account),
+    labels: uniqueStrings(issue.fields.labels ?? []),
+  };
+}
+
+/** True when the facts make a jira.issue_conditions event worth emitting. */
+export function hasConditionFacts(facts: JiraConditionFacts): boolean {
+  return (
+    facts.becameAssigned || facts.addedLabels.length > 0 || facts.mentioned
+  );
+}
+
+/** A comment_created webhook whose comment replies to another comment. */
+export function jiraCommentReplyEvent(
+  occurrence: JiraIssueOccurrence,
+  comment: { id: string; parentId: string }
+): InboundEvent {
+  return {
+    triggerType: JiraSignalType.CommentReply,
+    dedupKey: jiraDedupKey(
+      occurrence.issue.key,
+      JiraDedupKind.Reply,
+      comment.id
+    ),
+    occurredAt: occurrence.occurredAt,
+    actor: occurrence.actor,
+    item: jiraItemRef(occurrence.siteUrl, occurrence.issue),
+    attributes: {
+      ...jiraIssueAttributes(occurrence.issue),
+      [JiraEventAttribute.RepliedTo]: comment.parentId,
+    },
+  };
+}
+
+/** The comment a jira.comment_reply event replies to (the provider's answerReply hook). */
+export function jiraAnswerReply(event: InboundEvent): string | null {
+  if (event.triggerType !== JiraSignalType.CommentReply) {
+    return null;
+  }
+  const repliedTo = event.attributes[JiraEventAttribute.RepliedTo];
+  return typeof repliedTo === "string" ? repliedTo : null;
 }

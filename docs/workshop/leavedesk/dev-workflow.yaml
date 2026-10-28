@@ -1,0 +1,166 @@
+name: LeaveDesk · Dev implementation
+description: >-
+  A Jira LD ticket with an approved PRD (from the BA workflow: a summary
+  comment and the full PRD attached) gets the label
+  ready-for-dev and is planned and implemented with
+  obra/superpowers (toolkit leavedesk-superpowers); questions go to the ticket,
+  and both repositories get a pull request.
+project: LeaveDesk
+triggers:
+  - connection: jira                   # the one Jira bot
+    type: jira.issue_conditions
+    config:
+      labels: [ready-for-dev]        # adding the label starts the implementation (or resumes it)
+      projectKeys: [LD]
+agent:
+  runAs: admin@agentflow.local
+  runner: runner-1
+  prd:
+    instruction: >-
+      PRD only when the description itself is a whole product requirements
+      document (numbered functional requirements and acceptance criteria). A
+      ticket analysed by the BA team (a raw requirement with a comment that
+      summarizes its PRD, "Full PRD attached: PRD-<KEY>.md") is an Issue: its
+      PRD already exists from the BA run. Otherwise an Issue.
+  process:
+    toolkit:
+      repository: workshop/leavedesk-superpowers
+      mounts:
+        - .claude/skills
+      instructions: |
+        ## LeaveDesk dev team: superpowers
+
+        The skills of obra/superpowers v7.0.0 are linked into this workspace's `.claude/skills`
+        (the rest of the toolkit is `leavedesk-superpowers/`). Read the `using-superpowers`
+        skill first and follow it. `superpowers:<name>` in a skill means the project skill
+        `<name>`.
+
+        Adapting superpowers to AgentFlow:
+        - The ticket is `.agentflow-ai/work/issue.md` (description, comments, attachment
+          links). Its approved PRD is the approved design: do not run the brainstorming
+          dialogue. When the ticket has an attachment named `PRD-<KEY>.md` (the BA team attaches
+          it, with a comment summarizing it), read that file with the
+          `source_item_attachment_read` tool (`name: "PRD-<KEY>.md"`; `source_item_get` lists
+          the attachments): its text is the full PRD and the design; the summary only orients
+          and the raw description is what it was derived from. Without such an attachment, the
+          PRD is the ticket's description. The attachment links in issue.md cannot be
+          downloaded from here: use the tool. Copy the full PRD to
+          `leavedesk-superpowers/work/<KEY>/spec.md` and plan from it. Something the PRD leaves
+          open that you cannot decide from the ticket or the code becomes a question in
+          `.agentflow-ai/work/questions.json` (2-4 options, the recommended one first with its
+          reason), never a question in chat.
+        - `leavedesk-knowledge/` is the BA team's repository (analysis and archive): do not
+          read or change it; the ticket carries everything the implementation needs.
+        - Plans go to `leavedesk-superpowers/work/<KEY>/plan.md` (not docs/superpowers/plans),
+          progress and the final report to `leavedesk-superpowers/work/<KEY>/report.md`.
+        - The code is `leavedesk-app/` (read its CLAUDE.md and README). Work on the branch that
+          is checked out: never create branches or worktrees and never switch branches. Commit
+          in `leavedesk-app/` as the plan's tasks say, with
+          `git -c user.name="LeaveDesk Dev Bot" -c user.email="dev-bot@saomai.dev" commit …`.
+          There is no finishing-a-development-branch step: AgentFlow pushes `leavedesk-app/` and
+          `leavedesk-superpowers/` when the implement step ends and opens a pull request in each.
+        - Do not change `leavedesk-qa/`.
+        - Subagents you dispatch inherit the session's model; there is no human to answer them:
+          decide from the PRD and the code.
+    steps:
+      - type: agent
+        id: plan
+        name: Plan with superpowers
+        role: plan                     # .agentflow-ai/work/plan.md is the run's Implementation Plan
+        questions: ask
+        connections:
+          source: read                 # source_item_get / source_item_attachment_read (the PRD file)
+        instruction: |
+          Plan {{issue.key}} ({{issue.title}}) from its PRD: the attachment PRD-{{issue.key}}.md read with
+          source_item_attachment_read when the ticket has it, else the ticket in {{issue.file}}; with
+          the writing-plans
+          skill: spec in leavedesk-superpowers/work/{{issue.key}}/spec.md, plan in
+          leavedesk-superpowers/work/{{issue.key}}/plan.md, tasks small enough for test-driven
+          development, every acceptance criterion mapped to a task and a test.
+        artifacts:
+          - leavedesk-superpowers/work/*/spec.md
+          - leavedesk-superpowers/work/*/plan.md
+      - type: agent
+        id: implement
+        name: Implement with superpowers
+        role: implement                # pushes both repositories, writes release notes
+        timeoutMinutes: 240
+        connections:
+          source: [comment]            # reads the PRD attachment; uploads the plan for QC
+        instruction: |
+          Implement the approved plan for {{issue.key}} (.agentflow-ai/work/plan.md, also in
+          leavedesk-superpowers/work/{{issue.key}}/plan.md) with the subagent-driven-development
+          skill, using test-driven-development for every task and verification-before-completion
+          at the end: `npm test` and `npm run build` in leavedesk-app pass. Tick the plan's
+          checkboxes and write leavedesk-superpowers/work/{{issue.key}}/report.md (what was built,
+          tests, deviations from the plan, open issues).
+
+          Finally attach the implementation plan to the ticket for QC, once: copy
+          leavedesk-superpowers/work/{{issue.key}}/plan.md (with its ticked checkboxes) to
+          .agentflow-ai/work/PLAN-{{issue.key}}.md and upload it with
+          `"$AGENTFLOW_ATTACH" .agentflow-ai/work/PLAN-{{issue.key}}.md text/markdown`. Post no
+          comment for it: the summary comment after this step names it.
+        artifacts:
+          - leavedesk-superpowers/work/*/report.md
+actions:
+  - on: workflow.triggered
+    type: jira.add_link                # a fixed URL: typed links do not render templates
+    continueOnError: true
+    config:
+      url: http://localhost:3300/workshop/leavedesk-app
+      title: LeaveDesk code (leavedesk-app)
+  - on: workflow.triggered
+    type: jira.transition_issue
+    continueOnError: true
+    config:
+      transitionName: In Progress
+  - on: workflow.triggered
+    type: jira.add_comment
+    continueOnError: true
+  - on: plan.completed
+    type: jira.add_comment             # {{summary}}: plan link + excerpt
+  - on: input.needed
+    instruction: |
+      The Dev run of {{source.key}} waits for people: {{run.url}}
+      If the "{{step.name}}" step has open questions, post one comment that lists them numbered, each with its options labelled a, b, c… and the recommended one marked "(recommended)" with its reason. End with: answer by replying to this comment (Reply on the comment, so the answer stays in its thread; e.g. "1a, 2c", or in your own words) in one reply: the reply continues the run.
+      Otherwise post one comment saying what the run waits for, with the run link.
+    connections:
+      source: [comment]
+  - on: execute.completed              # one pull request per pushed repository
+    type: local_git.create_pull_request
+    config:
+      title: "{{source.key}}: {{source.title}}"
+      description: |-
+        Implements {{source.key}}: {{source.title}} ({{source.url}}) with superpowers.
+
+        PRD: {{feature.url}}
+        Implementation plan: {{plan.url}}
+        Release notes: {{releaseNotes.url}}
+        AgentFlow run: {{run.url}}
+  - on: execute.completed
+    instruction: |
+      Summarize the implementation of {{source.key}} in one comment (at most 12 lines): what was built, the tests and their result (leavedesk-superpowers/work/{{source.key}}/report.md), deviations from the plan, that the implementation plan is attached to the ticket as PLAN-{{source.key}}.md, and the pull requests:
+      {{pr.urls}}
+      Say that the PRs are reviewed and merged by the team, and that QC starts when the ticket gets the label "ready-for-qc" after the merge. Then add the label "dev-done", move the issue to "In Review", and add a web link to the ticket for each pull request (title "PR <repository name>").
+    connections:
+      source: [comment, label, transition, link]
+  - on: workflow.failed
+    type: jira.add_comment
+  - on: execute.started
+    type: jira.add_comment
+    config:
+      message: "🛠️ The Dev bot is implementing {{source.key}} with superpowers (subagent per task, TDD) from the plan {{plan.url}}. Follow the run: {{run.url}}"
+  - on: [workflow.started, plan.started, plan.completed, input.needed, execute.started, execute.completed, workflow.completed, workflow.failed]
+    connection: http                   # every run event to the event feed (docs/workshop/event-feed.py)
+    type: webhook.post
+    enabled: false                     # off: queued behind a stopped feed, it delayed the later actions
+    config:
+      url: http://localhost:4545/agentflow
+  - on: [input.needed, workflow.failed]
+    type: agentflow.email              # Mailpit: http://localhost:8025; default subject names the event and item
+    config:
+      to: [admin@agentflow.local]
+  - on: [workflow.completed, workflow.failed]
+    type: jira.update_labels           # the label stays until the run ends; a reply to its question continues it
+    config:
+      remove: [ready-for-dev]

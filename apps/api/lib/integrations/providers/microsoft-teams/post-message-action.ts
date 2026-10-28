@@ -22,9 +22,14 @@ import { checkTeamsWebhookUrl } from "./webhook-url";
 
 export const TeamsActionType = {
   PostMessage: "microsoft_teams.post_message",
+  /** Answer in the thread the run came from (bot only). */
+  Reply: "microsoft_teams.reply",
 } as const;
 export type TeamsActionType =
   (typeof TeamsActionType)[keyof typeof TeamsActionType];
+
+export const TEAMS_NO_WEBHOOK_ERROR =
+  'The Teams connection has no Workflows webhook URL, so it cannot post to a channel. Add one to the connection, or answer in the thread the run came from with "Reply in the Teams thread".';
 
 export const TEAMS_DEFAULT_TITLE_TEMPLATE = "{{workflow.name}}: {{source.key}}";
 export const TEAMS_DEFAULT_MESSAGE_TEMPLATE = "{{summary}}";
@@ -99,6 +104,13 @@ export const teamsPostMessageAction = defineAction<
 async function executePostMessage(
   context: TeamsPostMessageContext
 ): Promise<ActionResult> {
+  if (!context.connection.secrets.webhookUrl) {
+    return {
+      status: WorkflowActionRunStatus.Failed,
+      error: TEAMS_NO_WEBHOOK_ERROR,
+      retryable: false,
+    };
+  }
   const webhookUrl = checkTeamsWebhookUrl(
     context.connection.secrets.webhookUrl
   );

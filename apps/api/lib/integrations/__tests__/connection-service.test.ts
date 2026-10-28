@@ -37,10 +37,9 @@ vi.mock("@repo/database", async () => {
   const fake = await import(
     "@/lib/integrations/__tests__/support/connection-db.test-fake"
   );
-  return {
-    withDb: (fn: (db: unknown) => unknown) => fn(fake.connectionDbFake.db),
-    Prisma: { DbNull: fake.PRISMA_DB_NULL },
-  };
+  const withDb = (fn: (db: unknown) => unknown) => fn(fake.connectionDbFake.db);
+  withDb.tx = (fn: (tx: unknown) => unknown) => fn(fake.connectionDbFake.db);
+  return { withDb, Prisma: { DbNull: fake.PRISMA_DB_NULL } };
 });
 vi.mock("@/lib/integrations/registry", async () => {
   const fixtures = await import(
@@ -218,6 +217,7 @@ describe("integrationConnectionService.list / get", () => {
       triggers: 2,
       actions: 1,
       projectRepositories: 0,
+      projectConnections: 0,
     });
     await createTestConnection(integrationConnectionService, {}, OTHER_ORG_ID);
 
@@ -593,6 +593,7 @@ describe("integrationConnectionService.remove", () => {
       triggers: 1,
       actions: 1,
       projectRepositories: 0,
+      projectConnections: 0,
     });
 
     const result = await integrationConnectionService.remove(
@@ -603,7 +604,7 @@ describe("integrationConnectionService.remove", () => {
     expect(result.ok ? null : result.error).toEqual({
       status: Status.Conflict,
       message:
-        "The connection is used by 2 workflow trigger(s), action(s) or project repositories. Remove them from their workflows and projects first.",
+        "The connection is used by 2 workflow trigger(s), action(s), project repositories or project connections. Remove them from their workflows and projects first.",
     });
     expect(connectionDbFake.connections.size).toBe(1);
   });
@@ -614,6 +615,25 @@ describe("integrationConnectionService.remove", () => {
       triggers: 0,
       actions: 0,
       projectRepositories: 1,
+      projectConnections: 0,
+    });
+
+    const result = await integrationConnectionService.remove(
+      ORG_ID,
+      connection.id
+    );
+
+    expect(result.ok ? null : result.error.status).toBe(Status.Conflict);
+    expect(connectionDbFake.connections.size).toBe(1);
+  });
+
+  it("refuses with 409 while a project connection uses it", async () => {
+    const connection = await createConnection();
+    connectionDbFake.usage.set(connection.id, {
+      triggers: 0,
+      actions: 0,
+      projectRepositories: 0,
+      projectConnections: 1,
     });
 
     const result = await integrationConnectionService.remove(
