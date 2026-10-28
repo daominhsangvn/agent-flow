@@ -6,6 +6,7 @@ import { describe, test } from "node:test";
 import { LoopHarness } from "@agentflow-ai/loops-api/desktop-request";
 import {
   type ClaudeCodeVersionInstaller,
+  ClaudeCodeVersionMismatchError,
   configureClaudeCodeVersionInstaller,
   resolveLoopHarnessBinary,
 } from "../src/server/operations/claude-code-version-pin.js";
@@ -126,6 +127,22 @@ describe("resolveLoopHarnessBinary", () => {
         assert.equal(result.error, null);
       }
       assert.equal(calls, 1);
+    });
+  });
+
+  test("a version mismatch error is returned as is", async () => {
+    const message =
+      "This computer runs Claude Code 2.1.307, the provider needs 2.1.311: run `claude install 2.1.311`";
+    const installer: ClaudeCodeVersionInstaller = {
+      ensure: () => Promise.reject(new ClaudeCodeVersionMismatchError(message)),
+    };
+    await withInstaller(installer, async () => {
+      const result = await resolveLoopHarnessBinary({
+        adapter: CLAUDE,
+        claudeCodeVersion: "2.1.311",
+      });
+
+      assert.equal(result.error, message);
     });
   });
 });

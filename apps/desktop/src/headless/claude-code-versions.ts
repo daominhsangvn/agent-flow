@@ -245,7 +245,7 @@ async function fetchLatestRelease(): Promise<string> {
   return response.text();
 }
 
-function runWithoutShell(
+export function runWithoutShell(
   file: string,
   args: string[],
   timeoutMs: number,

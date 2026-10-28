@@ -50,6 +50,7 @@ import { createWait, evaluateWaits } from "@/lib/orchestrator/waits";
 import { scrubProviderError } from "@/lib/workflows/engine/errors";
 import { orchestratorCaseUrl } from "@/lib/workflows/engine/links";
 import { REPLY_ATTACHMENTS_MAX, uploadReplyFiles } from "./service/attachments";
+import { recordRefusedCall } from "./service/audit";
 import {
   NOTES_MAX,
   REPLY_MAX,
@@ -160,16 +161,36 @@ export const orchestratorToolService = {
     if (!context) {
       return Result.err(Status.Unauthorized);
     }
-    const handler = HANDLERS[tool];
-    if (!handler) {
-      return Result.ok(refused(`There is no tool ${tool}.`));
+    const outcome = await runTool(context, tool, input);
+    if (!(outcome.ok || outcome.retryable)) {
+      await recordRefusedCall(
+        {
+          organizationId: context.organizationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+        },
+        tool,
+        outcome.error
+      );
     }
-    if (SUPERSEDABLE_TOOLS.has(tool) && (await turnSuperseded(context))) {
-      return Result.ok(refused(TURN_SUPERSEDED_ERROR));
-    }
-    return Result.ok(await handler(context, input));
+    return Result.ok(outcome);
   },
 };
+
+async function runTool(
+  context: TurnContext,
+  tool: string,
+  input: Record<string, JsonValue>
+): Promise<ToolOutcome> {
+  const handler = HANDLERS[tool];
+  if (!handler) {
+    return refused(`There is no tool ${tool}.`);
+  }
+  if (SUPERSEDABLE_TOOLS.has(tool) && (await turnSuperseded(context))) {
+    return refused(TURN_SUPERSEDED_ERROR);
+  }
+  return handler(context, input);
+}
 
 async function authenticate(token: string | null): Promise<TurnContext | null> {
   if (!token) {

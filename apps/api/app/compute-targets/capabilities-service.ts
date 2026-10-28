@@ -3,12 +3,14 @@ import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import {
   type ComputeTargetCapabilities,
   parseRunnerCapabilitiesMarkdown,
+  RUNNER_CAPABILITIES_MAX_WARNINGS,
   RunnerCapabilitiesSource,
   runnerCapabilitiesSchema,
   type UploadRunnerCapabilitiesInput,
 } from "@repo/api/src/types/runner-capabilities";
 import { Prisma, withDb } from "@repo/database";
 import { z } from "zod";
+import { serverCapabilityWarnings } from "@/app/compute-targets/capabilities-warnings";
 import { resolveProjectId } from "@/lib/identifier-utils";
 
 /**
@@ -16,7 +18,8 @@ import { resolveProjectId } from "@/lib/identifier-utils";
  * (AGENTFLOW.md)"): what each runner declares it can do for a project. A runner
  * uploads its file with its owner's API key; the API parses the front matter
  * itself (the runner's parse only decides its local warnings) and keeps one
- * file per runner and project.
+ * file per runner and project. The API adds its own warnings (secret-looking
+ * lines, read commands with push).
  */
 
 const WITH_RUNNER = {
@@ -57,7 +60,12 @@ export const computeTargetCapabilitiesService = {
         ? (parsed.value as Prisma.InputJsonValue)
         : Prisma.DbNull,
       problems: parsed.ok ? [] : parsed.problems,
-      warnings: input.warnings,
+      warnings: [
+        ...new Set([
+          ...serverCapabilityWarnings(input.content, parsed),
+          ...input.warnings,
+        ]),
+      ].slice(0, RUNNER_CAPABILITIES_MAX_WARNINGS),
       contentHash: createHash("sha256").update(input.content).digest("hex"),
       uploadedAt: new Date(),
     };

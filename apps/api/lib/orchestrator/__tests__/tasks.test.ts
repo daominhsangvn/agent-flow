@@ -401,6 +401,69 @@ describe("startTask", () => {
     expect(mocks.tasks[0]?.result).toMatchObject({ waiting: null });
   });
 
+  it("refuses a command the runner does not declare, and creates no task", async () => {
+    const started = await startTask({
+      ...BASE,
+      runner: "runner-1",
+      command: "/qa-test",
+    });
+
+    expect(!started.ok && started.error).toContain(
+      "is not declared in runner-1's AGENTFLOW.md"
+    );
+    expect(!started.ok && started.error).toContain("/ba-requirement");
+    expect(mocks.tasks).toHaveLength(0);
+    expect(mocks.createLoop).not.toHaveBeenCalled();
+  });
+
+  it("refuses write mode for a read command", async () => {
+    const started = await startTask({
+      ...BASE,
+      runner: "runner-1",
+      command: "/ba-requirement",
+      mode: RunnerCommandMode.Write,
+    });
+
+    expect(!started.ok && started.error).toContain("mode: read");
+    expect(mocks.tasks).toHaveLength(0);
+  });
+
+  it("runs a write command read-only when asked", async () => {
+    const started = await startTask({
+      ...BASE,
+      runner: "an-PRO-1",
+      command: "/executing-plans",
+      mode: RunnerCommandMode.Read,
+    });
+
+    expect(started.ok).toBe(true);
+    expect(mocks.createLoop.mock.calls[0]?.[2].metadata.step.readOnly).toBe(
+      true
+    );
+    expect(mocks.tasks[0]?.mode).toBe(RunnerCommandMode.Read);
+  });
+
+  it("fails a queued task at launch when its command is no longer declared", async () => {
+    mocks.busy = true;
+    const started = await startTask({
+      ...BASE,
+      runner: "runner-1",
+      command: "/ba-requirement",
+    });
+    expect(started.ok && started.value.status).toBe(
+      OrchestratorTaskStatus.Queued
+    );
+
+    mocks.busy = false;
+    mocks.dropBaCommand = true;
+    await advanceTasks(new Date());
+
+    expect(mocks.tasks[0]?.status).toBe(OrchestratorTaskStatus.Failed);
+    expect(mocks.tasks[0]?.result).toMatchObject({
+      error: expect.stringContaining("not declared"),
+    });
+  });
+
   it("fails the task at once when its runner is offline", async () => {
     mocks.online = false;
 

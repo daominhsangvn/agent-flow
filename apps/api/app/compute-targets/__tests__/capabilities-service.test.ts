@@ -111,6 +111,24 @@ describe("computeTargetCapabilitiesService.upload", () => {
     expect(result.ok && result.value.contentHash).toMatch(SHA256_HEX_RE);
   });
 
+  it("puts the API's secret warning before the runner's", async () => {
+    const result = await computeTargetCapabilitiesService.upload(
+      IDS.org,
+      IDS.owner,
+      IDS.target,
+      {
+        project: "PRO-1",
+        source: RunnerCapabilitiesSource.Personal,
+        content: `${FILE}password: hunter2hunter2x\n`,
+        warnings: ["runner warning"],
+      }
+    );
+    const warnings = result.ok ? result.value.warnings : [];
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("looks like it holds a secret");
+    expect(warnings[1]).toBe("runner warning");
+  });
+
   it("keeps a file whose front matter does not parse, with the problems", async () => {
     const result = await computeTargetCapabilitiesService.upload(
       IDS.org,

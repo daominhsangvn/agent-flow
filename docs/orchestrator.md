@@ -223,6 +223,29 @@ The loop:
   tick wakes the wait. A personal runner that runs one task at a time
   takes them in turn: the task stays `queued` and the tick tries again.
 
+**Guards.** `task_run` (through `startTask`) refuses a task before it is
+created when:
+
+- **declared**: the command is not in the runner's AGENTFLOW.md (a file that
+  does not parse refuses every command). A queued task is checked again when
+  it launches and fails if its command is no longer declared.
+- **mode**: it asks for `mode: write` on a command declared `mode: read`.
+  `mode: read` on a write command is allowed (a read-only step, no push).
+- **push**: not a refusal. AgentFlow pushes only for an auto runner's command
+  with `push: true` run in write mode; a read command that declares `push`
+  gets a capabilities warning.
+- **needs**: a `needs` tag has producers (commands of the project whose
+  `produces` is that tag) with `attach` globs, and neither the passed `files`
+  nor the ticket's attachments match one of them by file name. A need with no
+  producer or no `attach` is not checked, and the check passes when the ticket
+  cannot be read (fail-open). The runner-side BLOCKED check stays. Tasks with
+  `resumeTaskId` are exempt.
+
+Every refused tool call (`ok: false`, not retryable) is recorded as a
+`tool_refused` message on the conversation (`<tool> refused: <error>`, no tool
+input). It never wakes a turn, shows as "Refused" in the case detail and
+appears in CASE.md's recent messages.
+
 **Files.** A command declares `attach` globs in AGENTFLOW.md (relative to the
 task's work directory). `buildStep` adds them to the step's `attach`, and the
 runner collects the matches as bytes when the loop ends (at most 20 files,

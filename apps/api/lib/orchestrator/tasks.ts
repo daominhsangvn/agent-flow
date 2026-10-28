@@ -59,6 +59,7 @@ import {
   type TaskFileRef,
   taskFilesFromStep,
 } from "./task-files";
+import { checkTaskCommand, checkTaskNeeds } from "./task-guards";
 import {
   mergeTaskResult,
   readTaskResult,
@@ -94,7 +95,7 @@ export type StartTaskInput = {
   command: string;
   args: string;
   prompt: string;
-  /** Null: the mode its AGENTFLOW.md declares (write when undeclared). */
+  /** Null: the mode its AGENTFLOW.md declares; write on a read command is refused. */
   mode: RunnerCommandMode | null;
   resumeTaskId: string | null;
   fork: boolean;
@@ -127,9 +128,10 @@ export async function startTask(input: StartTaskInput): Promise<
       `No runner "${input.runner}" declared commands for this project: ${files.map((file) => file.runnerName).join(", ") || "none did"}.`
     );
   }
-  const declared = runner.capabilities?.commands.find(
-    (command) => command.name === input.command
-  );
+  const checked = checkTaskCommand(runner, input.command, input.mode);
+  if (!checked.ok) {
+    return Result.err(checked.error);
+  }
   if (input.resumeTaskId) {
     const resumed = await withDb((db) =>
       db.orchestratorTask.findFirst({
@@ -159,6 +161,18 @@ export async function startTask(input: StartTaskInput): Promise<
       );
     }
   }
+  if (!input.resumeTaskId) {
+    const needs = await checkTaskNeeds({
+      organizationId: input.organizationId,
+      conversationId: input.conversationId,
+      files,
+      declared: checked.value.declared,
+      inputNames: input.files.map((file) => file.name),
+    });
+    if (!needs.ok) {
+      return Result.err(needs.error);
+    }
+  }
   const inputs =
     input.files.length > 0
       ? await resolveTaskInputs(input.caseId, input.files)
@@ -181,7 +195,7 @@ export async function startTask(input: StartTaskInput): Promise<
         command: input.command,
         args: input.args,
         prompt: input.prompt,
-        mode: input.mode ?? declared?.mode ?? RunnerCommandMode.Write,
+        mode: checked.value.mode,
         resumeTaskId: input.resumeTaskId,
         fork: input.fork,
         status: OrchestratorTaskStatus.Queued,
@@ -431,7 +445,11 @@ async function prepareStep(
   if (!inputs.ok) {
     return Result.err(inputs.error);
   }
-  const { step, attach } = await buildStep(task, inputs.value);
+  const built = await buildStep(task, inputs.value);
+  if (!built.ok) {
+    return built;
+  }
+  const { step, attach } = built.value;
   if (
     step.toolkit &&
     !findRepositoryCheckout(checkouts, step.toolkit.repository)
@@ -472,7 +490,7 @@ async function markStarted(
 async function buildStep(
   task: TaskRow,
   inputs: LoopStepInputFile[]
-): Promise<{ step: LoopStepConfig; attach: string[] }> {
+): Promise<Result<{ step: LoopStepConfig; attach: string[] }, string>> {
   const earlier = await withDb((db) =>
     db.orchestratorTask.count({
       where: {
@@ -490,9 +508,16 @@ async function buildStep(
   const file = capabilities.find(
     (candidate) => candidate.computeTargetId === task.computeTargetId
   );
-  const declared = file?.capabilities?.commands.find(
-    (command) => command.name === task.command
-  );
+  if (!file) {
+    return Result.err(
+      "The task's runner no longer has an AGENTFLOW.md for this project: the task was not started."
+    );
+  }
+  const checked = checkTaskCommand(file, task.command, null);
+  if (!checked.ok) {
+    return Result.err(`${checked.error} The task was not started.`);
+  }
+  const { declared } = checked.value;
   // A personal runner's own commands commit and push; AgentFlow pushes for
   // an auto runner's command that declares it.
   const personal = file?.source === RunnerCapabilitiesSource.Personal;
@@ -527,7 +552,7 @@ async function buildStep(
       : {}),
     ...(inputs.length > 0 ? { inputs } : {}),
   };
-  return { step, attach };
+  return Result.ok({ step, attach });
 }
 
 /** The command and its arguments first (a slash command is expanded), then the request. */

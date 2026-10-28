@@ -77,6 +77,7 @@ const MESSAGE_KIND_LABELS: Record<OrchestratorMessageKind, string> = {
   [OrchestratorMessageKind.StatusChanged]: "Status changed",
   [OrchestratorMessageKind.LabelAdded]: "Label added",
   [OrchestratorMessageKind.LabelRemoved]: "Label removed",
+  [OrchestratorMessageKind.ToolRefused]: "Refused",
 };
 const CLAMP_CHARS = 600;
 const SHORT_ID_CHARS = 8;

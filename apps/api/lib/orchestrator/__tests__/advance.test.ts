@@ -306,6 +306,39 @@ describe("advanceConversation", () => {
     );
   });
 
+  it("a failed turn's retry keeps a refused-call audit message with that turn", async () => {
+    await advanceConversation(conversationId, NOW);
+    const turnId = fake.turns[0]?.id as string;
+    await fake.db.orchestratorMessage.create({
+      data: {
+        organizationId: ORG_ID,
+        conversationId,
+        origin: OrchestratorMessageOrigin.Internal,
+        kind: OrchestratorMessageKind.ToolRefused,
+        actor: null,
+        text: "task_run refused: x",
+        externalRef: null,
+        dedupKey: "refused:audit-retry",
+        turnId,
+      },
+    });
+    finish({
+      type: "result",
+      ok: false,
+      error: "Claude crashed",
+      retryable: true,
+      sessionId: null,
+    });
+
+    await advanceConversation(conversationId, LATER);
+
+    const audit = fake.messages.find(
+      (message) => message.kind === OrchestratorMessageKind.ToolRefused
+    );
+    expect(audit?.turnId).toBe(turnId);
+    expect(fake.messages[0]?.turnId).toBeNull();
+  });
+
   it("stops giving the messages again after three failed turns in a row", async () => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const at = new Date(NOW.getTime() + attempt * 10 * 60_000);
@@ -536,6 +569,43 @@ describe("concurrency", () => {
     expect(mocks.dispatch.mock.calls.at(-1)?.[0].request.sessionId).toBe(
       "session-1"
     );
+  });
+
+  it("supersede: a refused-call audit message stays with the stopped turn", async () => {
+    await startTurnThenWrite("supersede");
+    const turnId = fake.turns[0]?.id as string;
+    await fake.db.orchestratorMessage.create({
+      data: {
+        organizationId: ORG_ID,
+        conversationId,
+        origin: OrchestratorMessageOrigin.Internal,
+        kind: OrchestratorMessageKind.ToolRefused,
+        actor: null,
+        text: "task_run refused: x",
+        externalRef: null,
+        dedupKey: "refused:audit-1",
+        turnId,
+      },
+    });
+    await advanceConversation(conversationId, LATER);
+    finish({
+      type: "result",
+      ok: false,
+      error: "The turn was stopped for a newer message.",
+      retryable: false,
+      sessionId: "session-1",
+    });
+    mocks.dispatch.mockResolvedValue("cmd-2");
+
+    await advanceConversation(conversationId, LATER);
+
+    const audit = fake.messages.find(
+      (message) => message.kind === OrchestratorMessageKind.ToolRefused
+    );
+    expect(audit?.turnId).toBe(turnId);
+    const prompt = mocks.dispatch.mock.calls.at(-1)?.[0].request
+      .prompt as string;
+    expect(prompt).not.toContain("task_run refused");
   });
 
   it("queue: the running turn finishes; the new message waits for the next", async () => {

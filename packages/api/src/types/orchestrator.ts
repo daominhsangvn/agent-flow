@@ -61,6 +61,8 @@ export const OrchestratorMessageKind = {
   LabelAdded: "label_added",
   /** A label was removed from the ticket. */
   LabelRemoved: "label_removed",
+  /** A tool call of the orchestrator that was refused (audit; never wakes a turn). */
+  ToolRefused: "tool_refused",
 } as const;
 export type OrchestratorMessageKind =
   (typeof OrchestratorMessageKind)[keyof typeof OrchestratorMessageKind];

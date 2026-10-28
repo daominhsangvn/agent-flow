@@ -38,6 +38,9 @@ export function createOrchestratorDbFake() {
         if ("in" in filter) {
           return (filter.in as unknown[]).includes(row[key]);
         }
+        if ("notIn" in filter) {
+          return !(filter.notIn as unknown[]).includes(row[key]);
+        }
         if ("not" in filter) {
           return row[key] !== filter.not;
         }

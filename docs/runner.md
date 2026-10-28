@@ -353,6 +353,10 @@ version. It is sent with every loop, like the model provider
   itself away from the version set. Set it in `runner.env` on a systemd
   runner.
 - The desktop app ignores the setting and keeps its own `claude`.
+- A personal runner never installs. When the provider pins an exact release
+  that differs from `claude --version`, each loop fails with ``This computer
+  runs Claude Code X, the provider needs Y: run `claude install Y` ``.
+  `latest` is not checked.
 
 ## Configuration
 
@@ -584,7 +588,7 @@ migration aid, not a replacement for the auto runner.
 | At once | `AGENTFLOW_RUNNER_MAX_CONCURRENT` | one, the other runs waiting their turn, or several when the project's commands make their own worktrees (`AGENTFLOW_RUNNER_PARALLEL=true`) |
 | Permission prompts | the loop's allowed tools | the loop's allowed tools and the person's `permissions.allow`, or none at all (`AGENTFLOW_RUNNER_SKIP_PERMISSIONS=true`) |
 | Per computer | any number, each with its own `AGENTFLOW_RUNNER_DATA_DIR` | any number, one per project key |
-| Claude Code | the version set in AgentFlow | the `claude` on PATH (no pinning: `~/.local/bin/claude` is shared by the account) |
+| Claude Code | the version set in AgentFlow | the `claude` on PATH (no pinning; a loop fails when the provider pins another version) |
 
 **Set up.** `node runner.mjs setup` (Windows: `setup-runner.cmd`) asks for the
 mode first; Enter keeps `auto`. Personal asks for the API URL and key, the
@@ -742,6 +746,9 @@ an approved PRD; to answer questions about a plan, resume its session.
   total), and the orchestrator can attach them to the ticket. Only
   orchestrator tasks use it (process steps use `artifacts` and
   `$AGENTFLOW_ATTACH`). Name the files in the command's body text.
+- On upload the API adds warnings (stored with the file, never blocking): a
+  line that looks like a secret (line number and kind, never the value) and a
+  `mode: read` command that declares `push`.
 - The API parses the front matter itself (`parseRunnerCapabilitiesMarkdown`,
   `packages/api/src/types/runner-capabilities.ts`) and keeps one file per
   runner and project (`compute_target_capabilities`); a file whose front matter

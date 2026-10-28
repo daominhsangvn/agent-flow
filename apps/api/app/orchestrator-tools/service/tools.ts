@@ -23,7 +23,7 @@ import {
 } from "./limits";
 
 export const INSTRUCTIONS =
-  "Tools of the project orchestrator for one turn of one conversation. reply posts in the conversation's thread; case_get and case_update_notes read and keep the case; runners_list shows what each runner can do; source_item_get reads the conversation's item; task_run sends a runner one of its commands, task_get reads a task and task_cancel stops one, only in a turn that handles a ticket change the workflow's cancelOn lists. A task's files come back with its result; reply attaches them (attachments) and task_run hands them to a later task (files). End the turn with wait_for (the tasks you started), wait_human or close_case. A write refused as superseded means a newer message arrived: end the turn with wait_human and a one-line note; the next turn answers both.";
+  "Tools of the project orchestrator for one turn of one conversation. reply posts in the conversation's thread; case_get and case_update_notes read and keep the case; runners_list shows what each runner can do; source_item_get reads the conversation's item; task_run sends a runner one of its commands, task_get reads a task and task_cancel stops one, only in a turn that handles a ticket change the workflow's cancelOn lists. A task's files come back with its result; reply attaches them (attachments) and task_run hands them to a later task (files). End the turn with wait_for (the tasks you started), wait_human or close_case. A write refused as superseded means a newer message arrived: end the turn with wait_human and a one-line note; the next turn answers both. Refused calls are recorded on the case.";
 
 export const TOOLS: IntegrationToolDescriptor[] = [
   {
@@ -88,7 +88,7 @@ export const TOOLS: IntegrationToolDescriptor[] = [
     name: OrchestratorToolName.TaskRun,
     title: "Run a command on a runner",
     description:
-      "Starts one of a runner's declared commands as a task (runners_list). The runner works on the case in its own workspace; the task's answer, questions and files come back when it ends (wait_for). A task resumes an earlier task's session on the same runner with resumeTaskId (fork: in a copy, leaving that session as it was), e.g. to answer the questions it asked or to ask about its plan.",
+      "Starts one of a runner's declared commands as a task (runners_list). The runner works on the case in its own workspace; the task's answer, questions and files come back when it ends (wait_for). A task resumes an earlier task's session on the same runner with resumeTaskId (fork: in a copy, leaving that session as it was), e.g. to answer the questions it asked or to ask about its plan. It is refused when the runner does not declare the command, when write mode is asked for a read command, or when a file the command needs (its needs, produced by another command's attach) is neither in files nor attached to the ticket.",
     inputSchema: {
       type: "object",
       properties: {

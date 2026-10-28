@@ -54,9 +54,15 @@ export async function resolveLoopHarnessBinary(args: {
       const ensured = await installer.ensure(claudeCodeVersion);
       override = ensured?.binaryPath ?? override;
     } catch (error) {
+      let message: string;
+      if (error instanceof ClaudeCodeVersionMismatchError) {
+        message = error.message;
+      } else {
+        message = `Claude Code ${claudeCodeVersion} is not available on this runner: ${errorMessage(error)}`;
+      }
       return {
         resolved: { path: adapter.binaryName, source: "fallback" },
-        error: `Claude Code ${claudeCodeVersion} is not available on this runner: ${errorMessage(error)}`,
+        error: message,
       };
     }
   }
@@ -76,3 +82,6 @@ export async function resolveLoopHarnessBinary(args: {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/** The machine's Claude Code is not the version set in AgentFlow; the message says what to run. */
+export class ClaudeCodeVersionMismatchError extends Error {}

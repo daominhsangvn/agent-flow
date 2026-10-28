@@ -19,6 +19,7 @@ import { ClaudeCredentialSource } from "../server/claude-credentials.js";
 import { configureClaudeCodeVersionInstaller } from "../server/operations/claude-code-version-pin.js";
 import { configurePersonalRunnerProject } from "../server/operations/personal-runner.js";
 import { isWindows } from "../server/platform-shell.js";
+import { createClaudeCodeVersionCheck } from "./claude-code-version-check.js";
 import { createClaudeCodeVersions } from "./claude-code-versions.js";
 import {
   type HeadlessRunnerConfig,
@@ -233,8 +234,20 @@ async function setUpClaudeCode(
     // which every runner and terminal of this account shares.
     gatewayLog.info(
       LOG_TAG,
-      "Personal runner: loops run the claude on PATH (no version pinning)"
+      "Personal runner: loops run the claude on PATH (no version pinning); a loop fails when the provider pins another Claude Code version"
     );
+    const claudePath = report.tools.find(
+      (tool) => tool.name === LoopHarness.Claude
+    )?.path;
+    if (claudePath) {
+      configureClaudeCodeVersionInstaller(
+        createClaudeCodeVersionCheck({
+          claudePath,
+          homeDir: os.homedir(),
+          log: { warn: (message) => gatewayLog.warn(LOG_TAG, message) },
+        })
+      );
+    }
   } else if (isWindows()) {
     // Versions are installed as symlinked binaries, which Windows does not
     // allow an ordinary account to create.

@@ -28,6 +28,7 @@ export const taskMocks = {
   tasks: [] as Row[],
   loops: new Map<string, Row>(),
   busy: false,
+  dropBaCommand: false,
   onBusyCheck: null as (() => void) | null,
   online: true,
   createLoop: vi.fn() as Mock,
@@ -130,14 +131,16 @@ export function capabilitiesModule() {
             capabilities: {
               runner: "BA",
               toolkit: taskMocks.baToolkit,
-              commands: [
-                {
-                  name: "/ba-requirement",
-                  mode: RunnerCommandMode.Read,
-                  asks: true,
-                  attach: taskMocks.baAttach,
-                },
-              ],
+              commands: taskMocks.dropBaCommand
+                ? []
+                : [
+                    {
+                      name: "/ba-requirement",
+                      mode: RunnerCommandMode.Read,
+                      asks: true,
+                      attach: taskMocks.baAttach,
+                    },
+                  ],
               skills: [],
             },
           },
@@ -255,6 +258,7 @@ export function resetTaskMocks() {
   taskMocks.tasks = [];
   taskMocks.loops = new Map();
   taskMocks.busy = false;
+  taskMocks.dropBaCommand = false;
   taskMocks.onBusyCheck = null;
   taskMocks.online = true;
   taskMocks.settled = true;

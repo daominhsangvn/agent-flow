@@ -243,7 +243,12 @@ async function settleSuperseded(
     await tx.orchestratorMessage.updateMany({
       where: {
         turnId: turn.id,
-        kind: { not: OrchestratorMessageKind.Reply },
+        kind: {
+          notIn: [
+            OrchestratorMessageKind.Reply,
+            OrchestratorMessageKind.ToolRefused,
+          ],
+        },
       },
       data: { turnId: null },
     });
@@ -452,7 +457,10 @@ async function failTurn(
   // The messages wait for the next turn, a while later.
   await withDb.tx(async (tx) => {
     await tx.orchestratorMessage.updateMany({
-      where: { turnId: turn.id },
+      where: {
+        turnId: turn.id,
+        kind: { not: OrchestratorMessageKind.ToolRefused },
+      },
       data: { turnId: null },
     });
     await tx.orchestratorConversation.update({

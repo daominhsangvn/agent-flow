@@ -265,7 +265,7 @@ describe("task files", () => {
     await startTask({
       ...BASE,
       runner: "runner-1",
-      command: "/x",
+      command: "/ba-requirement",
       replyTo: "10500",
     });
     expect(mocks.tasks[0]?.result).toMatchObject({ replyTo: "10500" });
