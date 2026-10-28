@@ -95,22 +95,18 @@ export function IssueEditorHeader({
     runInFlight(RunLoopCommand.EvaluateFeature) && !isEvaluating;
   const anyRunInFlight =
     planRunInFlight || executeRunInFlight || evaluateRunInFlight;
-  const teamId = feature.project?.teams?.[0]?.id;
   const projectId = feature.project?.id;
-  const teamName = feature.project?.teams?.[0]?.name;
   const projectName = feature.project?.name;
 
   const breadcrumbs: BreadcrumbEntry[] = [
-    ...(teamId && teamName
-      ? [{ label: teamName, href: `/${orgSlug}/teams/${teamId}/projects` }]
-      : []),
-    ...(teamId && projectId && projectName
+    ...(projectId && projectName
       ? [
+          { label: "Projects", href: `/${orgSlug}/projects` },
           {
             label: projectName,
             // FEA-4137: the project's Issues tab is `?tab=issues` now (legacy
             // `?tab=features` still resolves via the project page's tab alias).
-            href: `/${orgSlug}/teams/${teamId}/projects/${projectId}?tab=issues`,
+            href: `/${orgSlug}/projects/${projectId}?tab=issues`,
           },
         ]
       : []),

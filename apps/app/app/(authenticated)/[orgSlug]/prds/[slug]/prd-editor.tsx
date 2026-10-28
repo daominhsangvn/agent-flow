@@ -53,8 +53,8 @@ export function PRDEditor({
   const { data: generationStatus, isLoading: generationStatusLoading } =
     useDocumentGenerationStatus(prd.id, { polling: true });
 
-  const redirectPath = prd.project?.teams?.[0]?.id
-    ? `/${orgSlug}/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`
+  const redirectPath = prd.project?.id
+    ? `/${orgSlug}/projects/${prd.project.id}`
     : `/${orgSlug}/prds`;
 
   return (

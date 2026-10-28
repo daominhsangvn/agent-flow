@@ -55,8 +55,12 @@ spec need an org admin or owner, so prefer a dedicated database, or set
 
 | Tag | Specs | Needs |
 |---|---|---|
-| `@smoke` | `auth.setup`, `auth`, `session-token`, `navigation`, `teams`, `projects`, `workflows` | Postgres plus the app and API dev servers. |
+| `@smoke` | `auth.setup`, `agent-onboarding-card`, `auth`, `bitbucket-connection`, `connection-yaml-editor`, `document-without-collaboration`, `local-git`, `model-provider`, `navigation`, `project-connections`, `project-process`, `project-repositories`, `projects`, `session-token`, `teams`, `workflow-run-process`, `workflow-yaml-editor`, `workflows` | Postgres plus the app and API dev servers. |
 | `@external` | `feature-evaluation`, `plan-evaluation`, `pre-loop-system-check` | Liveblocks for document pages, and for loop completion a desktop compute target plus `AGENTFLOW_RUNNER_JWT_SECRET` shared with the API. Skipped unless `E2E_INCLUDE_EXTERNAL=1`. |
+
+`settings.spec.ts` has no tag: `pnpm test:e2e` runs it, the smoke run does not.
+Tags come from `E2ETag` in `e2e/helpers/tags.ts`. `e2e/global.setup.ts` probes
+the app and API first and stops with start instructions when either is down.
 
 `pnpm test:e2e:smoke` runs `playwright test --grep @smoke`. A single spec:
 `pnpm exec playwright test e2e/workflows.spec.ts`.
@@ -64,15 +68,19 @@ spec need an org admin or owner, so prefer a dedicated database, or set
 ## The workflows smoke spec
 
 `e2e/workflows.spec.ts` creates a generic HTTPS ("webhook") integration
-connection and a workflow whose `webhook.post` action targets a throwaway
-HTTP server the test starts on `127.0.0.1`. It then:
+connection and a workflow with two `webhook.post` actions targeting a
+throwaway HTTP server the test starts on `127.0.0.1`: a pre action
+(`run.triggered`, before the agent team) and a post action (`run.started`,
+`run.failed`). It then:
 
 1. checks that an unsigned request to the inbound URL is rejected (401);
 2. sends a Standard Webhooks-signed delivery (200) and waits for the run to
    fail, which it must, because the registered compute target has no desktop
    app behind it;
 3. replays the same delivery and checks that there is still exactly one run;
-4. waits for the `run.failed` event at the local HTTP server;
+4. waits for the `run.triggered` and `run.failed` deliveries at the local HTTP
+   server, checks the pre action's arrived first and that it is recorded as a
+   succeeded pre action run;
 5. opens `/{org}/workflows` and expects the workflow to be listed.
 
 Everything it creates is deleted in `finally`.

@@ -1,33 +1,26 @@
 "use client";
 
+import { IntegrationProviderKey } from "@repo/api/src/types/integration";
 import { LoopCommand } from "@repo/api/src/types/loop";
-import {
-  getProjectSettings,
-  type ProjectSettings,
-  resolveProjectRepoDefaults,
-} from "@repo/api/src/types/project";
+import type { ProjectRepository } from "@repo/api/src/types/project-repository";
+import { useGitHubRepositories } from "@repo/app/github/hooks/use-github-integration";
 import { useInheritedAdditionalRepos } from "@repo/app/loops/hooks/use-loops";
-import { useProject } from "@repo/app/projects/hooks/use-projects";
-import {
-  type TeamRepoWithTeamId,
-  useTeamRepositoriesUnion,
-} from "@repo/app/teams/hooks/use-team-repositories-union";
+import { useProjectRepositories } from "@repo/app/projects/hooks/use-project-repositories";
 import { useMemo } from "react";
 
 export const RepoSource = {
   PriorLoop: "prior-loop",
-  ProjectOverride: "project-override",
-  TeamDefault: "team-default",
+  ProjectDefault: "project-default",
   // Repo the user manually included in the picker; not seeded by the
-  // resolver. Labeled separately so the row doesn't claim to come from team
-  // defaults when it doesn't.
+  // resolver. Labeled separately so the row doesn't claim to come from the
+  // project's repositories when it doesn't.
   UserAdded: "user-added",
 } as const;
 export type RepoSource = (typeof RepoSource)[keyof typeof RepoSource];
 
 export type ResolvedRepo = {
-  // Pool repos identify by `installationRepositoryId`. Prior-loop seeds not
-  // found in the team pool carry their `fullName` here instead; in that case
+  // Pool repos identify by `ProjectRepository.id`. Prior-loop seeds not
+  // found in the pool carry their `fullName` here instead; in that case
   // `inPool` is false and the entry is informational only.
   id: string;
   fullName: string;
@@ -35,20 +28,19 @@ export type ResolvedRepo = {
   inPool: boolean;
   // Pre-resolved branch — set for prior-loop peers (so the follow-up run keeps
   // the same branch the prior loop used). Unset for pool rows whose branch
-  // should fall back to the GitHub default at submit time.
+  // should fall back to the repository default at submit time.
   branch?: string;
 };
 
 export type UseResolvedJobReposResult = {
   primary: ResolvedRepo | null;
   additional: ResolvedRepo[];
-  pool: TeamRepoWithTeamId[];
+  pool: JobRepoPoolEntry[];
   isLoading: boolean;
   // Why the pool is empty, when it is empty because the read FAILED (ISS-5095).
   // Without this the resolver hands consumers an empty `pool` and they render
-  // "No repositories curated on this project's team" — a claim about the team's
-  // configuration that the code has no evidence for, pointing the user at a
-  // settings page to fix something that isn't broken. `null` when the reads
+  // "No repositories on this project" — a claim about the project's
+  // configuration that the code has no evidence for. `null` when the reads
   // succeeded, in which case an empty pool really is empty.
   poolError: string | null;
 };
@@ -62,17 +54,19 @@ export type UseResolvedJobReposArgs = {
   // backend (e.g. PLAN inherits from GENERATE_PRD).
   command?: LoopCommand;
   // Optional carry-forward of the artifact's existing `targetRepo`. When the
-  // resolver finds it inside the team pool it becomes the primary and is
-  // labeled `prior-loop` if a prior loop exists, else falls through to the
-  // project resolution chain's label.
+  // resolver finds it inside the pool it becomes the primary and is labeled
+  // `prior-loop` if a prior loop exists, else `project-default`.
   primaryFullNameSeed?: string | null;
   enabled?: boolean;
 };
 
-// Composes the resolution chain (prior loop > project override > single-team
-// inheritance) plus per-repo source labels. The result is
-// the seed state for `JobRepositoriesSection`; user edits inside the section
-// override these values without writing them back to the project or team.
+export const PROJECT_REPOSITORIES_LOAD_FAILURE =
+  "We couldn't load this project's repositories. Reload the page to try again.";
+
+// Composes the resolution chain (prior loop > project primary repository) plus
+// per-repo source labels. The result is the seed state for
+// `JobRepositoriesSection`; user edits inside the section override these
+// values without writing them back to the project.
 export function useResolvedJobRepos({
   projectId,
   artifactId,
@@ -80,24 +74,30 @@ export function useResolvedJobRepos({
   primaryFullNameSeed,
   enabled = true,
 }: UseResolvedJobReposArgs): UseResolvedJobReposResult {
-  const projectQueryEnabled = enabled && Boolean(projectId);
-  const { data: projectData, isLoading: isLoadingProject } = useProject(
-    projectId ?? "",
-    { enabled: projectQueryEnabled }
-  );
-
-  const teamIds = useMemo(
-    () => projectData?.teams.map((t) => t.id) ?? [],
-    [projectData?.teams]
-  );
+  const repositoriesEnabled = enabled && Boolean(projectId);
   const {
-    repositories: pool,
-    isLoading: isLoadingPool,
-    error: poolError,
-  } = useTeamRepositoriesUnion({
-    teamIds,
-    enabled: enabled && teamIds.length > 0,
+    data: repositories,
+    isLoading: isLoadingRepositories,
+    isError: repositoriesFailed,
+  } = useProjectRepositories(projectId ?? "", {
+    enabled: repositoriesEnabled,
   });
+
+  const connected = useMemo(
+    () => sortConnectedRepositories(repositories ?? []),
+    [repositories]
+  );
+  const hasGitHubRepo = connected.some(
+    (r) => r.provider === IntegrationProviderKey.GitHub
+  );
+  const githubEnabled = repositoriesEnabled && hasGitHubRepo;
+  const { data: githubRepos, isLoading: isLoadingGitHub } =
+    useGitHubRepositories({ enabled: githubEnabled });
+
+  const pool = useMemo(
+    () => buildPool(connected, githubRepos ?? []),
+    [connected, githubRepos]
+  );
 
   const inheritEnabled = enabled && Boolean(artifactId) && Boolean(command);
   const { data: inherited, isLoading: isLoadingInherited } =
@@ -109,117 +109,95 @@ export function useResolvedJobRepos({
       { enabled: inheritEnabled }
     );
 
-  const projectSettings: ProjectSettings = useMemo(
-    () => getProjectSettings(projectData?.settings ?? {}),
-    [projectData?.settings]
-  );
-
-  const resolved = useMemo(() => {
-    if (!projectData) {
-      return null;
-    }
-    return resolveProjectRepoDefaults({
-      projectSettings,
-      teamRepos: pool.map((r) => ({
-        installationRepositoryId: r.installationRepositoryId,
-        isDefaultSelected: r.isDefaultSelected,
-        isPrimary: r.isPrimary,
-      })),
-      teamCount: teamIds.length,
-    });
-  }, [projectData, projectSettings, pool, teamIds.length]);
-
-  const projectPrimarySource: RepoSource | null = useMemo(
-    () => determineProjectPrimarySource(projectSettings, teamIds.length),
-    [projectSettings, teamIds.length]
-  );
-
-  const result = useMemo<UseResolvedJobReposResult>(() => {
+  return useMemo<UseResolvedJobReposResult>(() => {
     const isLoading =
-      isLoadingProject ||
-      isLoadingPool ||
+      (repositoriesEnabled && isLoadingRepositories) ||
+      (githubEnabled && isLoadingGitHub) ||
       (inheritEnabled && isLoadingInherited);
-
-    const hasPriorLoop = Boolean(inherited?.source);
 
     const primary = buildPrimary({
       pool,
-      resolved,
-      projectPrimarySource,
       primaryFullNameSeed: primaryFullNameSeed ?? null,
-      hasPriorLoop,
+      hasPriorLoop: Boolean(inherited?.source),
     });
 
     const additional = buildAdditional({
       pool,
-      resolved,
-      projectPrimarySource,
-      primaryId: primary?.id ?? null,
       priorPeers: inherited?.additionalRepos ?? [],
     });
 
-    return { primary, additional, pool, isLoading, poolError };
+    return {
+      primary,
+      additional,
+      pool,
+      isLoading,
+      poolError: repositoriesFailed ? PROJECT_REPOSITORIES_LOAD_FAILURE : null,
+    };
   }, [
     pool,
-    poolError,
-    resolved,
-    projectPrimarySource,
     primaryFullNameSeed,
     inherited,
     inheritEnabled,
-    isLoadingProject,
-    isLoadingPool,
+    repositoriesEnabled,
+    githubEnabled,
+    repositoriesFailed,
+    isLoadingRepositories,
+    isLoadingGitHub,
     isLoadingInherited,
   ]);
-
-  return result;
 }
 
-function determineProjectPrimarySource(
-  settings: ProjectSettings,
-  teamCount: number
-): RepoSource | null {
-  if (settings.repositoryOverrides) {
-    return RepoSource.ProjectOverride;
-  }
-  if (teamCount === 1) {
-    return RepoSource.TeamDefault;
-  }
-  return null;
+function sortConnectedRepositories(
+  repositories: ProjectRepository[]
+): ProjectRepository[] {
+  const connected = repositories.filter((r) => r.connectionId !== null);
+  return [...connected].sort(
+    (a, b) => Number(b.isPrimary) - Number(a.isPrimary)
+  );
+}
+
+function buildPool(
+  connected: ProjectRepository[],
+  githubRepos: Array<{ id: string; fullName: string }>
+): JobRepoPoolEntry[] {
+  const githubIdByName = new Map(
+    githubRepos.map((r) => [r.fullName.toLowerCase(), r.id])
+  );
+  return connected.map((r) => ({
+    id: r.id,
+    fullName: r.fullName,
+    provider: r.provider,
+    isPrimary: r.isPrimary,
+    defaultBranch: r.defaultBranch,
+    githubRepositoryId:
+      r.provider === IntegrationProviderKey.GitHub
+        ? (githubIdByName.get(r.fullName.toLowerCase()) ?? null)
+        : null,
+  }));
 }
 
 type BuildPrimaryArgs = {
-  pool: TeamRepoWithTeamId[];
-  resolved: ReturnType<typeof resolveProjectRepoDefaults>;
-  projectPrimarySource: RepoSource | null;
+  pool: JobRepoPoolEntry[];
   primaryFullNameSeed: string | null;
   hasPriorLoop: boolean;
 };
 
 function buildPrimary({
   pool,
-  resolved,
-  projectPrimarySource,
   primaryFullNameSeed,
   hasPriorLoop,
 }: BuildPrimaryArgs): ResolvedRepo | null {
   if (primaryFullNameSeed) {
-    const fromPool = pool.find(
-      (r) => r.repository.fullName === primaryFullNameSeed
-    );
+    const fromPool = pool.find((r) => r.fullName === primaryFullNameSeed);
     if (fromPool) {
-      return {
-        id: fromPool.installationRepositoryId,
-        fullName: fromPool.repository.fullName,
-        source: hasPriorLoop
-          ? RepoSource.PriorLoop
-          : (projectPrimarySource ?? RepoSource.ProjectOverride),
-        inPool: true,
-      };
+      return toPoolResolved(
+        fromPool,
+        hasPriorLoop ? RepoSource.PriorLoop : RepoSource.ProjectDefault
+      );
     }
-    // Seed not in the team pool. Keep it only when a prior loop pinned it (so
-    // the follow-up run targets the same repo); otherwise drop it and let the
-    // project resolution chain below decide the primary.
+    // Seed not in the pool. Keep it only when a prior loop pinned it (so the
+    // follow-up run targets the same repo); otherwise drop it and let the
+    // project's primary repository decide.
     if (hasPriorLoop) {
       return {
         id: primaryFullNameSeed,
@@ -230,88 +208,51 @@ function buildPrimary({
     }
   }
 
-  if (!resolved) {
-    return null;
-  }
-  const fromPool = pool.find(
-    (r) => r.installationRepositoryId === resolved.primaryRepoId
-  );
-  if (fromPool) {
-    return {
-      id: fromPool.installationRepositoryId,
-      fullName: fromPool.repository.fullName,
-      source: projectPrimarySource ?? RepoSource.ProjectOverride,
-      inPool: true,
-    };
-  }
-  return null;
+  const primary = pool.find((r) => r.isPrimary);
+  return primary ? toPoolResolved(primary, RepoSource.ProjectDefault) : null;
 }
 
 type BuildAdditionalArgs = {
-  pool: TeamRepoWithTeamId[];
-  resolved: ReturnType<typeof resolveProjectRepoDefaults>;
-  projectPrimarySource: RepoSource | null;
-  primaryId: string | null;
+  pool: JobRepoPoolEntry[];
   priorPeers: Array<{ fullName: string; branch: string }>;
 };
 
 function buildAdditional({
   pool,
-  resolved,
-  projectPrimarySource,
-  primaryId,
   priorPeers,
 }: BuildAdditionalArgs): ResolvedRepo[] {
-  if (priorPeers.length > 0) {
-    const out: ResolvedRepo[] = [];
-    for (const peer of priorPeers) {
-      const fromPool = pool.find(
-        (r) => r.repository.fullName === peer.fullName
-      );
-      if (fromPool) {
-        out.push({
-          id: fromPool.installationRepositoryId,
-          fullName: fromPool.repository.fullName,
-          source: RepoSource.PriorLoop,
-          inPool: true,
-          branch: peer.branch,
-        });
-        continue;
-      }
-      out.push({
-        id: peer.fullName,
-        fullName: peer.fullName,
-        source: RepoSource.PriorLoop,
-        inPool: false,
+  return priorPeers.map((peer) => {
+    const fromPool = pool.find((r) => r.fullName === peer.fullName);
+    if (fromPool) {
+      return {
+        ...toPoolResolved(fromPool, RepoSource.PriorLoop),
         branch: peer.branch,
-      });
+      };
     }
-    return out;
-  }
-
-  if (!resolved) {
-    return [];
-  }
-  const additionalSource =
-    projectPrimarySource === RepoSource.ProjectOverride ||
-    projectPrimarySource === RepoSource.TeamDefault
-      ? projectPrimarySource
-      : RepoSource.TeamDefault;
-  const out: ResolvedRepo[] = [];
-  for (const id of resolved.selectedRepoIds) {
-    if (id === primaryId) {
-      continue;
-    }
-    const fromPool = pool.find((r) => r.installationRepositoryId === id);
-    if (!fromPool) {
-      continue;
-    }
-    out.push({
-      id: fromPool.installationRepositoryId,
-      fullName: fromPool.repository.fullName,
-      source: additionalSource,
-      inPool: true,
-    });
-  }
-  return out;
+    return {
+      id: peer.fullName,
+      fullName: peer.fullName,
+      source: RepoSource.PriorLoop,
+      inPool: false,
+      branch: peer.branch,
+    };
+  });
 }
+
+function toPoolResolved(entry: JobRepoPoolEntry, source: RepoSource) {
+  return {
+    id: entry.id,
+    fullName: entry.fullName,
+    source,
+    inPool: true,
+  };
+}
+
+export type JobRepoPoolEntry = {
+  id: string;
+  fullName: string;
+  provider: string;
+  isPrimary: boolean;
+  defaultBranch: string | null;
+  githubRepositoryId: string | null;
+};

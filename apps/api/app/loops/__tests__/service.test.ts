@@ -94,7 +94,6 @@ import {
   isLoopAlreadyActiveError,
   type LoopAlreadyActiveError,
   NestedManualLoopError,
-  RepoNotInProjectPoolError,
 } from "../loop-errors";
 import { loopsService } from "../service";
 
@@ -1187,11 +1186,9 @@ describe("loopsService.findById — _enrichAdditionalReposWithPr", () => {
   });
 });
 
-// PLN-529 T-4.1: defense-in-depth check that loops on a project-scoped
-// document only target repos curated on the project's team pool. Bypasses
-// `authorizeAdditionalRepos` (returns the same in-pool repos) and exercises
-// the second-pass check exclusively.
-describe("loopsService.create — project-pool membership (PLN-529)", () => {
+// Loops on a project-scoped document are no longer checked against a team
+// repository pool; only org installation access applies.
+describe("loopsService.create — project-scoped document repositories", () => {
   const POOL_ORG = "org-pool-1";
   const POOL_USER = "user-pool-1";
   const POOL_DOC = "doc-pool-1";
@@ -1207,13 +1204,11 @@ describe("loopsService.create — project-pool membership (PLN-529)", () => {
   });
 
   type MakeDbArgs = {
-    teamRepos: Array<{ fullName: string }>;
     artifactProjectId?: string | null;
     installationRepoFullNames: string[];
   };
 
   function makeDb({
-    teamRepos,
     artifactProjectId = POOL_PROJECT,
     installationRepoFullNames,
   }: MakeDbArgs) {
@@ -1221,11 +1216,6 @@ describe("loopsService.create — project-pool membership (PLN-529)", () => {
       .fn()
       .mockResolvedValue(
         artifactProjectId ? { projectId: artifactProjectId } : null
-      );
-    const mockTeamRepoFindMany = vi
-      .fn()
-      .mockResolvedValue(
-        teamRepos.map((r) => ({ repository: { fullName: r.fullName } }))
       );
     const mockInstallationRepoFindMany = vi
       .fn()
@@ -1251,7 +1241,6 @@ describe("loopsService.create — project-pool membership (PLN-529)", () => {
         },
         organization: { findUnique: mockOrgFindUnique },
         artifact: { findFirst: mockArtifactFindFirst },
-        teamRepository: { findMany: mockTeamRepoFindMany },
         gitHubInstallationRepository: {
           findMany: mockInstallationRepoFindMany,
         },
@@ -1262,15 +1251,13 @@ describe("loopsService.create — project-pool membership (PLN-529)", () => {
 
     return {
       mockArtifactFindFirst,
-      mockTeamRepoFindMany,
       mockInstallationRepoFindMany,
       mockLoopCreate,
     };
   }
 
-  it("creates the loop when every repo is in the project's team pool", async () => {
+  it("creates the loop when every repo has installation access", async () => {
     const { mockLoopCreate } = makeDb({
-      teamRepos: [{ fullName: "acme/frontend" }, { fullName: "acme/backend" }],
       installationRepoFullNames: ["acme/frontend", "acme/backend"],
     });
 
@@ -1284,27 +1271,8 @@ describe("loopsService.create — project-pool membership (PLN-529)", () => {
     expect(mockLoopCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects with RepoNotInProjectPoolError when a repo is outside the project's team pool", async () => {
+  it("creates the loop when the project has no repositories", async () => {
     const { mockLoopCreate } = makeDb({
-      teamRepos: [{ fullName: "acme/frontend" }],
-      installationRepoFullNames: ["acme/frontend", "acme/payments"],
-    });
-
-    await expect(
-      loopsService.create(POOL_ORG, POOL_USER, {
-        command: LoopCommand.Plan,
-        documentId: POOL_DOC,
-        repo: { fullName: "acme/frontend", branch: "main" },
-        additionalRepos: [{ fullName: "acme/payments", branch: "main" }],
-      })
-    ).rejects.toBeInstanceOf(RepoNotInProjectPoolError);
-
-    expect(mockLoopCreate).not.toHaveBeenCalled();
-  });
-
-  it("falls through (no membership check) when the project has zero team-curated repos", async () => {
-    const { mockLoopCreate } = makeDb({
-      teamRepos: [],
       installationRepoFullNames: ["acme/frontend"],
     });
 
@@ -1317,9 +1285,8 @@ describe("loopsService.create — project-pool membership (PLN-529)", () => {
     expect(mockLoopCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("skips the membership check when there is no documentId on the request", async () => {
+  it("skips the project lookup when there is no documentId on the request", async () => {
     const { mockLoopCreate, mockArtifactFindFirst } = makeDb({
-      teamRepos: [],
       installationRepoFullNames: ["acme/frontend"],
     });
 

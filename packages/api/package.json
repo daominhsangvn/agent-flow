@@ -18,6 +18,7 @@
     "@repo/crewd": "workspace:*",
     "@repo/shared-platform": "workspace:@agentflow-ai/shared-platform@*",
     "uuid": "^14.0.0",
+    "yaml": "^2.8.4",
     "zod": "^4.3.6"
   },
   "devDependencies": {

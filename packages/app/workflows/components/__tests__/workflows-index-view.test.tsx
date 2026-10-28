@@ -245,4 +245,40 @@ describe("WorkflowsIndexView", () => {
     expect(reason).toHaveAttribute("title", PRE_ACTION_ERROR_MESSAGE);
     expect(reason).toHaveTextContent(PRE_ACTION_ERROR_MESSAGE);
   });
+
+  it("lists the pull request of every repository a run changed", () => {
+    mocks.searchParams = new URLSearchParams("tab=runs");
+    mocks.runs = [
+      makeRunSummary({
+        status: WorkflowRunStatus.Succeeded,
+        pullRequests: [
+          {
+            url: "https://github.com/acme/web/pull/12",
+            number: 12,
+            repository: "acme/web",
+            branch: "feat/proj-7",
+          },
+          {
+            url: "https://github.com/acme/api/pull/4",
+            number: 4,
+            repository: "acme/api",
+            branch: "feat/proj-7",
+          },
+        ],
+      }),
+    ];
+    render(<WorkflowsIndexView isAdmin />);
+
+    const table = screen.getByRole("table");
+    expect(
+      within(table).getByRole("columnheader", { name: "Pull requests" })
+    ).toBeInTheDocument();
+    expect(
+      within(table).getByRole("link", { name: "web #12" })
+    ).toHaveAttribute("href", "https://github.com/acme/web/pull/12");
+    expect(within(table).getByRole("link", { name: "api #4" })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/api/pull/4"
+    );
+  });
 });

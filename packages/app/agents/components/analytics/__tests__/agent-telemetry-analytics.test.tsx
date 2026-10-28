@@ -22,7 +22,6 @@ const DEFAULT_QUERY_STATE: AgentTelemetryAnalyticsQueryState = {
   harness: "all",
   page: 0,
   selectedProjectId: null,
-  selectedTeamId: null,
   selectedUserId: null,
   status: "all",
 };
@@ -177,7 +176,7 @@ describe("AgentTelemetryAnalytics", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("preserves selected team and project filters when metadata queries fail", async () => {
+  it("preserves the selected project filter when metadata queries fail", async () => {
     render(
       <AppCoreStoryProviders
         apiRoutes={monitoringRoutes(AgentSessionViewerScope.Organization, [], {
@@ -193,7 +192,6 @@ describe("AgentTelemetryAnalytics", () => {
           queryState={{
             ...DEFAULT_QUERY_STATE,
             selectedProjectId: "project-unavailable",
-            selectedTeamId: "team-unavailable",
           }}
         />
       </AppCoreStoryProviders>
@@ -201,11 +199,6 @@ describe("AgentTelemetryAnalytics", () => {
 
     expect(
       await screen.findByText("Shared sessions list extraction")
-    ).toBeInTheDocument();
-    expect(
-      await screen.findByText(
-        "Selected team filter team-unavailable remains applied while team metadata is unavailable."
-      )
     ).toBeInTheDocument();
     expect(
       await screen.findByText(
@@ -261,7 +254,6 @@ describe("AgentTelemetryAnalytics", () => {
     );
 
     expect(await screen.findByText("Tool Reliability")).toBeInTheDocument();
-    expect(screen.getByText("All teams")).toBeInTheDocument();
     expect(screen.getByText("All projects")).toBeInTheDocument();
   });
 
@@ -390,55 +382,10 @@ describe("AgentTelemetryAnalytics", () => {
       ])
     );
   });
-
-  it("sends explicit team scope and teamId to usage, list, and analytics", async () => {
-    const requestedQueries: AgentTelemetryRequestRecord[] = [];
-
-    render(
-      <AppCoreStoryProviders
-        apiRoutes={monitoringRoutes(AgentSessionViewerScope.Team, [], {
-          requestedQueries,
-        })}
-      >
-        <AgentTelemetryAnalytics
-          analyticsBreakdownsEnabled
-          exportHref="/api/agent-sessions/export?format=csv"
-          getSessionHref={(item) => `/org/sessions/${item.id}`}
-          onQueryStateChange={vi.fn()}
-          organizationFiltersEnabled
-          queryState={{ ...DEFAULT_QUERY_STATE, selectedTeamId: "team-1" }}
-        />
-      </AppCoreStoryProviders>
-    );
-
-    expect(await screen.findByText("Tool Reliability")).toBeInTheDocument();
-    expect(requestedQueries).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          pathname: "/agent-sessions/usage",
-          teamId: "team-1",
-          viewerScope: AgentSessionViewerScope.Team,
-        }),
-        expect.objectContaining({
-          limit: "25",
-          offset: "0",
-          pathname: "/agent-sessions",
-          teamId: "team-1",
-          viewerScope: AgentSessionViewerScope.Team,
-        }),
-        expect.objectContaining({
-          pathname: "/agent-sessions/analytics",
-          teamId: "team-1",
-          viewerScope: AgentSessionViewerScope.Team,
-        }),
-      ])
-    );
-  });
 });
 
 type AgentTelemetryRequestRecord = {
   pathname: string;
-  teamId: string | null;
   userId: string | null;
   viewerScope: string | null;
   limit?: string | null;
@@ -583,18 +530,6 @@ function monitoringRoutes(
     },
     {
       method: "GET",
-      path: "/teams",
-      status: options.metadataStatus,
-      respond: ({ pathname }: { pathname: string }) => {
-        requestedPaths.push(pathname);
-        if (options.metadataPayload === "non-array") {
-          return { teams: [{ id: "team-1", name: "Platform Team" }] };
-        }
-        return [{ id: "team-1", name: "Platform Team" }];
-      },
-    },
-    {
-      method: "GET",
       path: "/projects",
       status: options.metadataStatus,
       respond: ({ pathname }: { pathname: string }) => {
@@ -616,7 +551,6 @@ function recordRequest(
 ) {
   records?.push({
     pathname,
-    teamId: searchParams.get("teamId"),
     userId: searchParams.get("userId"),
     viewerScope: searchParams.get("viewerScope"),
     ...extra,

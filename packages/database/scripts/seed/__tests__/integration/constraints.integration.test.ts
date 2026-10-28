@@ -38,8 +38,6 @@ describe.skipIf(!DATABASE_URL_SET)(
     async function collectCounts(prisma: EphemeralDbContext["prisma"]) {
       const orgId = BASELINE_ORG_ID;
       const [
-        teamCount,
-        teamMemberCount,
         projectCount,
         artifactCount,
         documentVersionCount,
@@ -69,10 +67,6 @@ describe.skipIf(!DATABASE_URL_SET)(
         loopEventCount,
         promptCount,
       ] = await Promise.all([
-        prisma.team.count({ where: { organizationId: orgId } }),
-        prisma.teamMember.count({
-          where: { team: { organizationId: orgId } },
-        }),
         prisma.project.count({ where: { organizationId: orgId } }),
         prisma.artifact.count({ where: { organizationId: orgId } }),
         prisma.documentVersion.count({
@@ -128,8 +122,6 @@ describe.skipIf(!DATABASE_URL_SET)(
       ]);
 
       return {
-        teamCount,
-        teamMemberCount,
         projectCount,
         artifactCount,
         documentVersionCount,
@@ -167,7 +159,6 @@ describe.skipIf(!DATABASE_URL_SET)(
 
         // Sanity floor: catches a silently empty first seed run that would
         // otherwise make every `0 === 0` assertion below trivially pass.
-        expect(countsBefore.teamCount).toBeGreaterThan(0);
         expect(countsBefore.projectCount).toBeGreaterThan(0);
         expect(countsBefore.artifactCount).toBeGreaterThan(0);
         expect(countsBefore.loopCount).toBeGreaterThan(0);

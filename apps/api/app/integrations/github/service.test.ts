@@ -2405,9 +2405,6 @@ describe("githubService", () => {
         gitHubInstallationRepository: {
           updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
-        teamRepository: {
-          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-        },
         project: {
           findMany: vi.fn().mockResolvedValue([]),
           update: vi.fn(),
@@ -2415,9 +2412,8 @@ describe("githubService", () => {
       };
     }
 
-    it("wipes team repos and clears project repo settings on confirm", async () => {
+    it("clears project repo settings and tombstones repositories on confirm", async () => {
       const mockDb = makeResetMockDb();
-      mockDb.teamRepository.deleteMany.mockResolvedValue({ count: 3 });
       // The project settings wipe lives in projectsService and uses
       // `withDb.tx()` — mock both surfaces with the same mockDb so the
       // inner call resolves correctly whether or not an outer tx is active.
@@ -2449,9 +2445,6 @@ describe("githubService", () => {
       });
 
       expect(result).toEqual({ ok: true, value: { confirmed: true } });
-      expect(mockDb.teamRepository.deleteMany).toHaveBeenCalledWith({
-        where: { team: { organizationId: ORG_ID } },
-      });
       expect(
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
@@ -2488,7 +2481,9 @@ describe("githubService", () => {
       });
 
       expect(result).toEqual({ ok: false, error: 400 });
-      expect(mockDb.teamRepository.deleteMany).not.toHaveBeenCalled();
+      expect(
+        mockDb.gitHubInstallationRepository.updateMany
+      ).not.toHaveBeenCalled();
     });
 
     it("rejects when the prior row has no pinned pendingNewInstallationId", async () => {
@@ -2510,7 +2505,9 @@ describe("githubService", () => {
       });
 
       expect(result).toEqual({ ok: false, error: 400 });
-      expect(mockDb.teamRepository.deleteMany).not.toHaveBeenCalled();
+      expect(
+        mockDb.gitHubInstallationRepository.updateMany
+      ).not.toHaveBeenCalled();
     });
 
     it("rejects when the new installation is the same account", async () => {
@@ -2540,7 +2537,9 @@ describe("githubService", () => {
       });
 
       expect(result).toEqual({ ok: false, error: 400 });
-      expect(mockDb.teamRepository.deleteMany).not.toHaveBeenCalled();
+      expect(
+        mockDb.gitHubInstallationRepository.updateMany
+      ).not.toHaveBeenCalled();
     });
 
     it("rejects when new install is already claimed by another org", async () => {
@@ -2562,7 +2561,9 @@ describe("githubService", () => {
       });
 
       expect(result).toEqual({ ok: false, error: 403 });
-      expect(mockDb.teamRepository.deleteMany).not.toHaveBeenCalled();
+      expect(
+        mockDb.gitHubInstallationRepository.updateMany
+      ).not.toHaveBeenCalled();
     });
   });
 });

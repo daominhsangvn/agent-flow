@@ -8,22 +8,10 @@ import {
 import { withDb } from "@repo/database";
 import { z } from "zod";
 
-/**
- * Direct download of the latest universal .dmg.
- *
- * Points at the project's public repository: this link is handed to a
- * brand-new user who needs no access to any private repo. The rolling
- * `desktop-latest` tag carries an unversioned asset name, so the URL always
- * resolves to the newest build without a release-time edit here.
- */
-export const DESKTOP_LATEST_DMG_URL =
-  "https://github.com/daominhsangvn/agentflow/releases/download/desktop-latest/AgentFlow-universal.dmg";
-
 const DEFAULT_ONBOARDING_STATE: OnboardingState = {
   wizardCompletedAt: null,
   wizardCompletedBy: null,
   checklistDismissedAt: null,
-  createdTeamId: null,
   createdProjectId: null,
 };
 
@@ -31,7 +19,6 @@ const onboardingStateSchema = z.object({
   wizardCompletedAt: z.string().nullable().default(null),
   wizardCompletedBy: z.string().nullable().default(null),
   checklistDismissedAt: z.string().nullable().default(null),
-  createdTeamId: z.string().nullable().default(null),
   createdProjectId: z.string().nullable().default(null),
 });
 
@@ -65,17 +52,11 @@ function mergeOnboardingState(
  * computes checklist completion from actual DB data.
  */
 export const onboardingService = {
-  async getStatus(
-    organizationId: string,
-    userId: string
-  ): Promise<OnboardingStatus> {
+  async getStatus(organizationId: string): Promise<OnboardingStatus> {
     const org = await withDb((db) =>
       db.organization.findUnique({
         where: { id: organizationId },
-        select: {
-          settings: true,
-          claudeApiKeyEncrypted: true,
-        },
+        select: { settings: true },
       })
     );
 
@@ -83,102 +64,56 @@ export const onboardingService = {
     const state = getOnboardingState(settings);
 
     // Run checks in parallel for performance
-    const [
-      teamCount,
-      projectCount,
-      desktopComputeTarget,
-      githubInstallation,
-      googleIntegration,
-      userCount,
-    ] = await Promise.all([
-      withDb((db) => db.team.count({ where: { organizationId } })),
-      withDb((db) =>
-        db.project.count({
-          where: { organizationId },
-        })
-      ),
-      // A real desktop install registers a compute target. The synthetic
-      // per-org "cloud" target owns cloud-authored agent components and has no
-      // device behind it, so counting it would tick this item for an org that
-      // has never installed anything.
-      //
-      // Scoped to the CALLER, unlike every other row here. The rest describe
-      // the workspace — it has a team, a GitHub installation, more than one
-      // member — and are true for everyone once they are true for anyone. This
-      // one asks the reader to install an app on their own machine, and it is
-      // the only surface in the product still pointing at the download, so an
-      // org-wide check would hand a pre-ticked row and no link to every teammate
-      // who joined after the first install.
-      withDb((db) =>
-        db.computeTarget.findFirst({
-          where: { organizationId, userId, isCloudSentinel: false },
-          select: { id: true },
-        })
-      ),
-      withDb((db) =>
-        db.gitHubInstallation.findFirst({
-          where: { organizationId, status: { in: ["ACTIVE", "SUSPENDED"] } },
-          select: { id: true },
-        })
-      ),
-      withDb((db) =>
-        db.googleIntegration.findUnique({
-          where: { organizationId },
-          select: { id: true },
-        })
-      ),
-      withDb((db) =>
-        db.user.count({ where: { organizationId, active: true } })
-      ),
-    ]);
+    const [projectCount, runner, googleIntegration, userCount] =
+      await Promise.all([
+        withDb((db) =>
+          db.project.count({
+            where: { organizationId },
+          })
+        ),
+        // Any runner of the organization: loops run on the project's runners,
+        // else on the organization's, so one is enough for everyone. The
+        // synthetic per-org "cloud" target owns cloud-authored agent
+        // components and has no device behind it, so it does not count.
+        withDb((db) =>
+          db.computeTarget.findFirst({
+            where: { organizationId, isCloudSentinel: false },
+            select: { id: true },
+          })
+        ),
+        withDb((db) =>
+          db.googleIntegration.findUnique({
+            where: { organizationId },
+            select: { id: true },
+          })
+        ),
+        withDb((db) =>
+          db.user.count({ where: { organizationId, active: true } })
+        ),
+      ]);
 
-    const hasAnthropicKey = !!org?.claudeApiKeyEncrypted;
-
-    // Legacy orgs: if no wizard record but org already has teams+projects, treat as completed
+    // Legacy orgs: if no wizard record but org already has projects, treat as completed
     const wizardCompleted =
-      state.wizardCompletedAt !== null || (teamCount > 0 && projectCount > 0);
+      state.wizardCompletedAt !== null || projectCount > 0;
 
     const checklist: OnboardingChecklistItem[] = [
-      {
-        id: ChecklistItemId.CreateTeam,
-        label: "Create a team",
-        description: "Set up your first team to organize projects",
-        completed: teamCount > 0,
-        href: "/settings",
-      },
-      // No href: projects are created at /teams/<teamId>/projects, and there is
-      // no org-level projects route to send someone to without a team id this
-      // service does not have. A row whose job is "here is the next thing to do"
-      // is worse for pointing at a page that cannot do it than for pointing
-      // nowhere. (Moot in practice — the checklist only renders once the wizard
-      // is complete, which requires a project, so this row is always ticked.)
+      // Links to the org-level projects page. (Moot in practice — the
+      // checklist only renders once the wizard is complete, which requires a
+      // project, so this row is always ticked.)
       {
         id: ChecklistItemId.CreateProject,
         label: "Create a project",
-        description: "Start your first project within a team",
+        description: "Start your first project",
         completed: projectCount > 0,
+        href: "/projects",
       },
       {
-        id: ChecklistItemId.DownloadDesktop,
-        label: "Download the desktop app",
-        description: "Install AgentFlow Desktop to analyze your agent sessions",
-        completed: desktopComputeTarget !== null,
-        href: DESKTOP_LATEST_DMG_URL,
-        external: true,
-      },
-      {
-        id: ChecklistItemId.ConnectGitHub,
-        label: "Connect GitHub",
-        description: "Link your repositories for code management",
-        completed: githubInstallation !== null,
-        href: "/settings?tab=integrations",
-      },
-      {
-        id: ChecklistItemId.AddAnthropicKey,
-        label: "Add Anthropic API key",
-        description: "Required for AI-powered workflows",
-        completed: hasAnthropicKey,
-        href: "/settings?tab=integrations",
+        id: ChecklistItemId.InstallRunner,
+        label: "Download and install a runner",
+        description:
+          "Agent loops run on a runner: a Docker container or a Linux server",
+        completed: runner !== null,
+        href: INSTALL_RUNNER_HREF,
       },
       {
         id: ChecklistItemId.ConnectGoogle,
@@ -206,7 +141,6 @@ export const onboardingService = {
   async completeWizard(
     organizationId: string,
     userId: string,
-    createdTeamId?: string,
     createdProjectId?: string
   ): Promise<OnboardingStatus> {
     const org = await withDb((db) =>
@@ -220,7 +154,6 @@ export const onboardingService = {
     const updatedSettings = mergeOnboardingState(settings, {
       wizardCompletedAt: new Date().toISOString(),
       wizardCompletedBy: userId,
-      createdTeamId: createdTeamId ?? null,
       createdProjectId: createdProjectId ?? null,
     });
 
@@ -231,13 +164,10 @@ export const onboardingService = {
       })
     );
 
-    return onboardingService.getStatus(organizationId, userId);
+    return onboardingService.getStatus(organizationId);
   },
 
-  async dismissChecklist(
-    organizationId: string,
-    userId: string
-  ): Promise<OnboardingStatus> {
+  async dismissChecklist(organizationId: string): Promise<OnboardingStatus> {
     const org = await withDb((db) =>
       db.organization.findUnique({
         where: { id: organizationId },
@@ -257,6 +187,12 @@ export const onboardingService = {
       })
     );
 
-    return onboardingService.getStatus(organizationId, userId);
+    return onboardingService.getStatus(organizationId);
   },
 };
+
+/**
+ * Settings → Integrations, where the organization's runners are listed and the
+ * empty list explains how to install one.
+ */
+export const INSTALL_RUNNER_HREF = "/settings?tab=integrations";

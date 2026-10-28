@@ -17,7 +17,7 @@ export type DesktopDeviceSessionStatus =
 /**
  * Every step the wizard has ever persisted, not the sequence it renders.
  *
- * ISS-5490 cut the rendered sequence to `CREATE_TEAM` → `CREATE_PROJECT`, but
+ * The rendered sequence is `CREATE_PROJECT` only, but
  * the step is written to `sessionStorage`, so a tab open across the deploy
  * restores one of the others. They stay nameable so `clampStep` can recognise
  * and absorb them instead of leaving the user on a blank card.
@@ -40,7 +40,6 @@ export type OnboardingState = {
   wizardCompletedAt: string | null;
   wizardCompletedBy: string | null;
   checklistDismissedAt: string | null;
-  createdTeamId: string | null;
   createdProjectId: string | null;
 };
 
@@ -51,18 +50,13 @@ export type OnboardingStatus = {
 };
 
 export const ChecklistItemId = {
-  CreateTeam: "CREATE_TEAM",
   CreateProject: "CREATE_PROJECT",
   /**
-   * ISS-5490: added when the onboarding wizard stopped gating on the desktop
-   * download. That step was the only surface in the product pointing at the
-   * desktop app, and the desktop app is what produces the agent sessions every
-   * other screen reports on — so losing it silently would leave the funnel with
-   * no entrance.
+   * Agent loops run only on runners (headless runners or desktop apps that
+   * registered as compute targets), so an organization without one cannot run
+   * anything. Complete once the organization has any runner.
    */
-  DownloadDesktop: "DOWNLOAD_DESKTOP",
-  ConnectGitHub: "CONNECT_GITHUB",
-  AddAnthropicKey: "ADD_ANTHROPIC_KEY",
+  InstallRunner: "INSTALL_RUNNER",
   ConnectGoogle: "CONNECT_GOOGLE",
   InviteMembers: "INVITE_MEMBERS",
 } as const;
@@ -74,14 +68,8 @@ export type OnboardingChecklistItem = {
   label: string;
   description: string;
   completed: boolean;
+  /** In-app destination of the row, e.g. `/settings?tab=integrations`. */
   href?: string;
-  /**
-   * Set when {@link href} leaves the app. The checklist routes in-app hrefs
-   * through the navigation `Link`, which would treat an absolute URL as a
-   * client-side route and fail to leave the SPA; an external destination needs a
-   * plain anchor with the usual new-tab hardening.
-   */
-  external?: boolean;
 };
 
 /**

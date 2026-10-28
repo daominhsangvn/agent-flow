@@ -16,10 +16,13 @@ import type { GatewayCheckResult } from "./health-check-types.js";
  *
  * Not required: a computer without one can still run loops when its model
  * provider is set in AgentFlow (Settings → computers → Model provider),
- * which sends the endpoint and token with each loop.
+ * which sends the endpoint and token with each loop. A headless runner asks
+ * AgentFlow for that provider and reports it in this row instead
+ * (`agentFlowModelProviderCheck`, health-check-runner.ts).
  */
 
 export const CLAUDE_AUTH_CHECK_ID = "claude-auth";
+const CLAUDE_AUTH_CHECK_LABEL = "Claude authentication";
 
 const KEYCHAIN_SERVICE = "Claude Code-credentials";
 const KEYCHAIN_TIMEOUT_MS = 3000;
@@ -49,7 +52,7 @@ export async function checkClaudeAuth(
   if (source !== ClaudeCredentialSource.None) {
     return {
       id: CLAUDE_AUTH_CHECK_ID,
-      label: "Claude authentication",
+      label: CLAUDE_AUTH_CHECK_LABEL,
       required: false,
       passed: true,
       version: source,
@@ -58,7 +61,7 @@ export async function checkClaudeAuth(
   }
   return {
     id: CLAUDE_AUTH_CHECK_ID,
-    label: "Claude authentication",
+    label: CLAUDE_AUTH_CHECK_LABEL,
     required: false,
     passed: false,
     severity: CheckSeverity.Warning,
@@ -89,4 +92,34 @@ async function hasMacKeychainCredential(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** The model provider AgentFlow sends with each loop to this computer. */
+export type AgentFlowModelProvider = {
+  /** Host of the provider's base URL, e.g. `api.deepseek.com`. */
+  host: string;
+};
+
+/**
+ * Asks AgentFlow for this computer's model provider: null when it uses the
+ * computer's own Claude account.
+ */
+export type AgentFlowModelProviderLookup =
+  () => Promise<AgentFlowModelProvider | null>;
+
+/**
+ * The row when loops on this computer get Claude credentials from AgentFlow's
+ * model provider, which takes precedence over a credential on the computer.
+ */
+export function agentFlowModelProviderCheck(
+  provider: AgentFlowModelProvider
+): GatewayCheckResult {
+  return {
+    id: CLAUDE_AUTH_CHECK_ID,
+    label: CLAUDE_AUTH_CHECK_LABEL,
+    required: false,
+    passed: true,
+    version: `AgentFlow model provider (${provider.host})`,
+    severity: CheckSeverity.Passed,
+  };
 }

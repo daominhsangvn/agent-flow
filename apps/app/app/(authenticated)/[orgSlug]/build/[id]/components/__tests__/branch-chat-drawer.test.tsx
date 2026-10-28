@@ -120,8 +120,6 @@ const BASE_BRANCH_DATA: BranchViewData = {
   prHtmlUrl: "https://github.com/acme/repo/pull/42",
   featureSlug: null,
   featureTitle: null,
-  teamId: null,
-  teamName: null,
   projectId: null,
   projectName: null,
   headBranch: "feat/x",

@@ -13,7 +13,7 @@ function makeResolved(
   return {
     id,
     fullName,
-    source: RepoSource.TeamDefault,
+    source: RepoSource.ProjectDefault,
     inPool: true,
     ...overrides,
   };
@@ -33,7 +33,7 @@ describe("computeSeedState", () => {
 
   it("includes an inPool primary and records its source", () => {
     const seedPrimary = makeResolved("repo-a", "org/repo-a", {
-      source: RepoSource.ProjectOverride,
+      source: RepoSource.ProjectDefault,
     });
     const seed = computeSeedState({
       seedPrimary,
@@ -41,7 +41,7 @@ describe("computeSeedState", () => {
     });
     expect(seed.primaryId).toBe("repo-a");
     expect(seed.ids.has("repo-a")).toBe(true);
-    expect(seed.sources["repo-a"]).toBe(RepoSource.ProjectOverride);
+    expect(seed.sources["repo-a"]).toBe(RepoSource.ProjectDefault);
   });
 
   it("drops a non-pool primary", () => {
@@ -85,7 +85,7 @@ describe("computeSeedState", () => {
           branch: "feature/keep",
         }),
         makeResolved("repo-c", "org/repo-c", {
-          source: RepoSource.TeamDefault,
+          source: RepoSource.ProjectDefault,
         }),
       ],
     });

@@ -1,0 +1,121 @@
+name: LeaveDesk · Dev implementation
+description: >-
+  Personal runner variant of dev-workflow.yaml: a Jira LD ticket with an
+  approved PRD gets the label ready-for-dev and is planned and implemented on
+  An's own machine (personal runner an-PRO-1, folder ~/work/leavedesk) with
+  An's git, Gitea (tea) and Jira credentials and the superpowers skills of the
+  folder. Only Claude's model provider comes from AgentFlow. Questions go to
+  the ticket; the agent pushes a branch and opens the pull requests itself.
+project: LeaveDesk
+triggers:
+  - connection: jira                   # the one Jira bot
+    type: jira.issue_conditions
+    config:
+      labels: [ready-for-dev]        # adding the label starts the implementation (or resumes it)
+      projectKeys: [LD]
+agent:
+  runAs: admin@agentflow.local
+  runner: an-PRO-1                     # An's personal runner (dev-machine/README.md)
+  prd:
+    instruction: >-
+      PRD only when the description itself is a whole product requirements
+      document (numbered functional requirements and acceptance criteria). A
+      ticket analysed by the BA team (a raw requirement with a comment that
+      summarizes its PRD, "Full PRD attached: PRD-<KEY>.md") is an Issue: its
+      PRD already exists from the BA run. Otherwise an Issue.
+  process:
+    # No toolkit, connections or finish: push: a personal runner works in An's
+    # folder with An's tools; the folder's CLAUDE.md describes it.
+    steps:
+      - type: agent
+        id: plan
+        name: Plan with superpowers
+        role: plan                     # $AGENTFLOW_WORKDIR/plan.md is the run's Implementation Plan
+        questions: ask
+        retry: { attempts: 3 }         # model provider failure (expired token, quota): backoff, then go on in a fork of the session
+        instruction: |
+          Plan {{issue.key}} ({{issue.title}}) with superpowers. Read the using-superpowers skill
+          first and follow it; the approved PRD is the approved design, so do not run the
+          brainstorming dialogue.
+
+          1. Branch: in leavedesk-app/ and leavedesk-superpowers/, `git fetch origin`, then
+             `git switch {{issue.key}}` when that branch exists (an earlier round), else
+             `git switch main && git pull --ff-only && git switch -c {{issue.key}}`.
+          2. The PRD: `jira attachments {{issue.key}}`. When the ticket has PRD-{{issue.key}}.md
+             (the BA team attaches it, with a comment summarizing it), save it with
+             `jira attachment {{issue.key}} PRD-{{issue.key}}.md leavedesk-superpowers/work/{{issue.key}}/spec.md`:
+             it is the full PRD. Otherwise the PRD is the ticket's description in
+             $AGENTFLOW_WORKDIR/issue.md; copy it to that spec.md. Never read leavedesk-knowledge.
+          3. With the writing-plans skill, write the plan to
+             leavedesk-superpowers/work/{{issue.key}}/plan.md: tasks small enough for
+             test-driven development, every acceptance criterion mapped to a task and a test.
+          4. Something the PRD leaves open that you cannot decide from the ticket or the code is a
+             question (2-4 options, the recommended one first with its reason).
+          5. Commit spec.md and plan.md in leavedesk-superpowers/ on the branch; do not push.
+      - type: agent
+        id: implement
+        name: Implement with superpowers
+        timeoutMinutes: 240
+        retry: { attempts: 3 }
+        instruction: |
+          Implement the approved plan for {{issue.key}} ({{issue.title}}) with superpowers, on the
+          branch {{issue.key}} of leavedesk-app/ and leavedesk-superpowers/ (switch to it if
+          needed). $AGENTFLOW_WORKDIR/plan.md is the approved plan; when it differs from
+          leavedesk-superpowers/work/{{issue.key}}/plan.md, copy it over that file first.
+
+          1. Use the subagent-driven-development skill, test-driven-development for every task and
+             verification-before-completion at the end: `npm test` and `npm run build` in
+             leavedesk-app pass. Commit in leavedesk-app/ as the plan's tasks say (with this
+             computer's git identity). Subagents get no answers from anyone: they decide from
+             the PRD and the code. Do not change leavedesk-qa or leavedesk-knowledge.
+          2. Tick the plan's checkboxes and write leavedesk-superpowers/work/{{issue.key}}/report.md
+             (what was built, tests, deviations from the plan, open issues); commit both.
+          3. Push both branches (`git push -u origin {{issue.key}}`) and open one pull request per
+             repository: `tea pr create --repo workshop/<repository> --head {{issue.key}} --base main
+             --title "{{issue.key}}: {{issue.title}}" --description "<what it implements, link {{issue.url}}>"`.
+             Add a "Pull requests" section with their URLs to report.md, commit and push again.
+          4. Attach the plan to the ticket for QC, once: copy
+             leavedesk-superpowers/work/{{issue.key}}/plan.md to $AGENTFLOW_WORKDIR/PLAN-{{issue.key}}.md
+             and run `jira attach {{issue.key}} $AGENTFLOW_WORKDIR/PLAN-{{issue.key}}.md`.
+          5. Copy report.md to $AGENTFLOW_WORKDIR/report.md.
+        artifacts:
+          - .agentflow-ai/work/report.md
+actions:
+  - on: workflow.triggered
+    type: jira.add_link                # a fixed URL: typed links do not render templates
+    continueOnError: true
+    config:
+      url: http://localhost:3300/workshop/leavedesk-app
+      title: LeaveDesk code (leavedesk-app)
+  - on: workflow.triggered
+    type: jira.transition_issue
+    continueOnError: true
+    config:
+      transitionName: In Progress
+  - on: workflow.triggered
+    type: jira.add_comment
+    continueOnError: true
+  - on: plan.completed
+    type: jira.add_comment             # {{summary}}: plan link + excerpt
+  - on: input.needed
+    instruction: |
+      The Dev run of {{source.key}} waits for people: {{run.url}}
+      If the "{{step.name}}" step has open questions, post one comment that lists them numbered, each with its options labelled a, b, c… and the recommended one marked "(recommended)" with its reason. End with: answer by replying to this comment (Reply on the comment, so the answer stays in its thread; e.g. "1a, 2c", or in your own words) in one reply: the reply continues the run.
+      Otherwise post one comment saying what the run waits for, with the run link.
+    connections:
+      source: [comment]
+  - on: workflow.completed             # runs on an-PRO-1, in An's folder (read only)
+    instruction: |
+      Summarize the implementation of {{source.key}} in one comment (at most 12 lines), from leavedesk-superpowers/work/{{source.key}}/report.md (branch {{source.key}} is checked out): what was built, the tests and their result, deviations from the plan, that the implementation plan is attached to the ticket as PLAN-{{source.key}}.md, and the pull requests listed in its "Pull requests" section. Say that it ran on An's machine (personal runner), that the PRs are reviewed and merged by the team, and that QC starts when the ticket gets the label "ready-for-qc" after the merge. Then add the label "dev-done", move the issue to "In Review", and add a web link to the ticket for each pull request (title "PR <repository name>").
+    connections:
+      source: [comment, label, transition, link]
+  - on: workflow.failed
+    type: jira.add_comment
+  - on: [input.needed, workflow.failed]
+    type: agentflow.email              # Mailpit: http://localhost:8025; default subject names the event and item
+    config:
+      to: [admin@agentflow.local]
+  - on: [workflow.completed, workflow.failed]
+    type: jira.update_labels           # the label stays until the run ends; a reply to its question continues it
+    config:
+      remove: [ready-for-dev]

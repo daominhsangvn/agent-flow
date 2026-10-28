@@ -2,6 +2,7 @@ import { IntegrationConnectionStatus } from "@repo/api/src/types/integration";
 import { LoopStatus } from "@repo/api/src/types/loop";
 import { Result } from "@repo/api/src/types/result";
 import {
+  WORKFLOW_INSTRUCTION_ACTION_TYPE,
   WorkflowActionRunStatus,
   WorkflowActionStage,
   WorkflowRunErrorCode,
@@ -48,6 +49,9 @@ const mocks = vi.hoisted(() => ({
   findLatestRunLoop: vi.fn(),
   cancelRunLoops: vi.fn(),
   waitUntil: vi.fn(),
+  startInstruction: vi.fn(),
+  readInstructionProgress: vi.fn(),
+  summarizeInstruction: vi.fn(),
 }));
 
 vi.mock("@repo/database", async () => {
@@ -121,6 +125,12 @@ vi.mock("@/lib/workflows/engine/cancel", () => ({
   cancelRunLoops: mocks.cancelRunLoops,
 }));
 vi.mock("@/lib/wait-until", () => ({ waitUntil: mocks.waitUntil }));
+// The agent of an instruction is covered in instruction-action.test.ts.
+vi.mock("@/lib/workflows/engine/instruction-action", () => ({
+  startInstruction: mocks.startInstruction,
+  readInstructionProgress: mocks.readInstructionProgress,
+  summarizeInstruction: mocks.summarizeInstruction,
+}));
 
 const ACTION_TYPE = "fake.transition_issue";
 const ACTION_DISPLAY_NAME = "Transition issue";
@@ -221,6 +231,7 @@ function snapshot(runId: string, event: WorkflowRunEvent): WorkflowRunSnapshot {
     step: null,
     reply: null,
     documents: [],
+    releaseNotes: null,
     stepReplies: {},
     summaryMarkdown: "received",
     startedAt: NOW.toISOString(),
@@ -304,7 +315,7 @@ describe("pre actions", () => {
     expect(mocks.execute).not.toHaveBeenCalled();
   });
 
-  it("runs them inline in position order, then ingests in the same call", async () => {
+  it("imports the item, runs them inline in position order, then starts the agent team in the same call", async () => {
     addPreAction("pre-b", 1);
     addPreAction("pre-a", 0);
     fake.setRun({ status: WorkflowRunStatus.Received });
@@ -325,7 +336,9 @@ describe("pre actions", () => {
       RUN_ID,
       WorkflowRunEvent.Triggered
     );
-    expect(mocks.ensureRunDocuments).toHaveBeenCalledTimes(1);
+    // The documents exist before the pre actions run (an instruction works
+    // in the run's workspace); ingesting checks them again afterwards.
+    expect(mocks.ensureRunDocuments).toHaveBeenCalledTimes(2);
     expect(mocks.launchWorkflowLoop).toHaveBeenCalledTimes(1);
     expect(run().status).toBe(WorkflowRunStatus.Planning);
     expect(run().leaseUntil).toBeNull();
@@ -367,7 +380,8 @@ describe("pre actions", () => {
       lastError: "HTTP 503",
     });
     expect(preRow("pre-b").status).toBe(WorkflowActionRunStatus.Pending);
-    expect(mocks.ensureRunDocuments).not.toHaveBeenCalled();
+    expect(mocks.ensureRunDocuments).toHaveBeenCalledTimes(1);
+    expect(mocks.launchWorkflowLoop).not.toHaveBeenCalled();
 
     // A tick before the backoff elapsed changes nothing.
     await advanceRun(RUN_ID, at(10_000));
@@ -384,7 +398,7 @@ describe("pre actions", () => {
     expect(run().status).toBe(WorkflowRunStatus.Planning);
   });
 
-  it("fails the run with pre_action_failed, skips the rest and enqueues run.failed", async () => {
+  it("fails the run with pre_action_failed, skips the rest and enqueues workflow.failed", async () => {
     addPreAction("pre-a", 0);
     addPreAction("pre-b", 1);
     fake.actionDb.addAction({
@@ -404,7 +418,7 @@ describe("pre actions", () => {
     fake.setRun({ status: WorkflowRunStatus.Received });
 
     await advanceRun(RUN_ID, NOW);
-    // The run.failed post action is drained in the background.
+    // The workflow.failed post action is drained in the background.
     expect(mocks.waitUntil).toHaveBeenCalledTimes(1);
     await mocks.waitUntil.mock.calls[0][0];
 
@@ -436,7 +450,62 @@ describe("pre actions", () => {
       RUN_ID,
       WorkflowRunEvent.Failed
     );
-    expect(mocks.ensureRunDocuments).not.toHaveBeenCalled();
+    expect(mocks.ensureRunDocuments).toHaveBeenCalledTimes(1);
+    expect(mocks.launchWorkflowLoop).not.toHaveBeenCalled();
+  });
+
+  it("holds the run in pre_actions while an instruction's agent works, then starts the agent team", async () => {
+    addPreAction("instruct", 0, {
+      type: WORKFLOW_INSTRUCTION_ACTION_TYPE,
+      config: { instruction: "Move {{source.key}} to In Progress." },
+    });
+    addPreAction("pre-b", 1);
+    mocks.startInstruction.mockResolvedValue({
+      kind: "dispatched",
+      commandId: "command-1",
+    });
+    mocks.readInstructionProgress.mockResolvedValue({ kind: "running" });
+    fake.setRun({ status: WorkflowRunStatus.Received });
+
+    await advanceRun(RUN_ID, NOW);
+
+    expect(run().status).toBe(WorkflowRunStatus.PreActions);
+    expect(mocks.startInstruction).toHaveBeenCalledWith(
+      expect.objectContaining({ instruction: "Move PROJ-7 to In Progress." })
+    );
+    expect(preRow("instruct")).toMatchObject({
+      status: WorkflowActionRunStatus.Waiting,
+      commandId: "command-1",
+    });
+    expect(executed()).toEqual([]);
+    expect(mocks.launchWorkflowLoop).not.toHaveBeenCalled();
+
+    mocks.readInstructionProgress.mockResolvedValue({
+      kind: "answered",
+      result: {
+        type: "result",
+        ok: true,
+        answer: "{}",
+        costUsd: null,
+        inputTokens: 0,
+        outputTokens: 0,
+      },
+    });
+    mocks.summarizeInstruction.mockResolvedValue({
+      result: { status: WorkflowActionRunStatus.Succeeded },
+      detail: {
+        note: null,
+        operations: [],
+        costUsd: null,
+        inputTokens: 0,
+        outputTokens: 0,
+      },
+    });
+    await advanceRun(RUN_ID, at(60_000));
+
+    expect(preRow("instruct").status).toBe(WorkflowActionRunStatus.Succeeded);
+    expect(executed().map((call) => call.name)).toEqual(["pre-b"]);
+    expect(run().status).toBe(WorkflowRunStatus.Planning);
   });
 
   it("falls back to the action type when the registry no longer knows it", async () => {
@@ -563,7 +632,7 @@ describe("pre actions", () => {
     addPreAction("pre-a", 0);
     fake.setRun({
       status: WorkflowRunStatus.Received,
-      workflow: { name: "Jira to PR", enabled: false, projectId: null },
+      workflow: { name: "Jira to PR", enabled: false },
     });
 
     await advanceRun(RUN_ID, NOW);
@@ -580,7 +649,7 @@ describe("pre actions", () => {
     addPreAction("pre-a", 0);
     fake.setRun({
       status: WorkflowRunStatus.PreActions,
-      workflow: { name: "Jira to PR", enabled: false, projectId: null },
+      workflow: { name: "Jira to PR", enabled: false },
     });
     const pending = addPreActionRun({ actionId: "pre-a" });
 

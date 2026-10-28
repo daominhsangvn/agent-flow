@@ -16,9 +16,7 @@ const MS_PER_HOUR = 60 * 60 * 1000;
  * that went unnoticed for ~2 days) and against normal quiet periods. Six hours
  * is long enough that an ordinary overnight gap for a small team does not
  * register, and short enough that a real freeze surfaces the same working day
- * instead of two days later. The gate-specific failure mode is covered far
- * faster by `session.ingestion.policy_denied`, which fires on the first denied
- * request; this threshold governs only the catch-all backstop.
+ * instead of two days later.
  */
 export const SESSION_INGESTION_STALL_THRESHOLD_HOURS = 6;
 
@@ -43,9 +41,9 @@ export const SESSION_INGESTION_DORMANT_AFTER_HOURS = 24 * 7;
 const MAX_ORG_STALENESS_SAMPLES = 100;
 
 /**
- * Max org ids sent in a single `id IN (...)` policy lookup (ISS-4708).
+ * Max org ids sent in a single `id IN (...)` org lookup (ISS-4708).
  *
- * `loadPolicyByOrg` receives one id per org that has ever ingested — an
+ * `loadActiveOrgIds` receives one id per org that has ever ingested — an
  * unbounded, fleet-sized array. Passing the whole array as a single `IN` list
  * risks the PostgreSQL bind-parameter ceiling (65535 placeholders): past it the
  * driver rejects the statement outright and the whole sampler run fails. The
@@ -55,7 +53,7 @@ const MAX_ORG_STALENESS_SAMPLES = 100;
  * conventional safe batch width for a single-column `IN` and leaves ample
  * headroom below the 65535 limit while keeping the chunk count small.
  */
-const POLICY_LOOKUP_ID_CHUNK_SIZE = 1000;
+const ORG_LOOKUP_ID_CHUNK_SIZE = 1000;
 
 /**
  * ISS-4678 + ISS-4827: an org past the stall threshold is only genuinely STALLED
@@ -142,7 +140,6 @@ export type SessionIngestionHealthSummary = {
 type OrgIngestionRow = {
   organizationId: string;
   lastIngestedAt: Date;
-  policyEnabled: boolean;
   stalenessMs: number;
   /**
    * ISS-4678: milliseconds since a desktop of this org last checked in
@@ -240,15 +237,15 @@ export async function sampleSessionIngestionHealth(
     await loadIngestSignals();
 
   const organizationIds = lastIngestByOrg.map((entry) => entry.organizationId);
-  const [policyByOrg, presenceByOrg] = await Promise.all([
-    loadPolicyByOrg(organizationIds),
+  const [activeOrgIds, presenceByOrg] = await Promise.all([
+    loadActiveOrgIds(organizationIds),
     loadPresenceByOrg(organizationIds),
   ]);
 
   const rows = buildOrgIngestionRows({
     lastIngestByOrg,
     now,
-    policyByOrg,
+    activeOrgIds,
     presenceByOrg,
   });
   const summary = summarizeOrgIngestionRows(rows, neverIngestedTargetCount);
@@ -273,9 +270,8 @@ export async function sampleSessionIngestionHealth(
   // evidence either and the gate would restore the every-weekend false page
   // ISS-4829 exists to remove. The two states are not separable from watermarks
   // that advance only on success, so the pre-acceptance classes are covered by
-  // the faster, more specific signals named on `classifyOrgIngestionRow` —
-  // `session.ingestion.policy_denied` for the policy path, API error-rate for
-  // the rest — rather than by widening this backstop until it pages on Sundays.
+  // the faster, more specific signal named on `classifyOrgIngestionRow` (API
+  // error-rate) rather than by widening this backstop until it pages on Sundays.
   if (!summary.platformQuiet) {
     emitSessionIngestionActiveOrgs(
       summary.activeOrgCount,
@@ -355,24 +351,24 @@ async function loadIngestSignals(): Promise<{
 }
 
 /**
- * Look up the session-sync policy for every org that has ingested, CHUNKED so
- * the id array never crosses the driver bind-parameter ceiling (ISS-4708).
+ * Which of the orgs that have ingested are still active, CHUNKED so the id
+ * array never crosses the driver bind-parameter ceiling (ISS-4708).
  *
  * The id array is fleet-sized and unbounded, so a single `id IN (...)` would put
  * one bind placeholder per org and can exceed PostgreSQL's 65535-placeholder
  * limit, failing the whole run. The ids are split into `IN` lists of at most
- * `POLICY_LOOKUP_ID_CHUNK_SIZE` and the chunk reads run through
+ * `ORG_LOOKUP_ID_CHUNK_SIZE` and the chunk reads run through
  * `mapWithDbConcurrency`, which bounds pooled-connection fan-out (FEA-3299). The
- * merged map is exact: every org present in any chunk's result is represented,
+ * merged set is exact: every org present in any chunk's result is represented,
  * and deactivated/deleted orgs (filtered out by `active: true`) are simply
  * absent — the same signal the caller already treats as "not an ingestion
  * stall".
  */
-async function loadPolicyByOrg(
+async function loadActiveOrgIds(
   organizationIds: string[]
-): Promise<Map<string, boolean>> {
+): Promise<Set<string>> {
   if (organizationIds.length === 0) {
-    return new Map();
+    return new Set();
   }
 
   const idChunks = chunkOrgIds(organizationIds);
@@ -380,19 +376,16 @@ async function loadPolicyByOrg(
     withDb((db) =>
       db.organization.findMany({
         where: { active: true, id: { in: idChunk } },
-        select: { id: true, sessionSyncPolicyEnabled: true },
+        select: { id: true },
       })
     )
   );
 
-  const policyByOrg = new Map<string, boolean>();
-  for (const organizations of chunkResults) {
-    for (const organization of organizations) {
-      policyByOrg.set(organization.id, organization.sessionSyncPolicyEnabled);
-    }
-  }
-
-  return policyByOrg;
+  return new Set(
+    chunkResults.flatMap((organizations) =>
+      organizations.map((organization) => organization.id)
+    )
+  );
 }
 
 /**
@@ -420,7 +413,7 @@ async function loadPolicyByOrg(
  * PR #4187). See migration
  * 20260802190000_iss4832_compute_target_heartbeat_group_index.
  *
- * CHUNKED for the same bind-parameter reason as `loadPolicyByOrg` (ISS-4708):
+ * CHUNKED for the same bind-parameter reason as `loadActiveOrgIds` (ISS-4708):
  * the org-id array is fleet-sized, so a single `organizationId IN (...)` could
  * cross the 65535-placeholder ceiling. The chunks run through the same bounded
  * fan-out, and the merged map is exact — every org present in any chunk is
@@ -463,21 +456,20 @@ async function loadPresenceByOrg(
 function buildOrgIngestionRows({
   lastIngestByOrg,
   now,
-  policyByOrg,
+  activeOrgIds,
   presenceByOrg,
 }: {
   lastIngestByOrg: Array<{ organizationId: string; lastIngestedAt: Date }>;
   now: Date;
-  policyByOrg: Map<string, boolean>;
+  activeOrgIds: Set<string>;
   presenceByOrg: Map<string, OrgPresence>;
 }): OrgIngestionRow[] {
   const rows: OrgIngestionRow[] = [];
 
   for (const entry of lastIngestByOrg) {
-    const policyEnabled = policyByOrg.get(entry.organizationId);
-    // An org missing from the policy lookup is deactivated or deleted. Its
-    // devices cannot ingest by design, so it is not an ingestion stall.
-    if (policyEnabled === undefined) {
+    // An org missing from the active-org lookup is deactivated or deleted.
+    // Its devices cannot ingest by design, so it is not an ingestion stall.
+    if (!activeOrgIds.has(entry.organizationId)) {
       continue;
     }
 
@@ -486,7 +478,6 @@ function buildOrgIngestionRows({
     rows.push({
       organizationId: entry.organizationId,
       lastIngestedAt: entry.lastIngestedAt,
-      policyEnabled,
       // Clamped at 0: a clock skew between the DB and the runtime can put a
       // sync timestamp marginally in the future, and a negative staleness
       // would read as a bogus gauge rather than "just ingested".
@@ -524,7 +515,7 @@ function summarizeOrgIngestionRows(
   // the emission an operator reads.
   //
   // Quiet orgs are now excluded too. `session.ingestion.staleness` carries only
-  // (orgId, policyEnabled, value), so a quiet row and a stalled row emitted the
+  // (orgId, value), so a quiet row and a stalled row emitted the
   // SAME payload shape and an operator drilling into an aggregate
   // `stalled_orgs` page could not tell which org was actually stalled and which
   // was merely idle (wongk, PR #4187). Carrying the classification as a metric
@@ -622,10 +613,7 @@ type OrgIngestionClassification = "active" | "stalled" | "quiet" | "dormant";
  * that nothing was trying. Two failure classes therefore never reach the STALLED
  * branch, and fall to QUIET at the same instant the org stops being ACTIVE:
  *
- *   • refused BEFORE acceptance — auth, org session-sync policy, validation.
- *     The policy case, the one that caused ISS-4537, is covered far faster and
- *     more precisely by `session.ingestion.policy_denied`, which fires on the
- *     FIRST denied request rather than after this six-hour threshold.
+ *   • refused BEFORE acceptance — auth or validation.
  *   • failed before the request reached the ingest service — a 5xx from an
  *     infrastructure fault or a broken route. Nothing server-side attributes
  *     those to a compute target, so no per-target watermark can carry them;
@@ -693,11 +681,7 @@ function emitBoundedStalenessSamples(
   const sampled = selectTopSamples(rows, MAX_ORG_STALENESS_SAMPLES);
 
   for (const row of sampled) {
-    emitSessionIngestionStaleness(
-      row.organizationId,
-      row.stalenessMs,
-      row.policyEnabled
-    );
+    emitSessionIngestionStaleness(row.organizationId, row.stalenessMs);
   }
 
   return sampled.length;
@@ -708,11 +692,9 @@ function chunkOrgIds(organizationIds: string[]): string[][] {
   for (
     let start = 0;
     start < organizationIds.length;
-    start += POLICY_LOOKUP_ID_CHUNK_SIZE
+    start += ORG_LOOKUP_ID_CHUNK_SIZE
   ) {
-    chunks.push(
-      organizationIds.slice(start, start + POLICY_LOOKUP_ID_CHUNK_SIZE)
-    );
+    chunks.push(organizationIds.slice(start, start + ORG_LOOKUP_ID_CHUNK_SIZE));
   }
   return chunks;
 }

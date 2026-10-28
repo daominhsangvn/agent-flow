@@ -297,6 +297,22 @@ describe("sanitizeDocumentContent", () => {
       expect(result.content).not.toContain("__SANITIZE_");
       expect(result.stripped.length).toBe(0);
     });
+
+    it("keeps unspaced comparison operators, arrows and ampersands in prose", () => {
+      const content =
+        "## API & Data Impacts\n\n- R12: values >= 1e12 or < 1e-10 use exponents\n- a -> b, x>y";
+      const result = sanitizeDocumentContent(content);
+      expect(result.content).toBe(content);
+      expect(result.stripped.length).toBe(0);
+    });
+
+    it("keeps entity-encoded tags in prose from becoming tags", () => {
+      const result = sanitizeDocumentContent(
+        "Text &lt;script&gt;alert(1)&lt;/script&gt;"
+      );
+      expect(result.content).not.toContain("<script");
+      expect(result.content).toContain("&lt;script");
+    });
   });
 
   describe("code block protection", () => {

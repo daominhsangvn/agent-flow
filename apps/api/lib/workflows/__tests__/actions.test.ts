@@ -1,10 +1,13 @@
 import { IntegrationConnectionStatus } from "@repo/api/src/types/integration";
 import {
+  WORKFLOW_INSTRUCTION_ACTION_TYPE,
   WorkflowActionRunStatus,
   WorkflowActionStage,
+  WorkflowInstructionOperationStatus,
   WorkflowRunEvent,
   WorkflowRunStatus,
 } from "@repo/api/src/types/workflow";
+import { WORKFLOW_EMAIL_ACTION_TYPE } from "@repo/api/src/types/workflow-email";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type {
@@ -23,9 +26,9 @@ import {
   drainActionRuns,
   enqueueRunEvents,
   hasEnabledPreActions,
+  RUN_CANCELLED_SKIP_REASON,
   requeueStaleActionRuns,
   retryDelayMs,
-  skipUnfinishedPreActionRuns,
 } from "@/lib/workflows/engine/actions";
 
 const mocks = vi.hoisted(() => ({
@@ -35,10 +38,23 @@ const mocks = vi.hoisted(() => ({
   buildRunSnapshot: vi.fn(),
   recordActionOutputs: vi.fn(),
   waitUntil: vi.fn(),
+  startInstruction: vi.fn(),
+  readInstructionProgress: vi.fn(),
+  summarizeInstruction: vi.fn(),
+  executeEmailAction: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
   withDb: (fn: (client: unknown) => unknown) => fn(mocks.fake?.db),
+  Prisma: { DbNull: null },
+}));
+vi.mock("@/lib/workflows/engine/instruction-action", () => ({
+  startInstruction: mocks.startInstruction,
+  readInstructionProgress: mocks.readInstructionProgress,
+  summarizeInstruction: mocks.summarizeInstruction,
+}));
+vi.mock("@/lib/workflows/engine/email-action", () => ({
+  executeEmailAction: mocks.executeEmailAction,
 }));
 vi.mock("@/lib/integrations/connection-service", () => ({
   loadConnectionRuntime: mocks.loadConnectionRuntime,
@@ -131,6 +147,7 @@ function snapshot(): WorkflowRunSnapshot {
     step: null,
     reply: null,
     documents: [],
+    releaseNotes: null,
     stepReplies: {},
     summaryMarkdown: "Done!",
     startedAt: NOW.toISOString(),
@@ -160,6 +177,61 @@ function executions(): [string, number][] {
     return [context.actionRunId, context.attempt];
   });
 }
+
+/** Action ids of the rows executed, in order. */
+function executedActions(): unknown[] {
+  return executions().map(
+    ([actionRunId]) =>
+      fake.actionRuns.find((row) => row.id === actionRunId)?.actionId
+  );
+}
+
+/** An instruction (position 1) and a typed action after it (position 2). */
+function addInstruction(): { instruction: FakeRow; after: FakeRow } {
+  fake.addAction({
+    id: "instruction",
+    type: WORKFLOW_INSTRUCTION_ACTION_TYPE,
+    config: { instruction: "Comment on {{source.key}}." },
+    position: 1,
+  });
+  fake.addAction({
+    id: "after",
+    type: ACTION_TYPE,
+    config: { message: "after" },
+    position: 2,
+  });
+  const instruction = addActionRun({
+    actionId: "instruction",
+    actionType: WORKFLOW_INSTRUCTION_ACTION_TYPE,
+  });
+  const after = addActionRun({ actionId: "after" });
+  return { instruction, after };
+}
+
+const AGENT_ANSWER = {
+  type: "result" as const,
+  ok: true as const,
+  answer: '{"operations": []}',
+  costUsd: 0.1,
+  inputTokens: 900,
+  outputTokens: 40,
+};
+
+const INSTRUCTION_DETAIL = {
+  note: "Posted the summary.",
+  operations: [
+    {
+      type: ACTION_TYPE,
+      config: { message: "Summary" },
+      status: WorkflowInstructionOperationStatus.Succeeded,
+      externalRef: "c-9",
+      error: null,
+    },
+  ],
+  costUsd: 0.1,
+  inputTokens: 900,
+  outputTokens: 40,
+};
 
 function runTarget(cycle = 1) {
   return { id: RUN_ID, organizationId: ORG_ID, workflowId: WORKFLOW_ID, cycle };
@@ -359,12 +431,64 @@ describe("drainActionRuns", () => {
     });
   });
 
+  it("sends an email action without looking up a connection", async () => {
+    fake.addAction({
+      id: "email",
+      type: WORKFLOW_EMAIL_ACTION_TYPE,
+      connectionId: null,
+      config: { to: ["ada@acme.dev"] },
+    });
+    const row = addActionRun({
+      actionId: "email",
+      actionType: WORKFLOW_EMAIL_ACTION_TYPE,
+    });
+    mocks.executeEmailAction.mockResolvedValue({
+      status: WorkflowActionRunStatus.Succeeded,
+      detail: "Sent to 1 recipient.",
+    } satisfies ActionResult);
+
+    const counts = await drain();
+
+    expect(counts.succeeded).toBe(1);
+    expect(row.status).toBe(WorkflowActionRunStatus.Succeeded);
+    expect(mocks.loadConnectionRuntime).not.toHaveBeenCalled();
+    expect(mocks.execute).not.toHaveBeenCalled();
+    const input = mocks.executeEmailAction.mock.calls[0][0] as {
+      config: unknown;
+      snapshot: WorkflowRunSnapshot;
+      render: (template: string) => string;
+      actionRunId: string;
+    };
+    expect(input).toMatchObject({
+      config: { to: ["ada@acme.dev"] },
+      snapshot: { id: RUN_ID },
+      actionRunId: row.id,
+    });
+    expect(input.render("{{source.key}}")).toBe("PROJ-7");
+  });
+
   it("skips a row whose action was removed", async () => {
     const row = addActionRun({ actionId: null });
 
     await drain();
 
     expect(row.status).toBe(WorkflowActionRunStatus.Skipped);
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("skips a row of a cancelled run", async () => {
+    const row = addActionRun();
+    mocks.buildRunSnapshot.mockResolvedValue({
+      ...snapshot(),
+      status: WorkflowRunStatus.Cancelled,
+    });
+
+    await drain();
+
+    expect(row).toMatchObject({
+      status: WorkflowActionRunStatus.Skipped,
+      lastError: RUN_CANCELLED_SKIP_REASON,
+    });
     expect(mocks.execute).not.toHaveBeenCalled();
   });
 
@@ -528,6 +652,148 @@ describe("drainActionRuns", () => {
   });
 });
 
+describe("drainActionRuns — order and instructions", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("runs one transition's rows in the workflow's action order, not event order", async () => {
+    // action-1 (position 0) runs on workflow.completed.
+    fake.addAction({
+      id: "summary",
+      type: ACTION_TYPE,
+      config: { message: "summary" },
+      events: [WorkflowRunEvent.ExecuteCompleted],
+      position: 1,
+    });
+
+    await enqueueRunEvents(
+      runTarget(),
+      [WorkflowRunEvent.ExecuteCompleted, WorkflowRunEvent.Succeeded],
+      new Date(NOW.getTime() - 1000)
+    );
+    await drain();
+
+    expect(executedActions()).toEqual(["action-1", "summary"]);
+  });
+
+  it("holds a run's later rows while an earlier one waits for its backoff", async () => {
+    fake.addAction({ id: "action-2", type: ACTION_TYPE, position: 1 });
+    addActionRun({
+      attempts: 1,
+      nextAttemptAt: new Date(NOW.getTime() + 30_000),
+    });
+    const later = addActionRun({ actionId: "action-2" });
+    const otherRun = addActionRun({ runId: "run-2" });
+
+    await drain();
+
+    expect(later.status).toBe(WorkflowActionRunStatus.Pending);
+    expect(otherRun.status).toBe(WorkflowActionRunStatus.Succeeded);
+  });
+
+  it("waits for an instruction's agent, then settles it from its tool calls", async () => {
+    const { instruction, after } = addInstruction();
+    mocks.startInstruction.mockResolvedValue({
+      kind: "dispatched",
+      commandId: "command-1",
+    });
+    mocks.readInstructionProgress.mockResolvedValue({ kind: "running" });
+
+    const started = await drain();
+
+    expect(started).toMatchObject({ claimed: 1, succeeded: 0 });
+    expect(instruction).toMatchObject({
+      status: WorkflowActionRunStatus.Waiting,
+      commandId: "command-1",
+      attempts: 1,
+    });
+    expect(mocks.startInstruction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionRunId: instruction.id,
+        attempt: 1,
+        instruction: "Comment on PROJ-7.",
+      })
+    );
+    expect(after.status).toBe(WorkflowActionRunStatus.Pending);
+
+    await drain();
+    expect(instruction.status).toBe(WorkflowActionRunStatus.Waiting);
+    expect(after.status).toBe(WorkflowActionRunStatus.Pending);
+
+    mocks.readInstructionProgress.mockResolvedValue({
+      kind: "answered",
+      result: AGENT_ANSWER,
+    });
+    mocks.summarizeInstruction.mockResolvedValue({
+      result: { status: WorkflowActionRunStatus.Succeeded, externalRef: "c-9" },
+      detail: INSTRUCTION_DETAIL,
+    });
+    await drain();
+
+    expect(instruction).toMatchObject({
+      status: WorkflowActionRunStatus.Succeeded,
+      attempts: 1,
+      externalRef: "c-9",
+      detail: INSTRUCTION_DETAIL,
+    });
+    expect(mocks.summarizeInstruction).toHaveBeenCalledWith({
+      actionRunId: instruction.id,
+      attempt: 1,
+      answer: AGENT_ANSWER,
+    });
+    expect(after.status).toBe(WorkflowActionRunStatus.Succeeded);
+  });
+
+  it("retries an instruction whose agent failed, with backoff", async () => {
+    const { instruction } = addInstruction();
+    mocks.startInstruction.mockResolvedValue({
+      kind: "dispatched",
+      commandId: "command-1",
+    });
+    mocks.readInstructionProgress.mockResolvedValue({
+      kind: "answered",
+      result: {
+        type: "result",
+        ok: false,
+        error: "The instruction's agent failed: overloaded",
+        retryable: true,
+      },
+    });
+
+    await drain();
+    await drain();
+
+    expect(instruction).toMatchObject({
+      status: WorkflowActionRunStatus.Pending,
+      attempts: 1,
+      lastError: "The instruction's agent failed: overloaded",
+      nextAttemptAt: new Date(NOW.getTime() + 30_000),
+    });
+    expect(mocks.summarizeInstruction).not.toHaveBeenCalled();
+  });
+
+  it("skips an instruction the run has no workspace for", async () => {
+    const { instruction, after } = addInstruction();
+    mocks.startInstruction.mockResolvedValue({
+      kind: "skip",
+      reason: "The run has no workspace yet.",
+    });
+
+    await drain();
+
+    expect(instruction).toMatchObject({
+      status: WorkflowActionRunStatus.Skipped,
+      lastError: "The run has no workspace yet.",
+    });
+    expect(after.status).toBe(WorkflowActionRunStatus.Succeeded);
+  });
+});
+
 describe("enqueueRunEvents", () => {
   it("inserts one pending post row per subscribed action and event", async () => {
     fake.addAction({
@@ -554,7 +820,7 @@ describe("enqueueRunEvents", () => {
     ]);
   });
 
-  it("enqueues run.triggered for the enabled pre actions only", async () => {
+  it("enqueues workflow.triggered for the enabled pre actions only", async () => {
     fake.addAction({
       id: "pre-1",
       type: ACTION_TYPE,
@@ -682,41 +948,6 @@ describe("requeueStaleActionRuns", () => {
     });
 
     expect(pre.status).toBe(WorkflowActionRunStatus.Pending);
-  });
-});
-
-describe("skipUnfinishedPreActionRuns", () => {
-  it("skips the cycle's pending and running pre rows only", async () => {
-    const pending = addActionRun({
-      stage: WorkflowActionStage.Pre,
-      event: WorkflowRunEvent.Triggered,
-    });
-    const done = addActionRun({
-      actionId: "action-2",
-      stage: WorkflowActionStage.Pre,
-      event: WorkflowRunEvent.Triggered,
-      status: WorkflowActionRunStatus.Succeeded,
-    });
-    const post = addActionRun();
-    const otherCycle = addActionRun({
-      stage: WorkflowActionStage.Pre,
-      event: WorkflowRunEvent.Triggered,
-      cycle: 2,
-    });
-
-    const skipped = await skipUnfinishedPreActionRuns(
-      { id: RUN_ID, cycle: 1 },
-      "The run stopped."
-    );
-
-    expect(skipped).toBe(1);
-    expect(pending).toMatchObject({
-      status: WorkflowActionRunStatus.Skipped,
-      lastError: "The run stopped.",
-    });
-    expect(done.status).toBe(WorkflowActionRunStatus.Succeeded);
-    expect(post.status).toBe(WorkflowActionRunStatus.Pending);
-    expect(otherCycle.status).toBe(WorkflowActionRunStatus.Pending);
   });
 });
 

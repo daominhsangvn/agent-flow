@@ -33,8 +33,8 @@ import {
   metricsEmitted,
   NOW,
   ORG_STALLED,
+  orgRow,
   type PresenceGroup,
-  policyRow,
   routeGroupBy,
 } from "@/__tests__/support/cron/sample-session-ingestion-health/service.test-fixtures";
 import {
@@ -104,8 +104,8 @@ describe("sampleSessionIngestionHealth — platform-quiet withholding (ISS-4829)
       ]
     );
     mocks.organizationFindMany.mockResolvedValue([
-      policyRow("org-quiet-a", true),
-      policyRow("org-quiet-b", true),
+      orgRow("org-quiet-a"),
+      orgRow("org-quiet-b"),
     ]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
@@ -144,8 +144,8 @@ describe("sampleSessionIngestionHealth — platform-quiet withholding (ISS-4829)
       ]
     );
     mocks.organizationFindMany.mockResolvedValue([
-      policyRow("org-quiet-a", true),
-      policyRow("org-quiet-b", true),
+      orgRow("org-quiet-a"),
+      orgRow("org-quiet-b"),
     ]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
@@ -169,9 +169,7 @@ describe("sampleSessionIngestionHealth — platform-quiet withholding (ISS-4829)
     pinGroups([
       group(ORG_STALLED, hoursAgo(SESSION_INGESTION_STALL_THRESHOLD_HOURS + 3)),
     ]);
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([orgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 

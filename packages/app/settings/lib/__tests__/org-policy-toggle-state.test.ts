@@ -44,21 +44,15 @@ describe("resolveOrgPolicyFieldState", () => {
 
 describe("readOrgPolicyField", () => {
   it("reads the new optional-field shape for each policy field", () => {
-    const organization = {
-      searchIncludeTranscripts: true,
-      sessionSyncPolicyEnabled: false,
-    };
+    const organization = { searchIncludeTranscripts: true };
     expect(
       readOrgPolicyField(organization, OrgPolicyField.SearchIncludeTranscripts)
     ).toBe(true);
-    expect(
-      readOrgPolicyField(organization, OrgPolicyField.SessionSyncPolicyEnabled)
-    ).toBe(false);
   });
 
   it("preserves omission for the old stripped-field shape", () => {
     expect(
-      readOrgPolicyField({}, OrgPolicyField.SessionSyncPolicyEnabled)
+      readOrgPolicyField({}, OrgPolicyField.SearchIncludeTranscripts)
     ).toBeUndefined();
   });
 
@@ -175,16 +169,6 @@ describe("buildOrgPolicyUpdateInput", () => {
         true
       )
     ).toEqual({ id: ORGANIZATION_ID, searchIncludeTranscripts: true });
-  });
-
-  it("writes only the session-sync policy field", () => {
-    expect(
-      buildOrgPolicyUpdateInput(
-        ORGANIZATION_ID,
-        OrgPolicyField.SessionSyncPolicyEnabled,
-        false
-      )
-    ).toEqual({ id: ORGANIZATION_ID, sessionSyncPolicyEnabled: false });
   });
 });
 

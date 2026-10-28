@@ -7,7 +7,7 @@ import { type Prisma, type ProjectRepository, withDb } from "@repo/database";
  * integration connection still exists, with what a computer needs to clone
  * them (the connection keeps the credentials; the computer asks the API for a
  * git credential per loop). Loops on a project with project repositories use
- * these instead of the GitHub App team pool.
+ * these; they replaced the former GitHub App team pool.
  */
 
 /** Branch a loop starts from when the provider reported no default branch. */

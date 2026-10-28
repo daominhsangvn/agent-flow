@@ -14,12 +14,8 @@ const SLACK_ALERT_TITLE = "Session ingestion health check failure";
  * Emits `session.ingestion.active_orgs`, `session.ingestion.stalled_orgs`, and
  * a bounded set of per-org `session.ingestion.staleness` gauges. Together they
  * answer "is session data still arriving?" — the question nothing asked when
- * ISS-4537 froze an org's ingestion for ~2 days behind FEA-4169's fail-closed
- * policy gate and it was found only by manual inspection.
- *
- * This is the catch-all backstop. The fast, gate-specific detector is
- * `session.ingestion.policy_denied`, emitted from `isOrgSessionSyncPolicyEnabled`
- * on every denied ingest attempt.
+ * ISS-4537 froze an org's ingestion for ~2 days and it was found only by
+ * manual inspection.
  *
  * Protected by CRON_SECRET bearer token. A sampling failure returns 500 both to
  * trip Vercel's built-in cron failure alerting and to make it impossible for

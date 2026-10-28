@@ -8,6 +8,7 @@ import {
 } from "@repo/api/src/types/workflow";
 import { describe, expect, it } from "vitest";
 import { HttpMethod } from "../../../types";
+import { markdownToAdf } from "../../atlassian/adf";
 import {
   JIRA_DEFAULT_COMMENT_TEMPLATE,
   jiraAddCommentAction,
@@ -15,7 +16,6 @@ import {
   jiraTransitionIssueAction,
   jiraTransitionIssueConfigSchema,
 } from "../actions";
-import { markdownToAdf } from "../adf";
 import { JiraActionType, JiraCommentTarget } from "../constants";
 import { TRANSITIONS } from "./jira.test-fixtures";
 import {
@@ -277,7 +277,7 @@ describe("jira.add_comment", () => {
 });
 
 describe("jira.transition_issue", () => {
-  it("declares a required transition name and run.succeeded by default", () => {
+  it("declares a required transition name and workflow.completed by default", () => {
     expect(jiraTransitionIssueAction.key).toBe(JiraActionType.TransitionIssue);
     expect(jiraTransitionIssueAction.defaultEvents).toEqual([
       WorkflowRunEvent.Succeeded,

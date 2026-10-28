@@ -14,6 +14,8 @@ import {
   WorkflowRunErrorCode,
 } from "@repo/api/src/types/workflow";
 import { withDb } from "@repo/database";
+import { computeTargetsService } from "@/app/compute-targets/service";
+import { integrationToolSessionService } from "@/app/integration-tools/integration-tool-session-service";
 import { loopsService } from "@/app/loops/service";
 import {
   findRepositoryCheckout,
@@ -24,6 +26,10 @@ import {
 import { resolveLaunchHarness } from "@/lib/loops/launch-harness";
 import { LOOP_STEP_METADATA_KEY } from "@/lib/loops/loop-commands/step-handler";
 import { dispatchAndClassify } from "@/lib/loops/loop-dispatch-utils";
+import {
+  forkUnsupportedMessage,
+  runnerForksSession,
+} from "@/lib/runner-fork-session";
 import { runError } from "./errors";
 import {
   cancelBlockedLoop,
@@ -32,6 +38,7 @@ import {
   mapLoopCreateError,
   resolveProjectComputeTarget,
 } from "./launch";
+import { personalRunnerBusy } from "./personal-runner-queue";
 import { recordRunLoop } from "./run-loops";
 import { recordRunRepositories } from "./run-repository";
 
@@ -56,6 +63,11 @@ export type LaunchStepLoopInput = {
   runAsUser: { id: string; clerkId: string };
   /** The run's plan document when it has one, else its Issue. */
   documentId: string;
+  /**
+   * The run's PRD or Issue. When the loop works on the plan, it is sent with
+   * it, so the step reads the item it works on as well as the plan.
+   */
+  sourceDocumentId?: string | null;
   agent: WorkflowAgentConfig;
   /** The step settings the computer runs (loop metadata, sent with the loop). */
   step: LoopStepConfig;
@@ -89,6 +101,20 @@ export async function launchStepLoop(
     return target;
   }
   const computeTargetId = target.value;
+  // An old runner would resume the parent session in place: refuse before
+  // the busy check, so it fails instead of queueing.
+  const forkRefusal = await forkRefusalFor(input, computeTargetId);
+  if (forkRefusal) {
+    return Result.err(forkRefusal);
+  }
+  // A personal runner that runs one task at a time takes the runs in turn.
+  const busy = await personalRunnerBusy({
+    organizationId: input.organizationId,
+    computeTargetId,
+  });
+  if (busy) {
+    return Result.err(busy);
+  }
 
   const signing = await checkCommandSigning(computeTargetId, input.runAsUser);
   if (!signing.ok) {
@@ -115,6 +141,7 @@ export async function launchStepLoop(
         prompt: input.prompt,
         repo: repositories.value.primary,
         additionalRepos: repositories.value.additional,
+        contextRefs: sourceContextRefs(input),
         metadata: {
           workflowRunId: input.runId,
           [LOOP_STEP_METADATA_KEY]: input.step,
@@ -138,6 +165,16 @@ export async function launchStepLoop(
     );
   }
   const loopId = response.loopId;
+  // Another run took the runner at the same moment: the earlier loop wins.
+  const raced = await personalRunnerBusy({
+    organizationId: input.organizationId,
+    computeTargetId,
+    ownLoopId: loopId,
+  });
+  if (raced) {
+    await cancelBlockedLoop(loopId, input.organizationId);
+    return Result.err(raced);
+  }
 
   await recordRunLoop({
     organizationId: input.organizationId,
@@ -160,6 +197,19 @@ export async function launchStepLoop(
     });
   }
 
+  // Before the dispatch: the runner asks for the session's token as soon as
+  // the loop starts.
+  if (input.step.integrationTools) {
+    await integrationToolSessionService.openForStep({
+      organizationId: input.organizationId,
+      runId: input.runId,
+      loopId,
+      stepId: input.step.stepId,
+      computeTargetId,
+      expiresAt: new Date(Date.now() + STEP_TOOL_SESSION_MS),
+    });
+  }
+
   const dispatch = await dispatchAndClassify(
     loopId,
     input.organizationId,
@@ -171,6 +221,12 @@ export async function launchStepLoop(
   }
   return Result.ok({ loopId, computeTargetId });
 }
+
+/**
+ * Longest a step's tool session lasts: past the longest step timeout; the
+ * session ends with its loop anyway.
+ */
+const STEP_TOOL_SESSION_MS = 25 * 60 * 60_000;
 
 /**
  * The project repositories the step works in: the workflow's repository (or
@@ -224,4 +280,38 @@ async function shouldRecordRepositories(
     })
   );
   return run !== null && run.repository === null;
+}
+
+/** The run's PRD or Issue next to the plan the loop works on; none when they are the same. */
+function sourceContextRefs(
+  input: Pick<LaunchStepLoopInput, "documentId" | "sourceDocumentId">
+): Array<{ sourceId: string; include: "full" }> | undefined {
+  const sourceId = input.sourceDocumentId;
+  return sourceId && sourceId !== input.documentId
+    ? [{ sourceId, include: "full" }]
+    : undefined;
+}
+
+/** The run error for a forked step on a runner that cannot fork, or null. */
+async function forkRefusalFor(
+  input: LaunchStepLoopInput,
+  computeTargetId: string
+): Promise<WorkflowRunError | null> {
+  if (!input.step.forkSession) {
+    return null;
+  }
+  const found = await computeTargetsService.findById(computeTargetId);
+  const target = found?.organizationId === input.organizationId ? found : null;
+  if (runnerForksSession(target?.capabilities)) {
+    return null;
+  }
+  return runError(
+    WorkflowRunErrorCode.ComputeTargetUnavailable,
+    forkUnsupportedMessage({
+      machineName: target?.machineName,
+      session: "the failed step's session",
+      advice:
+        "Update the runner, or retry the step with Restart (a new session).",
+    })
+  );
 }

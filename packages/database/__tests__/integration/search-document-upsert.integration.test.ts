@@ -44,7 +44,6 @@ function row(overrides: Partial<ProjectionRow> = {}): ProjectionRow {
     updatedAt: new Date("2026-08-08T12:00:00.000Z"),
     slug: null,
     entitySubtype: null,
-    teamId: null,
     anchorEntityId: null,
     ...overrides,
   };
@@ -81,7 +80,6 @@ describe.skipIf(!process.env.DATABASE_URL)(
         `SELECT "id"::text AS id, "title", "body",
                 "project_id"::text AS project_id,
                 "assignee_id"::text AS assignee_id,
-                "team_id"::text AS team_id,
                 "anchor_entity_id"::text AS anchor_entity_id,
                 "tsv"::text AS tsv
            FROM "search_document"
@@ -127,23 +125,20 @@ describe.skipIf(!process.env.DATABASE_URL)(
       const stored = await read(r.entityId);
       expect(stored?.project_id).toBeNull();
       expect(stored?.assignee_id).toBeNull();
-      expect(stored?.team_id).toBeNull();
       expect(stored?.anchor_entity_id).toBeNull();
     });
 
     it("round-trips every optional id when present", async () => {
       const projectId = randomUUID();
       const assigneeId = randomUUID();
-      const teamId = randomUUID();
       const anchorEntityId = randomUUID();
-      const r = row({ anchorEntityId, assigneeId, projectId, teamId });
+      const r = row({ anchorEntityId, assigneeId, projectId });
 
       await client.upsertProjectionRows([r]);
 
       const stored = await read(r.entityId);
       expect(stored?.project_id).toBe(projectId);
       expect(stored?.assignee_id).toBe(assigneeId);
-      expect(stored?.team_id).toBe(teamId);
       expect(stored?.anchor_entity_id).toBe(anchorEntityId);
     });
 

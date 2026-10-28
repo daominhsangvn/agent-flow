@@ -58,19 +58,6 @@ describe("desktopAgentComponentInvocationsSyncService", () => {
     expect(mocks.ingestPart).not.toHaveBeenCalled();
   });
 
-  it("FEA-4169: denies (Status.Forbidden) when the org session-sync policy is OFF, without ingesting", async () => {
-    const isOrgPolicyEnabled = vi.fn(async () => false);
-
-    const result = await desktopAgentComponentInvocationsSyncService.sync({
-      ...input(),
-      isOrgPolicyEnabled,
-    });
-
-    expect(result).toEqual(Result.err(Status.Forbidden));
-    expect(isOrgPolicyEnabled).toHaveBeenCalledWith("org-1");
-    expect(mocks.ingestPart).not.toHaveBeenCalled();
-  });
-
   it("returns an exact rejected ack so Desktop retains the outbox part", async () => {
     mocks.ingestPart.mockResolvedValueOnce(
       Result.err(AgentComponentInvocationSyncRejectReason.SessionMissing)
@@ -99,10 +86,6 @@ function input() {
     computeTargetId: "target-1",
     organizationId: "org-1",
     userId: "user-1",
-    // FEA-4169: inject the org-policy gate as allowed so the write-path tests
-    // exercise ingest without reaching the real DB-backed lookup. The policy-off
-    // denial is covered by its own case above.
-    isOrgPolicyEnabled: async () => true,
     part: {
       protocolVersion: AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION,
       externalSessionId: "session-1",

@@ -4,7 +4,8 @@ import { z } from "zod";
 /**
  * Stand-in for `@/lib/integrations/registry` in the workflow-service suite:
  * one provider ("fake") with one trigger type and one action type, each with
- * a url-kind config field so read redaction can be asserted.
+ * a url-kind config field so read redaction can be asserted, and a
+ * repository provider ("repo") with a pull request action only.
  */
 
 export const FAKE_TRIGGER_TYPE = "fake.issue_assigned";
@@ -42,6 +43,37 @@ const action = {
   ],
 };
 
+/** The pull request action of the "repo" provider (project repositories). */
+export const FAKE_REPO_ACTION_TYPE = "repo.open_pull_request";
+const repoAction = {
+  key: FAKE_REPO_ACTION_TYPE,
+  repositoryScoped: true,
+  configSchema: z.object({ title: z.string().min(1) }),
+  configFields: [
+    { key: "title", label: "Title", kind: IntegrationFieldKind.Template },
+  ],
+};
+
+/** A comment on the run's source item ("fake" provider). */
+export const FAKE_COMMENT_TYPE = "fake.comment";
+const commentAction = {
+  key: FAKE_COMMENT_TYPE,
+  sourceOperation: "comment",
+  configSchema: z.object({ body: z.string().min(1) }),
+  configFields: [
+    { key: "body", label: "Body", kind: IntegrationFieldKind.Template },
+  ],
+};
+
+/** Project settings of the "fake" provider: the project keys it works on. */
+const fakeProject = {
+  containers: (settings: { projectKeys?: string[] }) =>
+    settings.projectKeys ?? [],
+  normalizeContainer: (container: string) => container.toUpperCase(),
+  origin: () => "https://fake.test",
+  triggerContainersField: "projectKeys",
+};
+
 /** The generic webhook trigger behind a workflow's built-in HTTP endpoint. */
 export const FAKE_HTTP_TRIGGER_TYPE = "webhook.request";
 const httpTrigger = {
@@ -59,10 +91,26 @@ export const fakeWorkflowRegistry = {
     }
     return provider === "fake" && type === trigger.key ? trigger : null;
   },
-  findActionDefinition: (provider: string, type: string) =>
-    provider === "fake" && type === action.key ? action : null,
-  getIntegrationProvider: () => ({ displayName: "Fake" }),
+  findActionDefinition: (provider: string, type: string) => {
+    if (provider === "repo" && type === repoAction.key) {
+      return repoAction;
+    }
+    if (provider !== "fake") {
+      return null;
+    }
+    return [action, commentAction].find((entry) => entry.key === type) ?? null;
+  },
+  getIntegrationProvider: (provider: string) => ({
+    displayName: "Fake",
+    actions: PROVIDER_ACTIONS[provider] ?? [],
+    project: provider === "fake" ? fakeProject : undefined,
+  }),
   listIntegrationProviders: () => [
     { key: "fake", triggers: [trigger], actions: [action] },
   ],
+};
+
+const PROVIDER_ACTIONS: Record<string, { key: string }[]> = {
+  fake: [action, commentAction],
+  repo: [repoAction],
 };

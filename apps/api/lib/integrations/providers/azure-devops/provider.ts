@@ -3,6 +3,7 @@ import {
   IntegrationProviderKey,
 } from "@repo/api/src/types/integration";
 import { definePullRequestAction } from "../../pull-request-action";
+import { conditionsReviewSignal } from "../../trigger-conditions";
 import { defineIntegrationProvider } from "../../types";
 import { addCommentAction, updateStateAction } from "./actions";
 import {
@@ -10,14 +11,20 @@ import {
   adoConnectionFields,
   validateAdoConnection,
 } from "./connection";
-import { AzureDevOpsActionType } from "./constants";
+import {
+  AdoEventAttribute,
+  AzureDevOpsActionType,
+  AzureDevOpsTriggerType,
+} from "./constants";
 import {
   adoSetupInstructions,
   parseAdoInbound,
   verifyAdoInbound,
 } from "./inbound";
+import { addLinkAction, updateTagsAction } from "./item-actions";
 import { runPipelineAction } from "./pipeline-action";
 import { pollAzureDevOps } from "./poll";
+import { adoProjectDefinition } from "./project";
 import { adoRepositories } from "./repositories";
 import {
   type AdoConnectionConfig,
@@ -25,9 +32,14 @@ import {
   adoConnectionConfigSchema,
   adoSecretsSchema,
 } from "./schemas";
-import { fetchAdoSourceItem, resolveAdoManualEvent } from "./source";
+import {
+  fetchAdoSourceItem,
+  parseAdoItemReference,
+  resolveAdoManualEvent,
+} from "./source";
 import {
   workItemAssignedTrigger,
+  workItemConditionsTrigger,
   workItemMentionedTrigger,
   workItemTaggedTrigger,
 } from "./triggers";
@@ -47,7 +59,7 @@ export const azureDevOpsProvider = defineIntegrationProvider<
   key: IntegrationProviderKey.AzureDevOps,
   displayName: "Azure DevOps",
   description:
-    "Start workflows when an Azure DevOps work item is assigned to the bot account or tagged, work on Azure Repos repositories, then comment on the work item, change its state, open pull requests or run pipelines as the run progresses.",
+    "Start workflows when an Azure DevOps work item is assigned to the bot account, tagged or mentions the bot (alone or combined), work on Azure Repos repositories, then comment on the work item, change its state, open pull requests or run pipelines as the run progresses.",
   docsUrl:
     "https://learn.microsoft.com/en-us/azure/devops/service-hooks/services/webhooks",
   connection: {
@@ -57,6 +69,7 @@ export const azureDevOpsProvider = defineIntegrationProvider<
     credentialOriginFields: ADO_CREDENTIAL_ORIGIN_FIELDS,
     validate: (ctx) => validateAdoConnection(ctx),
   },
+  project: adoProjectDefinition,
   inbound: {
     deliveryModes: [
       IntegrationDeliveryMode.Webhook,
@@ -70,15 +83,24 @@ export const azureDevOpsProvider = defineIntegrationProvider<
   source: {
     fetchItem: fetchAdoSourceItem,
     resolveManual: resolveAdoManualEvent,
+    parseItemReference: parseAdoItemReference,
   },
+  reviewSignal: conditionsReviewSignal({
+    triggerType: AzureDevOpsTriggerType.WorkItemConditions,
+    addedLabelsAttribute: AdoEventAttribute.AddedTags,
+    mentionedAttribute: AdoEventAttribute.Mentioned,
+  }),
   triggers: [
     workItemAssignedTrigger,
     workItemTaggedTrigger,
     workItemMentionedTrigger,
+    workItemConditionsTrigger,
   ],
   actions: [
     addCommentAction,
     updateStateAction,
+    updateTagsAction,
+    addLinkAction,
     definePullRequestAction({
       key: AzureDevOpsActionType.CreatePullRequest,
       providerName: "Azure DevOps",

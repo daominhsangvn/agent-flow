@@ -48,7 +48,7 @@ import { hasEffectiveCommandSigningSupport } from "@/lib/desktop-command-signing
 import { getStoredBrowserSigningKeyMetadata } from "@/lib/desktop-command-signing/key-store";
 import {
   COMPUTE_TARGETS_QUERY_OPTIONS,
-  DESKTOP_SETUP_URL,
+  RUNNER_SETUP_URL,
 } from "@/lib/engineer/constants";
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import {
@@ -393,25 +393,26 @@ export function LocalComputeTargetsCard() {
   } else if (targets.length === 0) {
     content = (
       <div className="space-y-3 rounded-lg border border-dashed p-4">
-        <p className="text-sm">No compute targets registered yet.</p>
+        <p className="text-sm">No runners yet.</p>
         <p className="text-muted-foreground text-sm">
-          Install the AgentFlow Desktop client, then connect with an API key
-          from{" "}
+          Agent loops run on a runner: a Docker container or a Linux server with
+          Claude Code and your projects&apos; toolchains. Build the runner image
+          (or install the Linux package) and start it with an API key from{" "}
           <Link
             className="underline"
             href={`/${orgSlug}/settings?tab=api-keys`}
           >
             Settings - API Keys
           </Link>
-          .
+          ; it appears here once it connects.
         </p>
         <a
           className="inline-flex text-primary text-sm underline"
-          href={DESKTOP_SETUP_URL}
+          href={RUNNER_SETUP_URL}
           rel="noreferrer"
           target="_blank"
         >
-          Open desktop setup instructions
+          Open the runner installation guide
         </a>
       </div>
     );
@@ -539,8 +540,8 @@ export function LocalComputeTargetsCard() {
           Local Compute Targets
         </CardTitle>
         <CardDescription>
-          Manage desktop clients connected to your account for local agent job
-          execution.
+          Runners (and desktop apps) connected to your account. Agent loops run
+          on them.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">{content}</CardContent>

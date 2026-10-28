@@ -109,6 +109,7 @@ export function definePullRequestAction<TConnectionConfig, TSecrets>(
       },
     ],
     defaultEvents: [WorkflowRunEvent.Succeeded],
+    repositoryScoped: true,
     execute: (ctx) => executeCreatePullRequest(ctx, options),
   });
 }
@@ -143,6 +144,7 @@ type RepositoryOutcome =
       branch: string;
       url: string;
       number: number;
+      title: string;
       existing: boolean;
     }
   | { kind: "skipped"; reason: string }
@@ -177,12 +179,13 @@ async function openPullRequest<TConnectionConfig, TSecrets>(
       reason: `${repository.fullName}: the agent team pushed to ${branch}, the target branch itself`,
     };
   }
+  const title = renderTitle(ctx);
   try {
     const result = await options.repositories.createPullRequest(ctx, {
       repository: info.repository,
       sourceBranch: branch,
       targetBranch,
-      title: renderTitle(ctx),
+      title,
       description: truncateText(
         ctx.render(ctx.config.description).trim(),
         PULL_REQUEST_DESCRIPTION_MAX
@@ -202,6 +205,7 @@ async function openPullRequest<TConnectionConfig, TSecrets>(
       branch,
       url: result.value.url,
       number: result.value.number,
+      title,
       existing: result.value.existing,
     };
   } catch (error) {
@@ -228,6 +232,7 @@ function summarizeOutcomes(outcomes: RepositoryOutcome[]): ActionResult {
       url: outcome.url,
       number: outcome.number,
       branch: outcome.branch,
+      title: outcome.title,
     })),
   };
   if (failures.length > 0) {
@@ -280,7 +285,7 @@ function resolveTargets<TConnectionConfig, TSecrets>(
     return {
       ok: false,
       result: skipped(
-        "The run has no repository yet. Run this action on run.succeeded."
+        "The run has no repository yet. Run this action on workflow.completed."
       ),
     };
   }

@@ -3,7 +3,6 @@ import { log } from "@repo/observability/log";
 import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
 import { agentSessionsService } from "@/app/agent-sessions/service";
-import { isAgentSessionSyncSupportedForUser } from "./agent-session-sync-feature";
 import { TokenEventTransportIdentityCollisionError } from "./desktop-agent-sessions-errors";
 import {
   DesktopAgentSessionsAckReason,
@@ -11,7 +10,6 @@ import {
   parseDesktopAgentSessionsPayload,
 } from "./desktop-agent-sessions-schema";
 import { FixedWindowRateLimiter } from "./fixed-window-rate-limiter";
-import { isOrgSessionSyncPolicyEnabled } from "./org-session-sync-policy";
 
 export type DesktopAgentSessionsHandlerContext = {
   organizationId: string;
@@ -23,15 +21,6 @@ export type DesktopAgentSessionsHandlerContext = {
 };
 
 export type DesktopAgentSessionsHandlerDeps = {
-  isFeatureEnabled?: (input: {
-    userId: string;
-    clerkUserId?: string | null;
-  }) => Promise<boolean>;
-  /**
-   * FEA-4169: server-side ORG POLICY gate. Defaults to the DB-backed
-   * {@link isOrgSessionSyncPolicyEnabled}. Overridable in tests.
-   */
-  isOrgPolicyEnabled?: (organizationId: string) => Promise<boolean>;
   rateLimiter?: DesktopAgentSessionsRateLimiter;
   upsertBatch?: (
     context: {
@@ -105,52 +94,8 @@ export async function handleDesktopAgentSessionsEvent(
     };
   }
 
-  // FEA-4169: server-owned ORG POLICY gate. The client-side OrgSyncPolicyStore
-  // is UX-first; the server must deny ingest for a policy-off org here so an
-  // older/compromised Desktop that ignores the optional identity field cannot
-  // persist session batches for an org whose policy is off. Fail-closed
-  // (unresolved org → false), so this is enforced identically across version
-  // skew and never depends on a client-sent field.
-  const isOrgPolicyEnabled =
-    deps.isOrgPolicyEnabled ?? isOrgSessionSyncPolicyEnabled;
-  const orgPolicyEnabled = await isOrgPolicyEnabled(context.organizationId);
-  if (!orgPolicyEnabled) {
-    emitTelemetryMetric({
-      metric: "agent_sessions.sync.failed",
-      organizationId: context.organizationId,
-      computeTargetId: context.targetId,
-      gatewaySessionId: context.gatewaySessionId,
-      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
-    });
-    return {
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
-    };
-  }
-
-  const isFeatureEnabled =
-    deps.isFeatureEnabled ??
-    ((identity: { userId: string; clerkUserId?: string | null }) =>
-      isAgentSessionSyncSupportedForUser(identity));
-
-  const enabled = await isFeatureEnabled({
-    userId: context.userId,
-    clerkUserId: context.clerkUserId,
-  });
-  if (!enabled) {
-    emitTelemetryMetric({
-      metric: "agent_sessions.sync.failed",
-      organizationId: context.organizationId,
-      computeTargetId: context.targetId,
-      gatewaySessionId: context.gatewaySessionId,
-      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
-    });
-    return {
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
-    };
-  }
-
+  // Session data is always ingested: no org policy or feature flag switches
+  // it off, since a self-hosted deployment keeps it in its own database.
   const upsertBatch = deps.upsertBatch ?? agentSessionsService.upsertSessions;
 
   let persistedSessionIds: string[];

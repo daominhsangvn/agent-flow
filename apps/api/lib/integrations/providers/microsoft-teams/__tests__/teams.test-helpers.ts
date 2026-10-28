@@ -63,19 +63,32 @@ export function silentLog(): ProviderLogger {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
+export const BOT_APP_ID = "aaaaaaaa-1111-4222-8333-bbbbbbbbbbbb";
+export const BOT_TENANT_ID = "cccccccc-1111-4222-8333-dddddddddddd";
+export const BOT_CLIENT_SECRET = "bot-client-secret";
+
 export function makeTeamsContext(options: {
   http: ProviderHttp;
-  webhookUrl?: string;
+  webhookUrl?: string | null;
+  /** Configure the bot (App ID, tenant, client secret). */
+  bot?: boolean;
   log?: ProviderLogger;
 }): ProviderContext<TeamsConnectionConfig, TeamsConnectionSecrets> {
+  const webhookUrl =
+    options.webhookUrl === null
+      ? undefined
+      : (options.webhookUrl ?? TEAMS_WEBHOOK_URL);
   return {
     connection: {
       id: "0199b000-0000-7000-8000-00000000c001",
       organizationId: "0199b000-0000-7000-8000-00000000a001",
       provider: IntegrationProviderKey.MicrosoftTeams,
       name: "Delivery channel",
-      config: {},
-      secrets: { webhookUrl: options.webhookUrl ?? TEAMS_WEBHOOK_URL },
+      config: options.bot ? { appId: BOT_APP_ID, tenantId: BOT_TENANT_ID } : {},
+      secrets: {
+        ...(webhookUrl ? { webhookUrl } : {}),
+        ...(options.bot ? { clientSecret: BOT_CLIENT_SECRET } : {}),
+      },
       account: null,
     },
     http: options.http,
@@ -117,6 +130,7 @@ export function makeRunSnapshot(
     step: null,
     reply: null,
     documents: [],
+    releaseNotes: null,
     stepReplies: {},
     summaryMarkdown:
       "✅ **PROJ-123** is done. Pull request: https://github.com/acme/repo/pull/42 (branch feature/proj-123).",
@@ -164,4 +178,52 @@ export function renderer(
       TEMPLATE_RE,
       (_placeholder, name: string) => values[name] ?? ""
     );
+}
+
+export type RouteHandler = (
+  request: ProviderHttpRequest
+) => ProviderHttpResponse | undefined;
+
+/** Answers each request with the first handler that returns a response; 404 otherwise. */
+export function routedHttp(...handlers: RouteHandler[]): FakeHttp {
+  const requests: ProviderHttpRequest[] = [];
+  return {
+    requests,
+    http: {
+      request: (request) => {
+        requests.push(request);
+        for (const handler of handlers) {
+          const response = handler(request);
+          if (response) {
+            return Promise.resolve(response);
+          }
+        }
+        return Promise.resolve(httpResponse({ status: 404 }));
+      },
+    },
+  };
+}
+
+export function jsonResponse(
+  json: unknown,
+  status = 200
+): ProviderHttpResponse {
+  return httpResponse({
+    status,
+    json,
+    text: JSON.stringify(json),
+    headers: new Headers({ "content-type": "application/json" }),
+  });
+}
+
+/** Entra ID token endpoint: one token per scope ("token-for-<host>"). */
+export function tokenRoute(request: ProviderHttpRequest) {
+  if (!request.url.startsWith("https://login.microsoftonline.com/")) {
+    return undefined;
+  }
+  const scope = new URLSearchParams(String(request.body)).get("scope") ?? "";
+  return jsonResponse({
+    access_token: `token-for-${new URL(scope).hostname}`,
+    expires_in: 3600,
+  });
 }

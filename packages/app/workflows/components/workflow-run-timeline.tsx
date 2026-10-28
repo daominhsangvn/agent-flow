@@ -17,7 +17,7 @@ import {
   RunTimelineStepState,
 } from "../lib/workflow-run-timeline";
 
-/** Phase stepper of a run: received, pre actions, importing, planning, implementing, done. */
+/** Phase stepper of a run: received, importing, triggered actions, planning, implementing, done. */
 export function WorkflowRunTimeline({
   run,
 }: Readonly<{ run: RunTimelineInput }>) {

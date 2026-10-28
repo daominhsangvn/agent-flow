@@ -52,6 +52,21 @@ describe("getPullRequestHref (ISS-4793)", () => {
   ])("returns null for the non-PR-number %p", (num) => {
     expect(getPullRequestHref(pr({ num }), REPO)).toBeNull();
   });
+
+  // A pull request a workflow action opened (e.g. on Local Git) carries the
+  // page AgentFlow recorded; GitHub is only the fallback.
+  it("links the page AgentFlow recorded with the pull request", () => {
+    const url = "http://localhost:3300/workshop/calculator-app/pulls/2";
+    expect(getPullRequestHref(pr({ num: 2, url }), REPO)).toBe(url);
+    expect(getPullRequestHref(pr({ num: 2, url }), null)).toBe(url);
+  });
+
+  it("never links a recorded page that is not http(s)", () => {
+    expect(getPullRequestHref(pr({ url: "javascript:alert(1)" }), REPO)).toBe(
+      "https://github.com/agentflow-ai/symphony-alpha/pull/4170"
+    );
+    expect(getPullRequestHref(pr({ url: "not a url" }), null)).toBeNull();
+  });
 });
 
 describe("buildPullRequestTitle (ISS-4793)", () => {

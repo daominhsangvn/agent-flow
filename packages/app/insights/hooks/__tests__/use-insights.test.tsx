@@ -13,27 +13,20 @@ import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { insightsKeys, useDeliveryInsights } from "../use-insights";
 
-const TEAM_A = "019f0fcb-8336-7c4d-9f64-528fb9520c32";
-const TEAM_B = "019f0fcb-8336-7c4d-9f64-528fb9520c33";
-
-describe("useInsights team scope", () => {
-  it("disables team queries until a teamId exists", () => {
+describe("useInsights scope", () => {
+  it("does not run the query while disabled", () => {
     const source = createSource();
 
     renderHook(
       () =>
-        useDeliveryInsights(
-          InsightsPeriod.Quarter,
-          InsightsScope.Team,
-          undefined
-        ),
+        useDeliveryInsights(InsightsPeriod.Quarter, InsightsScope.Me, false),
       { wrapper: createWrapper(source) }
     );
 
     expect(source.getDelivery).not.toHaveBeenCalled();
   });
 
-  it("isolates team cache entries by teamId", async () => {
+  it("isolates cache entries by scope", async () => {
     const source = createSource();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -41,10 +34,9 @@ describe("useInsights team scope", () => {
     const wrapper = createWrapper(source, queryClient);
 
     const { rerender } = renderHook(
-      ({ teamId }) =>
-        useDeliveryInsights(InsightsPeriod.Quarter, InsightsScope.Team, teamId),
+      ({ scope }) => useDeliveryInsights(InsightsPeriod.Quarter, scope),
       {
-        initialProps: { teamId: TEAM_A },
+        initialProps: { scope: InsightsScope.Me as InsightsScope },
         wrapper,
       }
     );
@@ -52,47 +44,32 @@ describe("useInsights team scope", () => {
     await waitFor(() =>
       expect(source.getDelivery).toHaveBeenCalledWith(
         InsightsPeriod.Quarter,
-        InsightsScope.Team,
-        TEAM_A
+        InsightsScope.Me
       )
     );
 
-    rerender({ teamId: TEAM_B });
+    rerender({ scope: InsightsScope.Org });
 
     await waitFor(() =>
       expect(source.getDelivery).toHaveBeenCalledWith(
         InsightsPeriod.Quarter,
-        InsightsScope.Team,
-        TEAM_B
+        InsightsScope.Org
       )
     );
 
-    expect(
-      queryClient.getQueryData(
-        insightsKeys.section(
-          "delivery",
-          InsightsPeriod.Quarter,
-          InsightsScope.Team,
-          TEAM_A
+    for (const scope of [InsightsScope.Me, InsightsScope.Org]) {
+      expect(
+        queryClient.getQueryData(
+          insightsKeys.section("delivery", InsightsPeriod.Quarter, scope)
         )
-      )
-    ).toEqual({ charts: {}, kpis: [] });
-    expect(
-      queryClient.getQueryData(
-        insightsKeys.section(
-          "delivery",
-          InsightsPeriod.Quarter,
-          InsightsScope.Team,
-          TEAM_B
-        )
-      )
-    ).toEqual({ charts: {}, kpis: [] });
+      ).toEqual({ charts: {}, kpis: [] });
+    }
   });
 });
 
 function createSource(): InsightsDataSource {
   return {
-    availableScopes: [InsightsScope.Me, InsightsScope.Org, InsightsScope.Team],
+    availableScopes: [InsightsScope.Me, InsightsScope.Org],
     availableSections: [InsightsSection.Delivery],
     getDelivery: vi.fn().mockResolvedValue({ charts: {}, kpis: [] }),
     getUtilization: vi.fn().mockResolvedValue({ charts: {}, kpis: [] }),

@@ -39,6 +39,8 @@ const mocks = vi.hoisted(() => ({
   /** computeTargetId → loops waiting or running. */
   active: {} as Record<string, number>,
   loopWhere: null as unknown,
+  projectWhere: null as unknown,
+  artifactReads: 0,
   executeRaw: vi.fn(),
 }));
 
@@ -46,11 +48,16 @@ vi.mock("@repo/database", () => ({
   withDb: (fn: (db: unknown) => unknown) =>
     fn({
       artifact: {
-        findFirst: () =>
-          Promise.resolve({ project: { settings: mocks.settings } }),
+        findFirst: () => {
+          mocks.artifactReads += 1;
+          return Promise.resolve({ project: { settings: mocks.settings } });
+        },
       },
       project: {
-        findFirst: () => Promise.resolve({ settings: mocks.settings }),
+        findFirst: ({ where }: { where: unknown }) => {
+          mocks.projectWhere = where;
+          return Promise.resolve({ settings: mocks.settings });
+        },
       },
       computeTarget: {
         findMany: ({ where }: { where: Where }) =>
@@ -112,6 +119,8 @@ beforeEach(() => {
   mocks.targets = [target(DOTNET), target(NODE), target(BIG)];
   mocks.active = {};
   mocks.loopWhere = null;
+  mocks.projectWhere = null;
+  mocks.artifactReads = 0;
   mocks.executeRaw.mockReset();
   mocks.executeRaw.mockResolvedValue(1);
 });
@@ -174,6 +183,25 @@ describe("chooseProjectRunner", () => {
     ];
 
     expect(await choose()).toMatchObject({ computeTargetId: NODE });
+  });
+
+  it("reads the project's own runners before the run has documents", async () => {
+    const choice = await chooseProjectRunner({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      projectId: PROJECT_ID,
+      preferredComputeTargetId: NODE,
+    });
+
+    expect(choice).toEqual({
+      kind: ProjectRunnerChoiceKind.Resolved,
+      computeTargetId: NODE,
+    });
+    expect(mocks.projectWhere).toEqual({
+      id: PROJECT_ID,
+      organizationId: ORG_ID,
+    });
+    expect(mocks.artifactReads).toBe(0);
   });
 
   it("never falls back to another computer when no runner can take the loop", async () => {

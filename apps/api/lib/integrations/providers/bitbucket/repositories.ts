@@ -13,8 +13,12 @@ import {
   BitbucketErrorKind,
   bbqlString,
   bitbucketRequest,
+  operationError,
+  operationOk,
   pathSegment,
+  repositoryPath,
 } from "./client";
+import { bitbucketPullRequests } from "./pull-requests";
 import {
   type BitbucketConnectionConfig,
   type BitbucketPage,
@@ -105,6 +109,8 @@ export const bitbucketRepositories: IntegrationRepositoriesDefinition<
       expiresAt: null,
     });
   },
+
+  pullRequests: bitbucketPullRequests,
 
   async createPullRequest(ctx, request) {
     const existing = await findOpenPullRequest(ctx, request);
@@ -273,10 +279,6 @@ async function findOpenPullRequest(
   return operationOk(first.success ? first.data : null);
 }
 
-function repositoryPath(repository: RepositoryInfo): string {
-  return `/repositories/${pathSegment(repository.namespace)}/${pathSegment(repository.name)}`;
-}
-
 function toCreatedPullRequest(
   pullRequest: BitbucketPullRequest,
   existing: boolean
@@ -287,14 +289,4 @@ function toCreatedPullRequest(
     externalId: String(pullRequest.id),
     existing,
   };
-}
-
-function operationOk<T>(value: T): RepositoryOperationResult<T> {
-  return { ok: true, value };
-}
-
-function operationError<T>(
-  error: BitbucketError
-): RepositoryOperationResult<T> {
-  return { ok: false, error: error.message, retryable: error.retryable };
 }

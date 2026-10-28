@@ -26,6 +26,8 @@ export const LoopArtifactFile = {
   Features: "features.json",
   ImplementationPlanMarkdown: "implementation-plan.md",
   OpenQuestions: "open-questions.md",
+  /** Release notes an implement loop of a workflow run writes when it is done. */
+  ReleaseNotes: "release-notes.md",
   Perf: "perf.jsonl",
   State: "state.json",
 } as const;

@@ -80,59 +80,10 @@ describe("handleDesktopAgentSessionsEvent", () => {
         },
         baseContext,
         {
-          isFeatureEnabled: async () => true,
-          isOrgPolicyEnabled: async () => true,
           upsertBatch: upsertBatchMock(),
         }
       )
     ).resolves.toEqual(validationFailedAck("session_count_mismatch"));
-  });
-
-  it("returns feature_disabled when server sync support is off", async () => {
-    await expect(
-      handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-        isFeatureEnabled: async () => false,
-        isOrgPolicyEnabled: async () => true,
-        upsertBatch: upsertBatchMock(),
-      })
-    ).resolves.toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
-    });
-  });
-
-  it("FEA-4169: denies ingest when the org session-sync policy is OFF, without persisting", async () => {
-    const upsertBatch = upsertBatchMock();
-    // The org policy gate runs BEFORE the per-user feature flag: even with the
-    // feature flag ON, a policy-off org must be rejected and never persisted.
-    await expect(
-      handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => false,
-        upsertBatch,
-      })
-    ).resolves.toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
-    });
-    expect(upsertBatch).not.toHaveBeenCalled();
-    // Telemetry reason stays in lockstep with the ack reason.
-    expect(mockEmitTelemetryMetric).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metric: "agent_sessions.sync.failed",
-        reason: DesktopAgentSessionsAckReason.FeatureDisabled,
-      })
-    );
-  });
-
-  it("FEA-4169: passes the authenticated org id to the org-policy gate", async () => {
-    const isOrgPolicyEnabled = vi.fn(async () => true);
-    await handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-      isFeatureEnabled: async () => true,
-      isOrgPolicyEnabled,
-      upsertBatch: upsertBatchMock(),
-    });
-    expect(isOrgPolicyEnabled).toHaveBeenCalledWith(baseContext.organizationId);
   });
 
   it("upserts accepted batches", async () => {
@@ -140,8 +91,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -179,8 +128,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(payload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -209,8 +156,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(payloadWithIgnoredFields, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -227,8 +172,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
         validPayload,
         { ...baseContext, relaySocketId: "relay-1" },
         {
-          isFeatureEnabled: async () => true,
-          isOrgPolicyEnabled: async () => true,
           upsertBatch: () => Promise.reject(new Error("db down")),
         }
       )
@@ -259,8 +202,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
   it("returns validation_failed for a deterministic token transport collision", async () => {
     await expect(
       handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch: () =>
           Promise.reject(new TokenEventTransportIdentityCollisionError()),
       })
@@ -282,8 +223,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
     for (let index = 0; index < 120; index += 1) {
       await expect(
         handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-          isFeatureEnabled: async () => true,
-          isOrgPolicyEnabled: async () => true,
           upsertBatch,
           rateLimiter,
           now: () => 0,
@@ -293,8 +232,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(validPayload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
         rateLimiter,
         now: () => 0,
@@ -340,8 +277,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(dirtyPayload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -373,8 +308,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
     // min(1), so the batch is rejected rather than persisted with an empty key.
     await expect(
       handleDesktopAgentSessionsEvent(payload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual(validationFailedAck("session_invalid"));
@@ -409,8 +342,6 @@ describe("handleDesktopAgentSessionsEvent", () => {
 
     await expect(
       handleDesktopAgentSessionsEvent(payload, baseContext, {
-        isFeatureEnabled: async () => true,
-        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual(validationFailedAck("payload_nested_too_deeply"));

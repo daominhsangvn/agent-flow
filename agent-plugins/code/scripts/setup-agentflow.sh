@@ -353,13 +353,15 @@ fi
 mkdir -p "$WORKDIR/$AGENTFLOW_STATE_DIR"
 
 # Preserve run-loop-managed keys before truncating config.env. run-loop.sh
-# writes AGENTFLOW_START_SHA and AGENTFLOW_SELF_LEARNING during create_state_file;
-# setup-agentflow.sh runs every /code:code iteration and previously clobbered
-# them with the truncating heredoc below.
+# writes AGENTFLOW_START_SHA, AGENTFLOW_START_SHAS and AGENTFLOW_SELF_LEARNING
+# during create_state_file; setup-agentflow.sh runs every /code:code iteration
+# and previously clobbered them with the truncating heredoc below.
 EXISTING_START_SHA=""
+EXISTING_START_SHAS=""
 EXISTING_SELF_LEARNING=""
 if [[ -f "$WORKDIR/$AGENTFLOW_STATE_DIR/config.env" ]]; then
     EXISTING_START_SHA=$(grep '^AGENTFLOW_START_SHA=' "$WORKDIR/$AGENTFLOW_STATE_DIR/config.env" 2>/dev/null | head -n1 | cut -d= -f2-)
+    EXISTING_START_SHAS=$(grep '^AGENTFLOW_START_SHAS=' "$WORKDIR/$AGENTFLOW_STATE_DIR/config.env" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"')
     EXISTING_SELF_LEARNING=$(grep '^AGENTFLOW_SELF_LEARNING=' "$WORKDIR/$AGENTFLOW_STATE_DIR/config.env" 2>/dev/null | head -n1 | cut -d= -f2-)
 fi
 
@@ -404,6 +406,9 @@ EOF
 # Re-append run-loop-managed keys captured above.
 if [[ -n "$EXISTING_START_SHA" ]]; then
     echo "AGENTFLOW_START_SHA=$EXISTING_START_SHA" >> "$WORKDIR/$AGENTFLOW_STATE_DIR/config.env"
+fi
+if [[ -n "$EXISTING_START_SHAS" ]]; then
+    echo "AGENTFLOW_START_SHAS=\"$EXISTING_START_SHAS\"" >> "$WORKDIR/$AGENTFLOW_STATE_DIR/config.env"
 fi
 if [[ -n "$EXISTING_SELF_LEARNING" ]]; then
     echo "AGENTFLOW_SELF_LEARNING=$EXISTING_SELF_LEARNING" >> "$WORKDIR/$AGENTFLOW_STATE_DIR/config.env"

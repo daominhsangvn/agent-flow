@@ -141,14 +141,8 @@ export function resolveProjectId(
 }
 
 export function toViewerScope(
-  filters?: Pick<AgentSessionUsageQuery, "viewerScope" | "teamId">
+  filters?: Pick<AgentSessionUsageQuery, "viewerScope">
 ): AgentSessionViewerScope {
-  if (
-    filters?.viewerScope === AgentSessionViewerScope.Team ||
-    filters?.teamId
-  ) {
-    return AgentSessionViewerScope.Team;
-  }
   if (filters?.viewerScope === AgentSessionViewerScope.Self) {
     return AgentSessionViewerScope.Self;
   }

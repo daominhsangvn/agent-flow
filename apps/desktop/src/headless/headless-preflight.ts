@@ -170,11 +170,20 @@ function detectClaudeCredentials(deps: PreflightDeps): ClaudeCredentialSource {
   });
 }
 
-function defaultPreflightDeps(): PreflightDeps {
+/**
+ * Lookups against this machine. `executables` fixes where a tool is instead of
+ * searching PATH for it: on Windows bash, python3 and jq are not found under
+ * those names (headless-windows-tools.ts).
+ */
+export function defaultPreflightDeps(
+  executables: Readonly<Record<string, string | null>> = {}
+): PreflightDeps {
   return {
     getSearchPath: getShellPath,
     findExecutable: async (name, searchPath) =>
-      (await resolveExecutablesOnPath(name, searchPath))[0] ?? null,
+      Object.hasOwn(executables, name)
+        ? (executables[name] ?? null)
+        : ((await resolveExecutablesOnPath(name, searchPath))[0] ?? null),
     readVersion: readToolVersion,
     getPluginsDir: getBundledPluginsRoot,
     isWritableDirectory,
@@ -187,6 +196,7 @@ async function readToolVersion(executable: string): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync(executable, ["--version"], {
       timeout: VERSION_TIMEOUT_MS,
+      windowsHide: true,
     });
     return FIRST_LINE_RE.exec(stdout.trim())?.[0] ?? null;
   } catch {

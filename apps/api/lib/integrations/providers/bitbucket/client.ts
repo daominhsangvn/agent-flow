@@ -5,6 +5,8 @@ import type {
   ProviderContext,
   ProviderHttpRequest,
   ProviderHttpResponse,
+  RepositoryInfo,
+  RepositoryOperationResult,
 } from "../../types";
 import {
   type BitbucketConnectionConfig,
@@ -241,4 +243,19 @@ function readBitbucketErrorMessage(json: unknown): string | null {
 
 function withDetail(message: string, detail: string | null): string {
   return detail ? `${message}: ${detail}` : message;
+}
+
+/** `/repositories/{workspace}/{repository slug}`. */
+export function repositoryPath(repository: RepositoryInfo): string {
+  return `/repositories/${pathSegment(repository.namespace)}/${pathSegment(repository.name)}`;
+}
+
+export function operationOk<T>(value: T): RepositoryOperationResult<T> {
+  return { ok: true, value };
+}
+
+export function operationError<T>(
+  error: BitbucketError
+): RepositoryOperationResult<T> {
+  return { ok: false, error: error.message, retryable: error.retryable };
 }

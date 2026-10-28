@@ -1,9 +1,9 @@
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import {
+  type JobRepoPoolEntry,
   RepoSource,
   type ResolvedRepo,
 } from "@repo/app/loops/hooks/use-resolved-job-repos";
-import type { TeamRepoWithTeamId } from "@repo/app/teams/hooks/use-team-repositories-union";
 
 export type JobRepoSelection = {
   primary: { id: string; fullName: string; branch: string };
@@ -14,7 +14,7 @@ export type ComputeIncompleteArgs = {
   requirePrimary: boolean;
   primaryId: string | null;
   selectedIds: Set<string>;
-  pool: TeamRepoWithTeamId[];
+  pool: JobRepoPoolEntry[];
   branchByRepoId: Record<string, string>;
 };
 
@@ -40,7 +40,7 @@ export function computeIncomplete({
   // the seed or the GitHub fetch). Using the global flag would needlessly
   // block submit in the all-seeded case where every selected row already
   // has a branch on first render.
-  const poolIdSet = new Set(pool.map((r) => r.installationRepositoryId));
+  const poolIdSet = new Set(pool.map((r) => r.id));
   for (const id of selectedIds) {
     if (!poolIdSet.has(id)) {
       return true;
@@ -53,7 +53,7 @@ export function computeIncomplete({
 }
 
 export type BuildSelectionArgs = {
-  pool: TeamRepoWithTeamId[];
+  pool: JobRepoPoolEntry[];
   primaryId: string | null;
   selectedIds: Set<string>;
   branchByRepoId: Record<string, string>;
@@ -68,18 +68,16 @@ export function buildSelection({
   if (!primaryId) {
     return null;
   }
-  const primaryRepo = pool.find(
-    (r) => r.installationRepositoryId === primaryId
-  );
+  const primaryRepo = pool.find((r) => r.id === primaryId);
   const primaryBranch = branchByRepoId[primaryId];
   if (!(primaryRepo && primaryBranch)) {
     return null;
   }
   const primary: ResolvedRepo & { branch: string } = {
-    id: primaryRepo.installationRepositoryId,
-    fullName: primaryRepo.repository.fullName,
+    id: primaryRepo.id,
+    fullName: primaryRepo.fullName,
     branch: primaryBranch,
-    source: RepoSource.TeamDefault,
+    source: RepoSource.ProjectDefault,
     inPool: true,
   };
   const additional: AdditionalRepoRef[] = [];
@@ -87,13 +85,13 @@ export function buildSelection({
     if (id === primaryId) {
       continue;
     }
-    const repo = pool.find((r) => r.installationRepositoryId === id);
+    const repo = pool.find((r) => r.id === id);
     const branch = branchByRepoId[id];
     if (!(repo && branch)) {
       continue;
     }
     additional.push({
-      fullName: repo.repository.fullName,
+      fullName: repo.fullName,
       branch,
     });
   }

@@ -1,0 +1,57 @@
+# Project process of "React Calculator (Harness)": the agent team that
+# revfactory/harness v2.1.0 generated into the toolkit repository
+# workshop/harness-toolkit replaces the built-in AgentFlow planning and
+# implementation agents.
+toolkit:
+  repository: workshop/harness-toolkit
+  mounts:
+    - .claude/agents            # calc-planner, calc-reviewer, calc-developer, calc-qa
+    - .claude/skills            # calc-prd-delivery (orchestrator) and its skills
+  instructions: |
+    ## Harness: calculator PRD delivery
+
+    The agent team of this project is linked into this workspace's `.claude/agents`
+    and `.claude/skills`; the rest of it lives in the toolkit repository's worktree
+    `harness-toolkit/`.
+
+    - The orchestrator is the `calc-prd-delivery` skill: `plan <ISSUE-KEY> <PRD-FILE>`
+      and `build <ISSUE-KEY>`. Follow it exactly; delegate to the custom agents it
+      names (`subagent_type: calc-planner`, `calc-reviewer`, `calc-developer`,
+      `calc-qa`).
+    - Run files go to `harness-toolkit/runs/<ISSUE-KEY>/`; the plan session hands the
+      reviewed plan over in `.agentflow-ai/work/plan.md`.
+    - The application is the repository `harness-calculator/` (React 18 + Vite 4,
+      JavaScript, SCSS). Install, test and build inside it (`npm ci`, `npm test`,
+      `npm run build`).
+    - Do not create git branches or commits in either repository: AgentFlow commits
+      and pushes both repositories when the build step ends and opens a pull
+      request in each.
+steps:
+  - type: agent
+    id: plan
+    name: Plan
+    role: plan                  # .agentflow-ai/work/plan.md is the run's Implementation Plan
+    instruction: |
+      /calc-prd-delivery plan {{issue.key}} {{issue.file}}
+    artifacts:
+      - harness-toolkit/runs/*/02_planner_plan-*.md
+      - harness-toolkit/runs/*/03_reviewer_plan-review-*.md
+      - harness-toolkit/runs/*/05_main_plan-summary.md
+
+  - type: approval
+    id: approve-plan
+    name: Approve the plan
+    show:
+      - plan
+      - harness-toolkit/runs/*/05_main_plan-summary.md
+
+  - type: agent
+    id: build
+    name: Build
+    role: implement             # pushes both repositories, writes release notes
+    instruction: |
+      /calc-prd-delivery build {{issue.key}}
+    artifacts:
+      - harness-toolkit/runs/*/plan.md
+      - harness-toolkit/runs/*/30_main_verify.md
+      - harness-toolkit/runs/*/40_main_build-summary.md

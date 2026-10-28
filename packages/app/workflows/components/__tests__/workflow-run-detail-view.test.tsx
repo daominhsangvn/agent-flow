@@ -2,12 +2,17 @@ import { LoopCommand, LoopStatus } from "@agentflow-ai/loops-api/commands";
 import { DocumentType } from "@repo/api/src/types/document";
 import { ProcessDocumentType } from "@repo/api/src/types/project-process";
 import {
+  WORKFLOW_INSTRUCTION_ACTION_TYPE,
   type WorkflowActionRun,
   WorkflowActionRunStatus,
   WorkflowActionStage,
+  WorkflowInstructionOperationStatus,
   type WorkflowRunDetail,
   WorkflowRunErrorCode,
   WorkflowRunEvent,
+  WorkflowRunRetryMode,
+  type WorkflowRunSession,
+  WorkflowRunSourceClassificationOrigin,
   WorkflowRunStatus,
 } from "@repo/api/src/types/workflow";
 import { ApiError } from "@repo/app/shared/api/api-error";
@@ -22,6 +27,8 @@ import {
 } from "../../../integrations/__tests__/integration-fixtures";
 import {
   ACTION_RUN_ID,
+  ENDED_SESSION_ID,
+  LIVE_SESSION_ID,
   LOOP_ID,
   makeRunDetail,
   PRE_ACTION_ID,
@@ -39,6 +46,7 @@ import { WorkflowRunDetailView } from "../workflow-run-detail-view";
 const PROJ_7_RE = /PROJ-7/;
 const COMMENT_ON_THE_ISSUE_RE = /Comment on the issue/;
 const TRANSITION_THE_ISSUE_RE = /Transition the issue/;
+const SESSION_RUNNING_RE = /1 session is running/;
 
 const mocks = vi.hoisted(() => ({
   run: {
@@ -48,6 +56,7 @@ const mocks = vi.hoisted(() => ({
     refetch: vi.fn(),
   },
   cancelMutateAsync: vi.fn(),
+  retryRunMutateAsync: vi.fn(),
   retryMutate: vi.fn(),
 }));
 
@@ -58,6 +67,10 @@ vi.mock("../../hooks/use-workflows", async () => {
     useWorkflowRun: () => mocks.run,
     useCancelWorkflowRun: () => ({
       mutateAsync: mocks.cancelMutateAsync,
+      isPending: false,
+    }),
+    useRetryWorkflowRun: () => ({
+      mutateAsync: mocks.retryRunMutateAsync,
       isPending: false,
     }),
     useRetryWorkflowActionRun: () => ({
@@ -121,6 +134,7 @@ function failedPreActionRun(): WorkflowActionRun {
     attempts: 5,
     lastError: "Transition In Progress not found",
     externalRef: null,
+    instruction: null,
     completedAt: null,
     createdAt: new Date("2026-10-02T09:00:00.000Z"),
   };
@@ -155,20 +169,91 @@ describe("WorkflowRunDetailView", () => {
         .map((item) => item.textContent)
     ).toEqual([
       "Received: done",
-      "Pre actions: done",
       "Importing: done",
+      "Triggered actions: done",
       "Planning: in progress",
       "Implementing: not started",
       "Done: not started",
     ]);
   });
 
-  it("shows a run that is running its pre actions", () => {
+  it("lists the run's sessions and offers to watch the running one live", () => {
+    render(<WorkflowRunDetailView isAdmin runId={RUN_ID} />);
+
+    const [liveRow, endedRow] = screen.getAllByTestId("run-session");
+    expect(
+      within(liveRow as HTMLElement).getByRole("link", {
+        name: "SES-12 Plan PROJ-7",
+      })
+    ).toHaveAttribute("href", `/acme/sessions/${LIVE_SESSION_ID}`);
+    expect(
+      within(liveRow as HTMLElement).getByRole("link", { name: "Watch live" })
+    ).toHaveAttribute("href", `/acme/sessions/${LIVE_SESSION_ID}`);
+    expect(
+      within(liveRow as HTMLElement).getByRole("link", { name: "Plan" })
+    ).toHaveAttribute("href", `/acme/loops/${LOOP_ID}`);
+    expect(
+      within(endedRow as HTMLElement).getByRole("link", {
+        name: "SES-11 Plan PROJ-7 (first attempt)",
+      })
+    ).toHaveAttribute("href", `/acme/sessions/${ENDED_SESSION_ID}`);
+    expect(
+      within(endedRow as HTMLElement).queryByRole("link", {
+        name: "Watch live",
+      })
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(SESSION_RUNNING_RE)).toBeInTheDocument();
+  });
+
+  it("shows how long each session ran, a running one up to now", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-01T09:14:30.000Z"));
+    try {
+      render(<WorkflowRunDetailView isAdmin runId={RUN_ID} />);
+
+      const [liveRow, endedRow] = screen.getAllByTestId("run-session");
+      expect(
+        within(liveRow as HTMLElement).getByTestId("run-session-duration")
+      ).toHaveTextContent("12m 30s");
+      expect(
+        within(endedRow as HTMLElement).getByTestId("run-session-duration")
+      ).toHaveTextContent("40s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a dash for a finished session without an end time", () => {
+    const [, ended] = makeRunDetail().sessions;
+    setRun(
+      makeRunDetail({
+        sessions: [{ ...(ended as WorkflowRunSession), endedAt: null }],
+      })
+    );
+    render(<WorkflowRunDetailView isAdmin runId={RUN_ID} />);
+
+    const [row] = screen.getAllByTestId("run-session");
+    expect(
+      within(row as HTMLElement).queryByTestId("run-session-duration")
+    ).not.toBeInTheDocument();
+    expect(
+      within(row as HTMLElement).getAllByRole("cell")[5]
+    ).toHaveTextContent("-");
+  });
+
+  it("says when no session has synced yet", () => {
+    setRun(makeRunDetail({ sessions: [] }));
+    render(<WorkflowRunDetailView isAdmin runId={RUN_ID} />);
+
+    expect(
+      screen.getByText("No session has synced for this run yet.")
+    ).toBeInTheDocument();
+  });
+
+  it("shows a run that is running its triggered actions, after the import", () => {
     setRun(
       makeRunDetail({
         status: WorkflowRunStatus.PreActions,
-        feature: null,
-        plan: null,
         loops: [],
       })
     );
@@ -179,9 +264,11 @@ describe("WorkflowRunDetailView", () => {
     ).toBeInTheDocument();
     const progress = screen.getByRole("list", { name: "Run progress" });
     expect(
-      within(progress).getByText("Pre actions").closest("[data-state]")
+      within(progress).getByText("Triggered actions").closest("[data-state]")
     ).toHaveAttribute("data-state", "current");
-    expect(screen.getByText("Not imported yet")).toBeInTheDocument();
+    expect(
+      within(progress).getByText("Importing").closest("[data-state]")
+    ).toHaveAttribute("data-state", "done");
   });
 
   it("lists pre action runs first, with their stage and cycle", () => {
@@ -189,7 +276,9 @@ describe("WorkflowRunDetailView", () => {
 
     const [preRow, postRow] = actionRows();
     expect(preRow).toHaveAccessibleName(TRANSITION_THE_ISSUE_RE);
-    expect(within(preRow as HTMLElement).getByText("Pre")).toBeInTheDocument();
+    expect(
+      within(preRow as HTMLElement).getByText("Before agents")
+    ).toBeInTheDocument();
     expect(
       within(preRow as HTMLElement).getByText(
         WORKFLOW_RUN_EVENT_LABELS[WorkflowRunEvent.Triggered]
@@ -197,7 +286,7 @@ describe("WorkflowRunDetailView", () => {
     ).toBeInTheDocument();
     expect(postRow).toHaveAccessibleName(COMMENT_ON_THE_ISSUE_RE);
     expect(
-      within(postRow as HTMLElement).getByText("Post")
+      within(postRow as HTMLElement).getByText("After")
     ).toBeInTheDocument();
     expect(
       within(postRow as HTMLElement).getAllByRole("cell")[3]
@@ -238,15 +327,28 @@ describe("WorkflowRunDetailView", () => {
     ).not.toBeInTheDocument();
     const progress = screen.getByRole("list", { name: "Run progress" });
     expect(
-      within(progress).getByText("Pre actions").closest("[data-state]")
+      within(progress).getByText("Triggered actions").closest("[data-state]")
     ).toHaveAttribute("data-state", "failed");
   });
 
-  it("links the source item, the imported Issue, the plan and the pull request", () => {
+  it("links the source item, the imported Issue, the plan and the pull requests", () => {
     setRun(
       makeRunDetail({
         status: WorkflowRunStatus.Succeeded,
-        prUrl: "https://github.com/acme/web/pull/12",
+        pullRequests: [
+          {
+            url: "https://github.com/acme/web/pull/12",
+            number: 12,
+            repository: "acme/web",
+            branch: "feat/proj-7",
+          },
+          {
+            url: "https://github.com/acme/api/pull/4",
+            number: 4,
+            repository: "acme/api",
+            branch: "feat/proj-7-api",
+          },
+        ],
         branchName: "feat/proj-7",
       })
     );
@@ -262,10 +364,17 @@ describe("WorkflowRunDetailView", () => {
     expect(
       screen.getByRole("link", { name: "PLN-9 Plan: Add CSV export" })
     ).toHaveAttribute("href", "/acme/implementation-plans/PLN-9");
+    const pullRequests = screen.getByTestId("run-pull-requests");
     expect(
-      screen.getByRole("link", { name: "https://github.com/acme/web/pull/12" })
+      within(pullRequests).getByRole("link", { name: "acme/web #12" })
     ).toHaveAttribute("href", "https://github.com/acme/web/pull/12");
-    expect(screen.getByText("feat/proj-7")).toBeInTheDocument();
+    expect(
+      within(pullRequests).getByRole("link", { name: "acme/api #4" })
+    ).toHaveAttribute("href", "https://github.com/acme/api/pull/4");
+    expect(within(pullRequests).getByText("feat/proj-7")).toBeInTheDocument();
+    expect(
+      within(pullRequests).getByText("feat/proj-7-api")
+    ).toBeInTheDocument();
   });
 
   it("labels and links a PRD the run imported from a product requirement", () => {
@@ -287,6 +396,49 @@ describe("WorkflowRunDetailView", () => {
     ).toHaveAttribute("href", "/acme/prds/PRD-3");
     expect(screen.getByText("PRD", { selector: "dt" })).toBeInTheDocument();
     expect(screen.queryByText("Issue", { selector: "dt" })).toBeNull();
+  });
+
+  it("says why the PRD instruction made the item a PRD, or an Issue", () => {
+    setRun(makeRunDetail());
+    const { unmount } = render(
+      <WorkflowRunDetailView isAdmin runId={RUN_ID} />
+    );
+    // Without an instruction there is nothing to explain.
+    expect(screen.queryByTestId("run-source-classification")).toBeNull();
+    unmount();
+
+    setRun(
+      makeRunDetail({
+        sourceClassification: {
+          type: DocumentType.Prd,
+          origin: WorkflowRunSourceClassificationOrigin.Instruction,
+          reason: "A Feature labelled PRD.",
+        },
+      })
+    );
+    const prd = render(<WorkflowRunDetailView isAdmin runId={RUN_ID} />);
+    expect(screen.getByTestId("run-source-classification")).toHaveTextContent(
+      "PRD instruction: A Feature labelled PRD."
+    );
+    prd.unmount();
+
+    setRun(
+      makeRunDetail({
+        sourceClassification: {
+          type: DocumentType.Feature,
+          origin: WorkflowRunSourceClassificationOrigin.Fallback,
+          reason: "The run's computer did not answer within 15 minutes.",
+        },
+      })
+    );
+    render(<WorkflowRunDetailView isAdmin runId={RUN_ID} />);
+    expect(
+      within(screen.getByTestId("run-source-document")).getByTestId(
+        "run-source-classification"
+      )
+    ).toHaveTextContent(
+      "The PRD instruction could not decide, so this is an Issue: The run's computer did not answer within 15 minutes."
+    );
   });
 
   it("links the documents the process steps published", () => {
@@ -444,6 +596,7 @@ describe("WorkflowRunDetailView", () => {
             attempts: 1,
             lastError: null,
             externalRef: "https://acme.atlassian.net/browse/PROJ-7#comment-1",
+            instruction: null,
             completedAt: new Date(),
             createdAt: new Date(),
           },
@@ -462,6 +615,69 @@ describe("WorkflowRunDetailView", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows what an instruction's agent did: its note, each operation and its cost", () => {
+    setRun(
+      makeRunDetail({
+        actionRuns: [
+          {
+            id: ACTION_RUN_ID,
+            actionId: "instruction-1",
+            actionType: WORKFLOW_INSTRUCTION_ACTION_TYPE,
+            stage: WorkflowActionStage.Post,
+            event: WorkflowRunEvent.ExecuteCompleted,
+            cycle: 1,
+            status: WorkflowActionRunStatus.Failed,
+            attempts: 1,
+            lastError: "source_item_comment failed: HTTP 503",
+            externalRef: null,
+            instruction: {
+              note: "Moved the issue and summarized the change.",
+              operations: [
+                {
+                  type: JIRA_TRANSITION_ISSUE,
+                  config: { transition: "In Review" },
+                  status: WorkflowInstructionOperationStatus.Succeeded,
+                  externalRef: null,
+                  error: null,
+                },
+                {
+                  type: JIRA_ADD_COMMENT,
+                  connection: "jira-shop",
+                  config: { body: "Summary" },
+                  status: WorkflowInstructionOperationStatus.Failed,
+                  externalRef: null,
+                  error: "HTTP 503",
+                },
+              ],
+              costUsd: null,
+              inputTokens: 1200,
+              outputTokens: 80,
+            },
+            completedAt: new Date(),
+            createdAt: new Date(),
+          },
+        ],
+      })
+    );
+    render(<WorkflowRunDetailView isAdmin runId={RUN_ID} />);
+
+    const [row] = actionRows();
+    expect(
+      within(row as HTMLElement).getByText("Instruction")
+    ).toBeInTheDocument();
+    expect(
+      within(row as HTMLElement).getByText(
+        "Moved the issue and summarized the change."
+      )
+    ).toBeInTheDocument();
+    expect(row).toHaveTextContent(`${JIRA_TRANSITION_ISSUE} done`);
+    expect(row).toHaveTextContent(
+      `${JIRA_ADD_COMMENT} on jira-shop failed: HTTP 503`
+    );
+    // An unknown cost is never shown as $0.00.
+    expect(row).toHaveTextContent("1.20k in · 80 out · cost unknown");
+  });
+
   it("cancels an active run after confirmation", async () => {
     const user = userEvent.setup();
     mocks.cancelMutateAsync.mockResolvedValue(makeRunDetail());
@@ -475,6 +691,85 @@ describe("WorkflowRunDetailView", () => {
       within(dialog).getByRole("button", { name: "Cancel run" })
     );
     expect(mocks.cancelMutateAsync).toHaveBeenCalledWith(RUN_ID);
+  });
+
+  it("retries the failed step in its session, or restarts it, after confirmation", async () => {
+    const user = userEvent.setup();
+    setRun(
+      makeRunDetail({
+        status: WorkflowRunStatus.Failed,
+        error: {
+          code: WorkflowRunErrorCode.ExecuteFailed,
+          message: "401 OAuth access token has expired.",
+        },
+        retryStep: { id: "implement", name: "Implement", resumable: true },
+      })
+    );
+    mocks.retryRunMutateAsync.mockResolvedValue(makeRunDetail());
+    render(<WorkflowRunDetailView isAdmin runId={RUN_ID} />);
+
+    await user.click(screen.getByRole("button", { name: "Retry Implement" }));
+    const retryDialog = await screen.findByRole("dialog", {
+      name: "Retry the failed step?",
+    });
+    await user.click(
+      within(retryDialog).getByRole("button", { name: "Retry Implement" })
+    );
+    expect(mocks.retryRunMutateAsync).toHaveBeenLastCalledWith({
+      runId: RUN_ID,
+      mode: WorkflowRunRetryMode.Resume,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Restart Implement" }));
+    const restartDialog = await screen.findByRole("dialog", {
+      name: "Restart the failed step?",
+    });
+    await user.click(
+      within(restartDialog).getByRole("button", { name: "Restart Implement" })
+    );
+    expect(mocks.retryRunMutateAsync).toHaveBeenLastCalledWith({
+      runId: RUN_ID,
+      mode: WorkflowRunRetryMode.Restart,
+    });
+  });
+
+  it("offers only a restart when the step's session cannot be resumed", () => {
+    setRun(
+      makeRunDetail({
+        status: WorkflowRunStatus.Failed,
+        retryStep: { id: "implement", name: "Implement", resumable: false },
+      })
+    );
+    render(<WorkflowRunDetailView isAdmin runId={RUN_ID} />);
+
+    expect(
+      screen.getByRole("button", { name: "Restart Implement" })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry Implement" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers no step retry without a retryable step or to members", () => {
+    const failed = makeRunDetail({
+      status: WorkflowRunStatus.Failed,
+      retryStep: { id: "implement", name: "Implement", resumable: true },
+    });
+    setRun(failed);
+    const { unmount } = render(
+      <WorkflowRunDetailView isAdmin={false} runId={RUN_ID} />
+    );
+    expect(
+      screen.queryByRole("button", { name: "Retry Implement" })
+    ).not.toBeInTheDocument();
+    unmount();
+
+    setRun({ ...failed, retryStep: null });
+    render(<WorkflowRunDetailView isAdmin runId={RUN_ID} />);
+    // Action runs keep their own "Retry"; the step retry names its step.
+    expect(
+      screen.queryByRole("button", { name: "Retry Implement" })
+    ).not.toBeInTheDocument();
   });
 
   it("offers no cancel or retry to members, and no cancel for a final run", () => {

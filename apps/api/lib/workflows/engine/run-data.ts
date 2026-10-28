@@ -60,6 +60,8 @@ const sourceItemSchema = sourceItemRefSchema.extend({
   comments: z
     .array(
       z.object({
+        id: nullableString,
+        parentId: nullableString,
         author: nullableString,
         createdAt: nullableString,
         bodyMarkdown: z.string(),

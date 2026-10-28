@@ -594,8 +594,6 @@ slugCounter.upsert(create+update+where) id=d59d9bda-a9ed-58c2-81a5-0af22f10d04c
 slugCounter.upsert(create+update+where) id=e027fd22-7af2-5b7c-9d98-73c846e362ab
 slugCounter.upsert(create+update+where) id=f226638b-3727-540f-932c-e1c07576c870
 slugCounter.upsert(create+update+where) id=f561d32c-9fe8-5fca-9339-3df6bd985dc0
-team.upsert(create+update+where) id=f50d85c2-6036-5940-a30d-50a9c61c646d
-teamMember.upsert(create+update+where) id=0f6e3852-16af-5a27-a607-1b08459fe20a
 `;
 
 export const EXPECTED_SEED_WRITE_FINGERPRINTS: readonly string[] =

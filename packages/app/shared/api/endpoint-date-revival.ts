@@ -229,6 +229,14 @@ export const ENDPOINT_STRING_ONLY_DATE_KEYS: readonly EndpointStringOnlyDateKeys
     },
     {
       keys: ["expiresAt"],
+      route: "/desktop/integration-sessions",
+    },
+    {
+      keys: ["expiresAt"],
+      route: "/desktop/orchestrator-sessions",
+    },
+    {
+      keys: ["expiresAt"],
       route: "/desktop/provisioning-attempt",
     },
     {
@@ -292,6 +300,10 @@ export const ENDPOINT_STRING_ONLY_DATE_KEYS: readonly EndpointStringOnlyDateKeys
       route: "/judges-analytics/artifact-counts",
     },
     {
+      keys: ["createdAt", "decidedAt", "startedAt", "updatedAt"],
+      route: "/orchestrator/cases/[id]",
+    },
+    {
       keys: ["createdAt"],
       route: "/projects/[id]/process",
     },
@@ -310,6 +322,10 @@ export const ENDPOINT_STRING_ONLY_DATE_KEYS: readonly EndpointStringOnlyDateKeys
     {
       keys: ["createdAt", "editedAt", "resolvedAt", "updatedAt"],
       route: "/trace-comments",
+    },
+    {
+      keys: ["createdAt", "updatedAt"],
+      route: "/workflows/[id]/cases",
     },
   ];
 

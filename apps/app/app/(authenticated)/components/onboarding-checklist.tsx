@@ -13,7 +13,7 @@ import {
 } from "@repo/design-system/components/ui/card";
 import { Progress } from "@repo/design-system/components/ui/progress";
 import { Link } from "@repo/navigation/link";
-import { Check, Circle, ExternalLink, X } from "lucide-react";
+import { Check, Circle, X } from "lucide-react";
 import {
   CHECKLIST_ITEM_ATTRIBUTE,
   CHECKLIST_LIST_ATTRIBUTE,
@@ -67,7 +67,6 @@ export function OnboardingChecklist() {
             <ChecklistItem
               completed={item.completed}
               description={item.description}
-              external={item.external}
               href={item.href}
               itemId={item.id}
               key={item.id}
@@ -85,7 +84,6 @@ type ChecklistItemProps = {
   readonly description: string;
   readonly completed: boolean;
   readonly href?: string;
-  readonly external?: boolean;
   readonly itemId: ChecklistItemId;
 };
 
@@ -94,7 +92,6 @@ function ChecklistItem({
   description,
   completed,
   href,
-  external,
   itemId,
 }: ChecklistItemProps) {
   const content = (
@@ -114,15 +111,6 @@ function ChecklistItem({
           }`}
         >
           {label}
-          {/*
-            The off-app row is otherwise byte-identical to the in-app ones, so
-            nothing warned the user that this one leaves the app and starts a
-            binary download. Same affordance the pack cards and branch panels
-            use.
-          */}
-          {external && !completed && (
-            <ExternalLink aria-hidden="true" className="size-3.5 shrink-0" />
-          )}
         </p>
         {!completed && (
           <p className="truncate text-muted-foreground text-xs">
@@ -134,16 +122,6 @@ function ChecklistItem({
   );
 
   if (href && !completed) {
-    // An off-app destination cannot go through the navigation Link, which would
-    // try to route an absolute URL inside the SPA.
-    if (external) {
-      return (
-        <a href={href} rel="noreferrer" target="_blank">
-          {content}
-          <span className="sr-only">(opens in a new tab)</span>
-        </a>
-      );
-    }
     return <Link href={href}>{content}</Link>;
   }
 

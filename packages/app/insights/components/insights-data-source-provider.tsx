@@ -24,7 +24,6 @@ import {
   resolveInsightsTileAvailability,
 } from "@repo/app/insights/lib/tile-availability";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
-import { useTeams } from "@repo/app/teams/hooks/use-teams";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useRef } from "react";
 
@@ -47,9 +46,7 @@ export function WebInsightsDataSourceProvider({
 }) {
   const apiClient = useApiClient();
   const queryClient = useQueryClient();
-  const teamsQuery = useTeams();
   const githubStatusQuery = useGitHubIntegrationStatus();
-  const teams = teamsQuery.data ?? [];
   const githubConnectionState = resolveGitHubConnectionState(
     githubStatusQuery.data
   );
@@ -82,16 +79,8 @@ export function WebInsightsDataSourceProvider({
   const reads = useMemo(() => createHttpInsightsReads(apiClient), [apiClient]);
   const source = useMemo<InsightsDataSource>(
     () => ({
-      availableScopes:
-        teams.length > 0
-          ? [
-              InsightsScopeValues.Me,
-              InsightsScopeValues.Org,
-              InsightsScopeValues.Team,
-            ]
-          : [InsightsScopeValues.Me, InsightsScopeValues.Org],
+      availableScopes: [InsightsScopeValues.Me, InsightsScopeValues.Org],
       availableSections: INSIGHTS_SECTION_OPTIONS,
-      availableTeams: teams.map((team) => ({ id: team.id, name: team.name })),
       githubConnectHref: resolvedGitHubConnectHref,
       getTileAvailability: ({
         tileId,
@@ -112,7 +101,7 @@ export function WebInsightsDataSourceProvider({
         }),
       ...reads,
     }),
-    [reads, teams, resolvedGitHubConnectHref, githubConnectionState]
+    [reads, resolvedGitHubConnectHref, githubConnectionState]
   );
 
   return (

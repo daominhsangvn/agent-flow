@@ -9,10 +9,12 @@ import { WORKFLOW_RUN_STATUS_LABELS } from "./workflow-labels";
 
 /**
  * The phase stepper of the run detail page, derived from the run status, its
- * loops and its action runs. A final run shows which phases it actually went
- * through (a plan mode run never implements; a run whose pre action failed
- * never imported; a workflow without pre actions skips that phase), instead
- * of pretending every phase completed.
+ * loops and its action runs. The item is imported first, then the actions on
+ * workflow.triggered run ("Triggered actions", the engine's pre_actions), then
+ * the agent team. A final run shows which phases it actually went through (a
+ * plan mode run never implements; a run whose triggered action failed stops
+ * before the agent team; a workflow without workflow.triggered actions skips
+ * that phase), instead of pretending every phase completed.
  */
 
 export const RunTimelineStepState = {
@@ -37,7 +39,7 @@ export type RunTimelineStep = {
 /** The parts of a run the timeline reads. */
 export type RunTimelineInput = Pick<
   WorkflowRunDetail,
-  "status" | "loops" | "prUrl" | "actionRuns" | "error"
+  "status" | "loops" | "pullRequests" | "actionRuns" | "error"
 >;
 
 export function buildRunTimeline(run: RunTimelineInput): RunTimelineStep[] {
@@ -55,10 +57,7 @@ function buildActiveTimeline(run: RunTimelineInput): RunTimelineStep[] {
   const isWaiting =
     run.status === WorkflowRunStatus.NeedsInput ||
     run.status === WorkflowRunStatus.NeedsApproval;
-  const currentPhase =
-    run.status === WorkflowRunStatus.NeedsInput
-      ? WorkflowRunStatus.Planning
-      : timelinePhase(run.status);
+  const currentPhase = timelinePhase(run);
   const currentIndex = PHASES.indexOf(currentPhase);
   const ranPreActions = hasPreActionRuns(run);
 
@@ -92,15 +91,15 @@ function buildFinalTimeline(
 ): RunTimelineStep[] {
   const planned = run.loops.some((loop) => loop.command === LoopCommand.Plan);
   const executed =
-    Boolean(run.prUrl) ||
+    run.pullRequests.length > 0 ||
     run.loops.some((loop) => AGENT_WORK_COMMANDS.has(loop.command));
   const stoppedByPreAction =
     run.error?.code === WorkflowRunErrorCode.PreActionFailed;
 
   const reached = new Map<WorkflowRunStatus, boolean>([
     [WorkflowRunStatus.Received, true],
+    [WorkflowRunStatus.Ingesting, true],
     [WorkflowRunStatus.PreActions, hasPreActionRuns(run)],
-    [WorkflowRunStatus.Ingesting, !stoppedByPreAction],
     [WorkflowRunStatus.Planning, planned || executed],
     [WorkflowRunStatus.Executing, executed],
   ]);
@@ -121,14 +120,26 @@ function buildFinalTimeline(
 }
 
 /**
- * The agent steps of a project process (`running`) are shown on the
- * implementation phase until the timeline follows the process's own steps.
+ * The phase a run in progress is on. Needs input comes after the plan was
+ * written; the agent steps of a project process (`running`) and its
+ * approvals are shown on the implementation phase until the timeline follows
+ * the process's own steps. A run back in `ingesting` after its triggered
+ * actions is about to start the agent team, not importing again.
  */
-function timelinePhase(status: WorkflowRunStatus): WorkflowRunStatus {
-  return status === WorkflowRunStatus.Running ||
-    status === WorkflowRunStatus.NeedsApproval
-    ? WorkflowRunStatus.Executing
-    : status;
+function timelinePhase(run: RunTimelineInput): WorkflowRunStatus {
+  switch (run.status) {
+    case WorkflowRunStatus.NeedsInput:
+      return WorkflowRunStatus.Planning;
+    case WorkflowRunStatus.Running:
+    case WorkflowRunStatus.NeedsApproval:
+      return WorkflowRunStatus.Executing;
+    case WorkflowRunStatus.Ingesting:
+      return hasPreActionRuns(run)
+        ? WorkflowRunStatus.PreActions
+        : WorkflowRunStatus.Ingesting;
+    default:
+      return run.status;
+  }
 }
 
 /** Loops that work on the implementation (EXECUTE, process agent steps). */
@@ -169,15 +180,15 @@ type FinalStep = { label: string; state: RunTimelineStepState };
 
 const PHASES: readonly WorkflowRunStatus[] = [
   WorkflowRunStatus.Received,
-  WorkflowRunStatus.PreActions,
   WorkflowRunStatus.Ingesting,
+  WorkflowRunStatus.PreActions,
   WorkflowRunStatus.Planning,
   WorkflowRunStatus.Executing,
 ];
 
-/** Step labels that differ from the status badge ("Running pre actions"). */
+/** Step labels that differ from the status badge ("Running triggered actions"). */
 const PHASE_LABELS = new Map<WorkflowRunStatus, string>([
-  [WorkflowRunStatus.PreActions, "Pre actions"],
+  [WorkflowRunStatus.PreActions, "Triggered actions"],
 ]);
 
 const FINAL_STEP_KEY = "final";

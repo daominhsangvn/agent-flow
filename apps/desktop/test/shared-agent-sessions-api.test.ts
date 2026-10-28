@@ -1788,7 +1788,7 @@ describe("shared agent sessions API mapper", () => {
     });
 
     const unsupported = await getSharedAgentSessions(source, {
-      teamId: "cloud-team",
+      projectId: "cloud-project",
       userId: "user-alex",
     });
     assert.deepEqual(unsupported, {
@@ -1801,7 +1801,7 @@ describe("shared agent sessions API mapper", () => {
     assert.equal(
       (
         await getSharedAgentSessionUsage(source, {
-          teamId: "cloud-team",
+          projectId: "cloud-project",
           userId: "user-alex",
         })
       ).totalSessions,

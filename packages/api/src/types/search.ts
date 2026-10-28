@@ -36,8 +36,6 @@ export type ProjectSearchResult = {
   slug: string | null;
   status: ProjectStatus;
   priority: Priority | null;
-  teamName: string | null;
-  teamId: string | null;
   assignee: BasicUser | null;
   updatedAt: Date;
 };
@@ -93,7 +91,7 @@ export type SearchHit = {
    * Legacy UUID-only deep link (e.g. `/documents/<id>`). Kept for back-compat
    * with consumers that predate the route fields below; new surfaces prefer
    * {@link searchHitRoute}, which builds an actually-web-routable path from
-   * `slug`/`entitySubtype`/`teamId` and falls back to this only for loops.
+   * `slug`/`entitySubtype` and falls back to this only for loops.
    */
   deepLink: string;
   /**
@@ -104,8 +102,6 @@ export type SearchHit = {
    *     not by UUID; projects carry a slug but route by id).
    *   - `entitySubtype` — a document's `type` (PRD/IMPLEMENTATION_PLAN/FEATURE),
    *     used to pick the route prefix. Absent for projects/loops.
-   *   - `teamId` — a project's owning team, for the team-scoped project route.
-   *     Absent for documents/loops.
    *   - `anchorEntityId` — the id of a DIFFERENT entity this hit routes to when
    *     the hit is not itself the navigation target (FEA-3930 corpus slice). A
    *     `pull_request` hit routes to its owning branch (anchor = branch artifact
@@ -116,7 +112,6 @@ export type SearchHit = {
    */
   slug?: string;
   entitySubtype?: string;
-  teamId?: string;
   anchorEntityId?: string;
 };
 
@@ -159,7 +154,6 @@ const searchHitSchemaShape = {
   deepLink: z.string(),
   slug: z.string().optional(),
   entitySubtype: z.string().optional(),
-  teamId: z.string().optional(),
   anchorEntityId: z.string().optional(),
 } satisfies Record<keyof SearchHit, z.ZodTypeAny>;
 export const searchHitSchema = z.object(searchHitSchemaShape);
@@ -212,10 +206,10 @@ export const unifiedSearchResponseSchema = z.object({
  * `/loops/<id>` resolves directly (the web loop route is id-keyed). Document and
  * project fragments are BEST-EFFORT locators, NOT guaranteed web-routable yet:
  * the web app routes documents by type-specific slug (`/prds|/features/<slug>`,
- * or the `/documents/<slug>` catch-all that resolves via `by-slug`) and projects
- * under their team (`/teams/<teamId>/projects/<id>`). The Phase-1 projection is
- * metadata-first and carries neither the slug/type nor the team, so a fully
- * type-/team-aware link is deferred to the query-side slice that joins that
+ * or the `/documents/<slug>` catch-all that resolves via `by-slug`). Projects
+ * are org-level and id-keyed (`/projects/<id>`). The Phase-1 projection is
+ * metadata-first and does not carry the document slug/type, so a fully
+ * type-aware link is deferred to the query-side slice that joins that
  * route data. Consumers must treat a returned fragment as a hint, not a promise
  * that the target resolves at that exact path.
  */
@@ -263,8 +257,7 @@ export function searchHitDeepLink(
  * the real app route:
  *   - Document → `/<prefix>/<slug>` (`/prds|/implementation-plans|/features`),
  *     needing both `slug` and a routable `entitySubtype`.
- *   - Project  → `/teams/<teamId>/projects/<entityId>` (team-scoped), needing
- *     `teamId`.
+ *   - Project  → `/projects/<entityId>` (org-level, id-keyed).
  *   - Loop     → `/loops/<entityId>` (the loop route is id-keyed).
  *   - AgentSession → `/sessions/<entityId>` (session detail is id-keyed).
  *   - Branch   → `/branches/<entityId>` (branch detail is id-keyed on the
@@ -295,9 +288,7 @@ export function searchHitRoute(hit: SearchHit): string | null {
       return `/${prefix}/${hit.slug}`;
     }
     case SearchEntityType.Project:
-      return hit.teamId === undefined
-        ? null
-        : `/teams/${hit.teamId}/projects/${hit.entityId}`;
+      return `/projects/${hit.entityId}`;
     case SearchEntityType.Loop:
       return `/loops/${hit.entityId}`;
     case SearchEntityType.AgentSession:

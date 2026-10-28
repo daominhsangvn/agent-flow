@@ -331,7 +331,7 @@ type ResolvedInstallation = {
  * Same-account reconnect path (PLN-634).
  *
  * Reuses the prior UNINSTALLED installation row in place so all dependent
- * UUIDs (TeamRepository, BranchDetail.repositoryId, PullRequestDetail.
+ * UUIDs (BranchDetail.repositoryId, PullRequestDetail.
  * repositoryId, GitHubInstallationRepository) are preserved across the
  * disconnect/reinstall window.
  *
@@ -1381,8 +1381,8 @@ export const githubService = {
    * Marks the installation UNINSTALLED but preserves `organizationId` so a
    * subsequent reconnect from the same GitHub account can reuse the row
    * in-place (see `reconnectByAccount`). Without preservation, the cascade
-   * chain GitHubInstallation → GitHubInstallationRepository → TeamRepository
-   * (and BranchDetail / PullRequestDetail) would destroy org-level repo
+   * chain GitHubInstallation → GitHubInstallationRepository → BranchDetail /
+   * PullRequestDetail would destroy org-level repo
    * configuration and branch/PR history on every disconnect.
    *
    * Idempotent because Settings may send a DELETE from stale cached UI after
@@ -1445,7 +1445,6 @@ export const githubService = {
    * Runs once the admin has confirmed the destructive cleanup that swaps the
    * org from GitHub account A to account B. Side effects, all in one
    * transaction:
-   *  - Delete `TeamRepository` rows for every team in the org.
    *  - Tombstone `GitHubInstallationRepository` rows owned by the prior
    *    installation. Branch / PR repository FKs remain non-null, so old
    *    repository rows stay FK-resolvable while render recovery and explicit
@@ -1527,10 +1526,6 @@ export const githubService = {
         return Result.err(Status.Forbidden);
       }
 
-      const teamReposDeleted = await tx.teamRepository.deleteMany({
-        where: { team: { organizationId: input.organizationId } },
-      });
-
       // Tombstone all repos previously linked to this installation row.
       // `installationId` here is the FK to GitHubInstallation.id (UUID),
       // not the GitHub App installation ID string.
@@ -1575,7 +1570,6 @@ export const githubService = {
         newAccountLogin: newInstall.accountLogin,
         priorInstallationId: prior.id,
         newInstallationId: newInstall.id,
-        teamRepositoriesDeleted: teamReposDeleted.count,
         projectsWithOverridesCleared: projectsCleared,
       });
 

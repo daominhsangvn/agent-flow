@@ -30,9 +30,13 @@ vi.mock("@repo/database", () => ({
 vi.mock("@/app/documents/document-version-service", () => ({
   documentVersionService: { getLatest: mocks.getLatest },
 }));
-vi.mock("@/lib/workflows/engine/step-documents", () => ({
-  listRunDocuments: mocks.listRunDocuments,
-}));
+vi.mock("@/lib/workflows/engine/step-documents", async (importOriginal) => {
+  const original =
+    await importOriginal<
+      typeof import("@/lib/workflows/engine/step-documents")
+    >();
+  return { ...original, listRunDocuments: mocks.listRunDocuments };
+});
 vi.mock("@/lib/workflows/engine/run-loops", async (importOriginal) => {
   const original =
     await importOriginal<typeof import("@/lib/workflows/engine/run-loops")>();
@@ -151,6 +155,53 @@ describe("buildSummaryMarkdown", () => {
       })
     ).toBe(
       `🛂 The "Review the spec" step for **PROJ-7** waits for an approval in AgentFlow: ${RUN_URL}`
+    );
+  });
+
+  it("run.needs_input of an approval step names its approve label", () => {
+    expect(
+      buildSummaryMarkdown({
+        ...baseSummary,
+        event: WorkflowRunEvent.NeedsInput,
+        step: {
+          id: "review",
+          name: "Review the spec",
+          questions: [],
+          awaitingApproval: true,
+          approveLabels: ["plan-approved"],
+        },
+      })
+    ).toBe(
+      `🛂 The "Review the spec" step for **PROJ-7** waits for an approval: add the label "plan-approved" to the ticket, or approve it in AgentFlow: ${RUN_URL}`
+    );
+  });
+
+  it("run.needs_input of a plan under review says how to approve or ask for changes", () => {
+    expect(
+      buildSummaryMarkdown({
+        ...baseSummary,
+        event: WorkflowRunEvent.NeedsInput,
+        step: {
+          id: "plan",
+          name: "Plan",
+          questions: [],
+          awaitingApproval: false,
+          review: {
+            round: 2,
+            planStep: true,
+            goOnLabels: ["plan-approved"],
+            feedbackLabels: ["replan"],
+            mention: true,
+          },
+        },
+      })
+    ).toBe(
+      [
+        `🔎 The plan for **PROJ-7** is ready for review (round 2): ${PLAN_URL}`,
+        'Approve it by adding the label "plan-approved".',
+        'To ask for changes, comment with the changes you want and mention the bot, or add the label "replan".',
+        `Or decide in AgentFlow: ${RUN_URL}`,
+      ].join("\n\n")
     );
   });
 
@@ -468,12 +519,17 @@ describe("buildRunSnapshot", () => {
     expect(snapshot?.repositories).toEqual([]);
   });
 
-  it("shows pre actions the run before the agent team: no documents, no PR", async () => {
+  it("gives pre actions the documents imported before them, but no step", async () => {
     mocks.findUnique.mockResolvedValue({
       ...runRow(),
       status: WorkflowRunStatus.PreActions,
+      prUrl: null,
+      branchName: null,
+      stepId: "plan",
       completedAt: null,
     });
+    mocks.getLatest.mockResolvedValue({ content: "" });
+    mocks.findLatestRunLoop.mockResolvedValue(null);
 
     const snapshot = await buildRunSnapshot(
       "run-1",
@@ -484,14 +540,23 @@ describe("buildRunSnapshot", () => {
       status: WorkflowRunStatus.PreActions,
       event: WorkflowRunEvent.Triggered,
       sourceExtras: { callbackUrl: "https://cb.test" },
-      feature: null,
-      plan: null,
+      feature: {
+        id: "feat-1",
+        url: "https://app.example.test/acme/issues/ISS-1",
+      },
+      plan: { id: "plan-1", url: PLAN_URL, openQuestions: [] },
       pullRequest: null,
+      pullRequests: [],
       step: null,
       summaryMarkdown: `🤖 AgentFlow received **PROJ-7** (Add CSV export) and is about to start working on it. Follow the run: ${RUN_URL}`,
     });
-    expect(mocks.getLatest).not.toHaveBeenCalled();
-    expect(mocks.findLatestRunLoop).not.toHaveBeenCalled();
+    const variables = snapshotTemplateVariables(
+      snapshot ?? expect.fail("snapshot expected")
+    );
+    expect(variables["feature.url"]).toBe(
+      "https://app.example.test/acme/issues/ISS-1"
+    );
+    expect(variables["plan.url"]).toBe(PLAN_URL);
   });
 
   it("exposes the process step the run waits on, with its questions", async () => {
@@ -535,6 +600,8 @@ describe("buildRunSnapshot", () => {
       name: "Clarify",
       questions: ["Hex or RGB?"],
       awaitingApproval: false,
+      approveLabels: [],
+      review: null,
     });
     expect(snapshot?.summaryMarkdown).toContain('The "Clarify" step');
     const variables = snapshotTemplateVariables(
@@ -696,6 +763,64 @@ describe("buildRunSnapshot", () => {
       "https://app.example.test/acme/prds/PRD-12"
     );
     expect(variables["steps.prd.document.title"]).toBe("PRD: Add CSV export");
+  });
+
+  it("exposes the implement step's release notes as releaseNotes, apart from the step documents", async () => {
+    mocks.findUnique.mockResolvedValue({
+      ...runRow(),
+      organizationId: "org-1",
+      planDocument: null,
+      prUrl: null,
+      process: {
+        version: 1,
+        source: "workflow",
+        definition: {
+          toolkit: null,
+          steps: [
+            {
+              type: "agent",
+              id: "implement",
+              name: "Implement",
+              role: "implement",
+              instruction: "/implement {{issue.key}}",
+            },
+          ],
+        },
+      },
+      stepId: "implement",
+    });
+    mocks.listRunDocuments.mockResolvedValue([
+      {
+        id: "notes-1",
+        slug: "DOC-9",
+        title: "Release notes: PROJ-7 Add CSV export",
+        type: ProcessDocumentType.Doc,
+        stepId: "implement.release-notes",
+      },
+    ]);
+    mocks.getLatest.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "notes-1" ? { content: "\n## What changed\nCSV export\n" } : null
+      )
+    );
+
+    const snapshot = await buildRunSnapshot(
+      "run-1",
+      WorkflowRunEvent.ExecuteCompleted
+    );
+
+    expect(snapshot?.documents).toEqual([]);
+    expect(snapshot?.releaseNotes).toEqual({
+      text: "## What changed\nCSV export",
+      url: "https://app.example.test/acme/documents/DOC-9",
+    });
+    const variables = snapshotTemplateVariables(
+      snapshot ?? expect.fail("snapshot expected")
+    );
+    expect(variables.releaseNotes).toBe("## What changed\nCSV export");
+    expect(variables["releaseNotes.url"]).toBe(
+      "https://app.example.test/acme/documents/DOC-9"
+    );
   });
 
   it("has no documents on the built-in flow", async () => {

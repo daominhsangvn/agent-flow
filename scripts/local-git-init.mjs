@@ -1,12 +1,15 @@
 // Prepares Local Git (the `local-git` service of docker-compose.yml, Gitea):
-// creates its admin account, optionally an organization, and prints an access
-// token for the "Local Git" connection (Settings → Integrations →
-// Connections). Idempotent: an existing account and organization are kept;
-// every run issues a new token (revoke old ones in Local Git → Settings →
-// Applications).
+// creates its admin account, optionally an organization, and an access token,
+// and writes the token and addresses into apps/api/.env.local
+// (LOCAL_GIT_SERVER_URL, LOCAL_GIT_RUNNER_URL, LOCAL_GIT_TOKEN and, with
+// --org, LOCAL_GIT_OWNER). After a restart the API provides the "Local Git"
+// connection to every organization: nobody adds it in Settings. Idempotent:
+// an existing account and organization are kept; every run issues a new
+// token (revoke old ones in Local Git → Settings → Applications).
 //
-//   pnpm local-git:init                     # account + token
-//   pnpm local-git:init --org my-team       # also an organization
+//   pnpm local-git:init                     # account + token, written to the API env
+//   pnpm local-git:init --org my-team       # also an organization (the owner)
+//   pnpm local-git:init --no-env            # print the values, write nothing
 //   pnpm local-git:init --no-token          # account only
 //   pnpm local-git:init --json              # machine-readable output
 //
@@ -16,18 +19,20 @@
 // printed once.
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const LINE_BREAK = /\r?\n/;
 const ENV_LINE = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/;
 const SURROUNDING_QUOTES = /^(["'])(.*)\1$/;
 const TRAILING_SLASHES = /\/+$/;
+const TRAILING_NEWLINES = /\n+$/;
 const TOKEN_SCOPES =
   "write:repository,write:organization,write:user,write:issue";
 const HEALTH_TIMEOUT_MS = 60_000;
 
 const root = path.resolve(import.meta.dirname, "..");
+const apiEnvFile = path.join(root, "apps", "api", ".env.local");
 const env = { ...readDotEnv(path.join(root, ".env")), ...process.env };
 const args = process.argv.slice(2);
 
@@ -38,7 +43,10 @@ const username = env.LOCAL_GIT_ADMIN_USER ?? "agentflow";
 const email = env.LOCAL_GIT_ADMIN_EMAIL ?? `${username}@local-git.invalid`;
 const organization = readOption("--org");
 const wantsToken = !args.includes("--no-token");
+const writesEnv = !args.includes("--no-env");
 const asJson = args.includes("--json");
+// Runners in Docker on this machine reach the host's published port here.
+const runnerUrl = url.replace("localhost", "host.docker.internal");
 
 await waitForHealth();
 const password = createAdmin();
@@ -46,7 +54,8 @@ const token = wantsToken ? createToken() : null;
 if (organization && token) {
   await createOrganization(organization, token);
 }
-report({ password, token });
+const envWritten = token && writesEnv ? writeApiEnv(token) : false;
+report({ password, token, envWritten });
 
 async function waitForHealth() {
   const deadline = Date.now() + HEALTH_TIMEOUT_MS;
@@ -146,17 +155,79 @@ function report(created) {
   if (!created.token) {
     return;
   }
+  if (created.envWritten) {
+    console.log(
+      `\nWrote LOCAL_GIT_SERVER_URL, LOCAL_GIT_RUNNER_URL, LOCAL_GIT_TOKEN${organization ? " and LOCAL_GIT_OWNER" : ""} to ${path.relative(root, apiEnvFile)}.`
+    );
+    console.log(
+      "Restart the API: every organization then has the Local Git connection (Settings → Connections); nobody adds it."
+    );
+    console.log(
+      `  Runner URL is ${runnerUrl} (runners in Docker on this machine); change LOCAL_GIT_RUNNER_URL when runners reach Local Git elsewhere.`
+    );
+    return;
+  }
   console.log(
-    "\nAdd the connection in AgentFlow: Settings → Integrations → Connections → Local Git"
+    `\nSet these in ${path.relative(root, apiEnvFile)} and restart the API, so every organization has the Local Git connection:`
   );
-  console.log(`  Server URL    ${url}`);
+  console.log(`  LOCAL_GIT_SERVER_URL="${url}"`);
   console.log(
-    `  Runner URL    ${url.replace("localhost", "host.docker.internal")}  (runners in Docker on this machine; empty when runners reach the server URL)`
+    `  LOCAL_GIT_RUNNER_URL="${runnerUrl}"  (runners in Docker on this machine; empty when runners reach the server URL)`
   );
-  console.log(`  Access token  ${created.token}`);
+  console.log(`  LOCAL_GIT_TOKEN="${created.token}"`);
   console.log(
-    `  Owner         ${organization ?? "(empty: new repositories go to this account)"}`
+    `  LOCAL_GIT_OWNER="${organization ?? ""}"  (empty: new repositories go to this account)`
   );
+}
+
+/**
+ * Sets the LOCAL_GIT_* keys of the API's .env.local (replacing their lines,
+ * or appending them); false when the file does not exist yet.
+ */
+function writeApiEnv(accessToken) {
+  let text;
+  try {
+    text = readFileSync(apiEnvFile, "utf8");
+  } catch {
+    return false;
+  }
+  const values = {
+    LOCAL_GIT_SERVER_URL: url,
+    LOCAL_GIT_RUNNER_URL: runnerUrl,
+    LOCAL_GIT_TOKEN: accessToken,
+  };
+  if (organization) {
+    values.LOCAL_GIT_OWNER = organization;
+  }
+  const lines = text.split(LINE_BREAK);
+  const missing = [];
+  for (const [key, value] of Object.entries(values)) {
+    const line = `${key}="${value}"`;
+    const index = lines.findIndex(
+      (candidate) => ENV_LINE.exec(candidate)?.[1] === key
+    );
+    if (index === -1) {
+      missing.push(line);
+    } else {
+      lines[index] = line;
+    }
+  }
+  if (missing.length > 0) {
+    while (lines.length > 0 && lines.at(-1) === "") {
+      lines.pop();
+    }
+    lines.push(
+      "",
+      "# Local Git (docker-compose `local-git`): the API gives every organization",
+      "# its connection. Written by `pnpm local-git:init`.",
+      ...missing
+    );
+  }
+  writeFileSync(
+    apiEnvFile,
+    `${lines.join("\n").replace(TRAILING_NEWLINES, "")}\n`
+  );
+  return true;
 }
 
 function gitea(giteaArgs) {

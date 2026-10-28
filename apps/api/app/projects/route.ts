@@ -6,7 +6,6 @@ import {
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
-  badRequestResponse,
   errorResponse,
   parseBody,
   parseQueryParams,
@@ -14,15 +13,14 @@ import {
 } from "@/lib/route-utils";
 import { customFieldValuesService } from "../custom-fields/values-service";
 import { parseProjectStatuses } from "./project-route-helpers";
-import { InvalidProjectTeamsError, projectsService } from "./service";
+import { projectsService } from "./service";
 import { createProjectValidator } from "./validators";
 
 /**
  * GET /projects - List all projects
  * Accepts API key authentication (sk_live_) or Clerk session authentication.
  * Query params:
- *   - teamId: Filter by team
- *   - limit: Maximum number of projects to return (1-100, only applies when teamId is provided)
+ *   - limit: Maximum number of projects to return (1-100)
  *   - status: Optional project status filter (comma-delimited)
  *   - excludeStatus: Optional excluded project status filter (comma-delimited)
  */
@@ -31,7 +29,6 @@ export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
     try {
       const querySchema = z
         .object({
-          teamId: z.string().optional(),
           limit: z.coerce.number().int().positive().max(100).optional(),
           status: z.string().optional(),
           excludeStatus: z.string().optional(),
@@ -46,7 +43,7 @@ export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
         return queryError;
       }
 
-      const { teamId, limit, status, excludeStatus } = params;
+      const { limit, status, excludeStatus } = params;
       const statusFilter = parseProjectStatuses(status);
       const excludeStatusFilter = parseProjectStatuses(excludeStatus);
 
@@ -64,17 +61,10 @@ export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
           : {}),
       };
 
-      // Determine which service method to call based on parameters
-      const projects = teamId
-        ? await projectsService.findByTeam(
-            teamId,
-            user.organizationId,
-            listOptions
-          )
-        : await projectsService.findByOrganization(
-            user.organizationId,
-            listOptions
-          );
+      const projects = await projectsService.findByOrganization(
+        user.organizationId,
+        listOptions
+      );
 
       // Batch-load custom field values for all projects in a single query
       const projectIds = projects.map((p) => p.id);
@@ -144,9 +134,6 @@ export const POST = withAnyAuth<ProjectWithDetails, "/projects">(
 
       return successResponse(projectWithDetails);
     } catch (error) {
-      if (error instanceof InvalidProjectTeamsError) {
-        return badRequestResponse(error.message);
-      }
       return errorResponse("Failed to create project", error);
     }
   },

@@ -30,7 +30,6 @@ export const createProjectValidator = z.object({
     .nullable()
     .optional()
     .transform(transformIsoDateTime),
-  teamIds: z.array(z.uuid()).optional(),
 });
 
 export const updateProjectValidator = z.object({
@@ -44,7 +43,6 @@ export const updateProjectValidator = z.object({
     .nullable()
     .optional()
     .transform(transformIsoDateTime),
-  teamIds: z.array(z.uuid()).optional(),
   settings: projectSettingsBodyValidator.optional(),
   codebaseSummary: z.string().nullable().optional(),
   lastIndexedAt: z.iso

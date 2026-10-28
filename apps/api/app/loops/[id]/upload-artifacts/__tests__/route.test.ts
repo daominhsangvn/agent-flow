@@ -30,6 +30,11 @@ vi.mock("@/lib/route-utils", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/loops/loop-state", () => ({
+  getLoopPrefix: (org: string, loop: string) => `${org}/loops/${loop}/`,
+  putLoopAttachment: vi.fn(),
+}));
+
 // --- Imports (after mocks) ---
 
 import {
@@ -141,6 +146,60 @@ describe("POST /api/loops/:id/upload-artifacts — auth and storage", () => {
       loopId,
       orgId,
       expect.objectContaining({ plan: { content: "# Plan content" } })
+    );
+  });
+
+  it("stores step attachment bytes and persists no data", async () => {
+    vi.mocked(authenticateLoopRunnerRequest).mockResolvedValue({
+      loopId,
+      organizationId: orgId,
+      tokenId: "jti-valid",
+    });
+    vi.mocked(loopsService.updateUploadedArtifacts).mockResolvedValue(1);
+    vi.mocked(loopsService.findById).mockResolvedValue(null);
+
+    const request = new Request(
+      `http://localhost/api/loops/${loopId}/upload-artifacts`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer runner-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          artifacts: {
+            step: {
+              attachments: [
+                {
+                  path: "PRD-1.md",
+                  size: 2,
+                  data: Buffer.from("hi").toString("base64"),
+                },
+              ],
+            },
+          },
+        }),
+      }
+    );
+    const response = await POST(request, {
+      params: Promise.resolve({ id: loopId }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(loopsService.updateUploadedArtifacts).toHaveBeenCalledWith(
+      loopId,
+      orgId,
+      {
+        step: {
+          attachments: [
+            {
+              path: "PRD-1.md",
+              size: 2,
+              storageKey: `${orgId}/loops/${loopId}/step-attachments/0-PRD-1.md`,
+            },
+          ],
+        },
+      }
     );
   });
 });

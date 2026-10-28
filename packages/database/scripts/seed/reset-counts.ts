@@ -284,30 +284,6 @@ export async function getResetModelCounts(
       query: prisma.artifact.count({ where: { organizationId } }),
     },
     {
-      name: "TeamRepository",
-      query: prisma.teamRepository.count({
-        where: { teamId: { in: scope.teamIds } },
-      }),
-    },
-    {
-      name: "ProjectTeam",
-      query: prisma.projectTeam.count({
-        where: {
-          OR: [
-            { teamId: { in: scope.teamIds } },
-            { projectId: { in: scope.projectIds } },
-          ],
-        },
-      }),
-    },
-    {
-      name: "TeamMember",
-      query: prisma.teamMember.count({
-        where: { teamId: { in: scope.teamIds } },
-      }),
-    },
-    { name: "Team", query: prisma.team.count({ where: { organizationId } }) },
-    {
       name: "Project",
       query: prisma.project.count({ where: { organizationId } }),
     },

@@ -4,7 +4,6 @@ const {
   mockGetCommandById,
   mockHeartbeat,
   mockIngestCommandEvent,
-  mockIsAgentSessionSyncSupportedForUser,
   mockIsDirectDesktopAuthSigningEligible,
   mockListNonTerminal,
   mockRegister,
@@ -15,7 +14,6 @@ const {
   mockGetCommandById: vi.fn(),
   mockHeartbeat: vi.fn(),
   mockIngestCommandEvent: vi.fn(),
-  mockIsAgentSessionSyncSupportedForUser: vi.fn(),
   mockIsDirectDesktopAuthSigningEligible: vi.fn(),
   mockListNonTerminal: vi.fn(),
   mockRegister: vi.fn(),
@@ -71,10 +69,6 @@ vi.mock("../compute-target-signing-eligibility", async (importOriginal) => ({
     typeof import("../compute-target-signing-eligibility")
   >()),
   isDirectDesktopAuthSigningEligible: mockIsDirectDesktopAuthSigningEligible,
-}));
-
-vi.mock("../agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: mockIsAgentSessionSyncSupportedForUser,
 }));
 
 vi.mock("../desktop-agent-sessions-handler", () => ({
@@ -145,7 +139,6 @@ describe("handleSocketConnection command telemetry context", () => {
       status: CommandSigningEligibilityStatus.Ineligible,
       reason: "missing_gateway",
     });
-    mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(false);
     mockIngestCommandEvent.mockResolvedValue({
       accepted: true,
       duplicate: false,
@@ -211,7 +204,6 @@ describe("handleSocketConnection command telemetry context", () => {
     mockIsDirectDesktopAuthSigningEligible.mockResolvedValue({
       status: CommandSigningEligibilityStatus.Eligible,
     });
-    mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(true);
     handleSocketConnection(socket as never);
 
     await handlers.get("desktop.hello")?.({

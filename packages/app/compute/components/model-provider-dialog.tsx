@@ -1,7 +1,9 @@
 "use client";
 
 import {
+  ClaudeCodeVersionChannel,
   type ComputeTargetModelProvider,
+  claudeCodeVersionSchema,
   ModelProviderMode,
   type UpdateComputeTargetModelProviderInput,
 } from "@repo/api/src/types/compute-target-model-provider";
@@ -100,7 +102,14 @@ function ModelProviderForm({
   );
   const [importText, setImportText] = useState("");
   const [importMessage, setImportMessage] = useState<string | null>(null);
+  const [claudeCodeVersion, setClaudeCodeVersion] = useState(
+    initial.claudeCodeVersion
+  );
   const isCustom = mode === ModelProviderMode.Custom;
+  // A blank field means the default, the latest release.
+  const version = claudeCodeVersionSchema.safeParse(
+    claudeCodeVersion.trim() || ClaudeCodeVersionChannel.Latest
+  );
 
   const handleImport = () => {
     const imported = importClaudeSettings(importText);
@@ -140,6 +149,7 @@ function ModelProviderForm({
               .map((row) => [row.key.trim(), row.value])
           )
         : {},
+      claudeCodeVersion: version.data ?? ClaudeCodeVersionChannel.Latest,
     };
     if (clearToken) {
       input.token = null;
@@ -267,11 +277,41 @@ function ModelProviderForm({
         </>
       ) : null}
 
+      <div className="space-y-1.5">
+        <Label htmlFor="model-provider-claude-code-version">
+          Claude Code version
+        </Label>
+        <Input
+          aria-invalid={version.success ? undefined : true}
+          className="font-mono"
+          id="model-provider-claude-code-version"
+          onChange={(event) => setClaudeCodeVersion(event.target.value)}
+          placeholder={ClaudeCodeVersionChannel.Latest}
+          value={claudeCodeVersion}
+        />
+        {version.success ? (
+          <p className="text-muted-foreground text-xs">
+            <code>latest</code> or a release such as <code>2.1.296</code>. A
+            headless runner installs it before its next loop and runs
+            <code> claude </code> with it; the desktop app keeps its own Claude
+            Code.
+          </p>
+        ) : (
+          <p className="text-destructive text-xs">
+            {version.error.issues[0]?.message}
+          </p>
+        )}
+      </div>
+
       <DialogFooter>
         <Button onClick={onClose} type="button" variant="outline">
           Cancel
         </Button>
-        <Button disabled={update.isPending} onClick={handleSave} type="button">
+        <Button
+          disabled={update.isPending || !version.success}
+          onClick={handleSave}
+          type="button"
+        >
           Save
         </Button>
       </DialogFooter>

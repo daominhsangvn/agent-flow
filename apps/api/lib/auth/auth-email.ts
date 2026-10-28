@@ -1,14 +1,13 @@
 import "server-only";
 
 import { log } from "@repo/observability/log";
-import { createTransport, type Transporter } from "nodemailer";
+import { isMailConfigured, sendMail } from "@/lib/mail-transport";
 
 /**
- * Transactional mail for authentication flows (invitations, password resets).
- *
- * Sent over plain SMTP from `SMTP_URL` (Mailpit from docker-compose.yml in
- * development, any relay in production). Without `SMTP_URL` the message is
- * logged instead, so a local install still exposes the link.
+ * Transactional mail for authentication flows (invitations, password resets),
+ * sent through the server's mail relay (lib/mail-transport.ts). Without
+ * `SMTP_URL` the message is logged instead, so a local install still exposes
+ * the link.
  */
 
 type AuthEmail = {
@@ -17,11 +16,8 @@ type AuthEmail = {
   text: string;
 };
 
-let transporter: Transporter | null = null;
-
 export async function sendAuthEmail(email: AuthEmail): Promise<void> {
-  const smtpUrl = process.env.SMTP_URL;
-  if (!smtpUrl) {
+  if (!isMailConfigured()) {
     log.info("[auth-email] SMTP_URL not set; email not sent", {
       to: email.to,
       subject: email.subject,
@@ -29,13 +25,7 @@ export async function sendAuthEmail(email: AuthEmail): Promise<void> {
     });
     return;
   }
-  transporter ??= createTransport(smtpUrl);
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM ?? "AgentFlow <no-reply@localhost>",
-    to: email.to,
-    subject: email.subject,
-    text: email.text,
-  });
+  await sendMail(email);
 }
 
 export function sendInvitationEmail(params: {

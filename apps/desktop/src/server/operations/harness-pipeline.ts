@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { LoopHarness } from "@agentflow-ai/loops-api/desktop-request";
+import { bashCommand, toShellPath } from "../platform-shell.js";
 import { getBundledPluginDir } from "./bundled-plugins.js";
 import {
   CommandPackLaunchMode,
@@ -16,6 +17,11 @@ import { findPluginVersions, getPluginCacheRoot } from "./plugin-cache.js";
 /** Single-quotes a value for bash. */
 export function shellEscape(value: string): string {
   return `'${value.replaceAll("'", String.raw`'\''`)}'`;
+}
+
+/** Single-quotes a file path for bash, in the form bash uses (toShellPath). */
+function shellEscapePath(value: string): string {
+  return shellEscape(toShellPath(value));
 }
 
 /**
@@ -69,30 +75,36 @@ export function buildClaudePipeline(
 
   // Build the claude command with properly escaped args
   const escapedArgs = claudeArgs.map(shellEscape).join(" ");
-  const escapedBinary = shellEscape(claudeBinary);
+  const escapedBinary = shellEscapePath(claudeBinary);
   const claudeCmd = stdinFile
-    ? `${escapedBinary} ${escapedArgs} < ${shellEscape(stdinFile)}`
+    ? `${escapedBinary} ${escapedArgs} < ${shellEscapePath(stdinFile)}`
     : `${escapedBinary} ${escapedArgs}`;
 
   if (formatter) {
     // Full pipeline matching run-loop.sh:
     // claude ... 2>stderr | grep JSON | tee jsonl | formatter
     const pipeline = [
-      `${claudeCmd} 2>${shellEscape(stderrFile)}`,
+      `${claudeCmd} 2>${shellEscapePath(stderrFile)}`,
       "grep --line-buffered '^{'",
-      `tee -a ${shellEscape(jsonlFile)}`,
-      `python3 ${shellEscape(formatter)}`,
+      `tee -a ${shellEscapePath(jsonlFile)}`,
+      `python3 ${shellEscapePath(formatter)}`,
     ].join(" | ");
-    return { cmd: "bash", args: ["-c", `${pipeline}; exit \${PIPESTATUS[0]}`] };
+    return {
+      cmd: bashCommand(),
+      args: ["-c", `${pipeline}; exit \${PIPESTATUS[0]}`],
+    };
   }
 
   // No formatter — wrap in bash pipeline so grep|tee still writes claude-output.jsonl
   const pipeline = [
-    `${claudeCmd} 2>${shellEscape(stderrFile)}`,
+    `${claudeCmd} 2>${shellEscapePath(stderrFile)}`,
     "grep --line-buffered '^{'",
-    `tee -a ${shellEscape(jsonlFile)}`,
+    `tee -a ${shellEscapePath(jsonlFile)}`,
   ].join(" | ");
-  return { cmd: "bash", args: ["-c", `${pipeline}; exit \${PIPESTATUS[0]}`] };
+  return {
+    cmd: bashCommand(),
+    args: ["-c", `${pipeline}; exit \${PIPESTATUS[0]}`],
+  };
 }
 
 export type SupportedRuntimeSelection = Extract<RuntimeSelection, { ok: true }>;
@@ -105,24 +117,27 @@ function buildCodexPromptPipeline(
   const stderrFile = path.join(claudeWorkDir, "claude-stderr.log");
   const jsonlFile = path.join(claudeWorkDir, "claude-output.jsonl");
   const codexCmd = [
-    shellEscape(codexBinary),
+    shellEscapePath(codexBinary),
     "exec",
     "--full-auto",
     "--json",
     "-",
     "<",
-    shellEscape(promptFile),
+    shellEscapePath(promptFile),
   ].join(" ");
   // Tee the Codex `--json` event stream to claude-output.jsonl (mirrors the
   // Claude pipeline) so the output tailer + native observability adapter can
   // read it. `grep '^{'` keeps only JSON event lines; PIPESTATUS[0] preserves
   // Codex's exit code through the pipeline.
   const pipeline = [
-    `${codexCmd} 2>${shellEscape(stderrFile)}`,
+    `${codexCmd} 2>${shellEscapePath(stderrFile)}`,
     "grep --line-buffered '^{'",
-    `tee -a ${shellEscape(jsonlFile)}`,
+    `tee -a ${shellEscapePath(jsonlFile)}`,
   ].join(" | ");
-  return { cmd: "bash", args: ["-c", `${pipeline}; exit \${PIPESTATUS[0]}`] };
+  return {
+    cmd: bashCommand(),
+    args: ["-c", `${pipeline}; exit \${PIPESTATUS[0]}`],
+  };
 }
 
 export function buildNativePromptPipeline(

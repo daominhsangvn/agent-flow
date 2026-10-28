@@ -1,5 +1,4 @@
 import { render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({
@@ -9,24 +8,18 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock(
-  "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-document-modal",
+  "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/create-document-modal",
   () => ({
     CreateDocumentModal: () => <div data-testid="create-document-modal" />,
   })
 );
 
 vi.mock(
-  "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-issue-modal",
+  "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/create-issue-modal",
   () => ({
     CreateIssueModal: () => <div data-testid="create-issue-modal" />,
   })
 );
-
-vi.mock("@/app/(authenticated)/[orgSlug]/teams/components/team-modal", () => ({
-  TeamModal: ({ trigger }: { trigger: ReactNode }) => (
-    <div data-testid="team-modal">{trigger}</div>
-  ),
-}));
 
 // Import after mocks
 import { makeProject } from "@repo/app/shared/test-fixtures/project";
@@ -42,29 +35,28 @@ const OPEN_AN_ISSUE_COPY = /open an issue/i;
 const DESCRIBE_WHAT_YOU_WANT_BUILT_COPY = /describe what you want built/i;
 
 describe("MyTasksEmptyState — no project context", () => {
-  it("renders a 'Create a Team' action that opens the team modal", () => {
+  it("renders a 'Create a project' link to the org projects page", () => {
     render(<MyTasksEmptyState projects={[]} />);
 
-    expect(screen.getByTestId("team-modal")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Create a Team" })
-    ).toBeInTheDocument();
+      screen.getByRole("link", { name: "Create a project" })
+    ).toHaveAttribute("href", "/test-org/projects");
   });
 
-  it("does not link to the non-existent /teams route", () => {
-    const { container } = render(<MyTasksEmptyState projects={[]} />);
+  it("does not render the create-project link when project context exists", () => {
+    render(<MyTasksEmptyState projects={[makeProject()]} />);
 
-    // The old empty state linked to /{orgSlug}/teams, which has no page and
-    // 404s on RSC prefetch. The team-creation modal replaces that dead link.
     expect(
-      container.querySelector('a[href$="/teams"]')
+      screen.queryByRole("link", { name: "Create a project" })
     ).not.toBeInTheDocument();
   });
 
-  it("does not render the team-creation action when project context exists", () => {
+  it("shows the create buttons for a project", () => {
     render(<MyTasksEmptyState projects={[makeProject()]} />);
 
-    expect(screen.queryByTestId("team-modal")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Create PRD" })
+    ).toBeInTheDocument();
   });
 
   it("renders both create paths as buttons in the empty-state action slot", () => {
@@ -87,13 +79,13 @@ describe("MyTasksEmptyState — no project context", () => {
     ).toContainElement(screen.getByRole("button", { name: "Create Issue" }));
   });
 
-  it("does not promise create paths the no-team branch has no button for", () => {
+  it("does not promise create paths the no-project branch has no button for", () => {
     render(<MyTasksEmptyState projects={[]} />);
 
-    // The only action here is team creation, so the copy must not tell the
+    // The only action here is project creation, so the copy must not tell the
     // user to describe what they want built or open an issue.
     expect(
-      screen.getByText("Create a team to start assigning work.")
+      screen.getByText("Create a project to start assigning work.")
     ).toBeInTheDocument();
     expect(screen.queryByText(OPEN_AN_ISSUE_COPY)).not.toBeInTheDocument();
     expect(
@@ -145,12 +137,12 @@ describe("MyTasksEmptyState — no project context", () => {
 
   it.each([
     ["queue clear", undefined],
-    ["no team", undefined],
+    ["no project", undefined],
     ["recency window", { onShowAll: () => undefined }],
   ] as const)("uses theme tokens, never raw Tailwind palette colors (%s)", (label, recencyWindow) => {
     const { container } = render(
       <MyTasksEmptyState
-        projects={label === "no team" ? [] : [makeProject()]}
+        projects={label === "no project" ? [] : [makeProject()]}
         recencyWindow={recencyWindow}
       />
     );

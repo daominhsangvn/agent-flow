@@ -55,10 +55,13 @@ describe("azureDevOpsProvider", () => {
       AzureDevOpsTriggerType.WorkItemAssigned,
       AzureDevOpsTriggerType.WorkItemTagged,
       AzureDevOpsTriggerType.WorkItemMentioned,
+      AzureDevOpsTriggerType.WorkItemConditions,
     ]);
     expect(azureDevOpsProvider.actions.map((action) => action.key)).toEqual([
       AzureDevOpsActionType.AddComment,
       AzureDevOpsActionType.UpdateState,
+      AzureDevOpsActionType.UpdateTags,
+      AzureDevOpsActionType.AddLink,
       AzureDevOpsActionType.CreatePullRequest,
       AzureDevOpsActionType.RunPipeline,
     ]);

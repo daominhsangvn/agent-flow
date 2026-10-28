@@ -44,7 +44,7 @@ vi.mock("@repo/app/documents/components/table/document-table-toolbar", () => ({
   DocumentTableToolbar: () => <div data-testid="toolbar" />,
 }));
 vi.mock(
-  "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/documents-view",
+  "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/documents-view",
   () => ({
     DocumentsView: (props: Record<string, unknown>) => {
       mocks.documentsViewProps(props);

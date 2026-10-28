@@ -97,6 +97,7 @@ const DATE_REVIVAL_KEY_LIST = [
   "completedAt",
   "createdAt",
   "dateValue",
+  "decidedAt",
   "deletedAt",
   "dueDate",
   "earnedAt",

@@ -24,7 +24,6 @@ import {
 import { type Prisma, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { loadProtectedGateways } from "@/app/compute-targets/protected-gateways";
-import { isAgentSessionSyncSupportedForUser } from "@/lib/agent-session-sync-feature";
 import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
 import {
   CommandSigningEligibilityStatus,
@@ -383,25 +382,19 @@ async function toComputeTargetList(
       const ownerGatewayIds = ownerTargets.flatMap((target) =>
         target.gatewayId ? [target.gatewayId] : []
       );
-      const [signingGatewayResult, agentSessionSync] = await Promise.all([
-        ownerTarget
-          ? loadActiveDesktopManagedGatewayIds({
-              organizationId: ownerTarget.organizationId,
-              userId: ownerUserId,
-              clerkUserId: ownerClerkUserId,
-              gatewayIds: ownerGatewayIds,
-            })
-          : Promise.resolve({
-              status: CommandSigningEligibilityStatus.Ineligible,
-              gatewayIds: new Set<string>(),
-              reason: "owner_not_found" as const,
-            }),
-        isAgentSessionSyncSupportedForUser({
-          userId: ownerUserId,
-          clerkUserId: ownerClerkUserId,
-        }),
-      ]);
-      return [ownerUserId, { signingGatewayResult, agentSessionSync }] as const;
+      const signingGatewayResult = ownerTarget
+        ? await loadActiveDesktopManagedGatewayIds({
+            organizationId: ownerTarget.organizationId,
+            userId: ownerUserId,
+            clerkUserId: ownerClerkUserId,
+            gatewayIds: ownerGatewayIds,
+          })
+        : {
+            status: CommandSigningEligibilityStatus.Ineligible,
+            gatewayIds: new Set<string>(),
+            reason: "owner_not_found" as const,
+          };
+      return [ownerUserId, { signingGatewayResult }] as const;
     }
   );
   const serverCapabilitiesByOwner = new Map(ownerCapabilityEntries);
@@ -414,16 +407,13 @@ async function toComputeTargetList(
       target.gatewayId !== null &&
       target.gatewayId !== undefined &&
       ownerCapabilities.signingGatewayResult.gatewayIds.has(target.gatewayId);
-    const serverCapabilities =
-      ownerCapabilities &&
-      (computeTargetSigning || ownerCapabilities.agentSessionSync)
-        ? {
-            ...(computeTargetSigning ? { computeTargetSigning: true } : {}),
-            ...(ownerCapabilities.agentSessionSync
-              ? { agentSessionSync: true }
-              : {}),
-          }
-        : undefined;
+    // Agent-session sync is always on.
+    const serverCapabilities = ownerCapabilities
+      ? {
+          ...(computeTargetSigning ? { computeTargetSigning: true } : {}),
+          agentSessionSync: true,
+        }
+      : undefined;
     const mapped = toComputeTarget(
       target,
       viewerUserId,

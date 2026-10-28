@@ -1,25 +1,45 @@
 import {
+  WORKFLOW_INSTRUCTION_ACTION_TYPE,
   WorkflowActionRunStatus,
   WorkflowActionStage,
   type WorkflowRunError,
   WorkflowRunErrorCode,
+  WorkflowRunEvent,
+  WorkflowRunStatus,
 } from "@repo/api/src/types/workflow";
+import {
+  WORKFLOW_EMAIL_ACTION_TYPE,
+  WORKFLOW_EMAIL_LABEL,
+} from "@repo/api/src/types/workflow-email";
 import { type WorkflowActionRun, withDb } from "@repo/database";
 import { listIntegrationProviders } from "@/lib/integrations/registry";
-import { requeueStaleActionRuns, runActionRun } from "./actions";
+import {
+  compareActionRunOrder,
+  isFinalActionRunStatus,
+} from "./action-run-order";
+import {
+  advanceActionRun,
+  hasEnabledPreActions,
+  requeueStaleActionRuns,
+} from "./actions";
 import { runError } from "./errors";
+import { type StepOutcome, transition } from "./step-outcome";
 
 /**
  * The pre_actions step of the run state machine (docs/workflows.md "Run state
- * machine"). The pre action runs of the current cycle execute one at a time,
- * in action position order, inline under the run lease, with the executor and
- * retry/backoff rules of the post-action outbox (actions.ts#runActionRun).
+ * machine"). The run enters it from ingesting once the item is imported and
+ * the run's documents exist (enterPreActions), so an instruction's agent has
+ * the run's workspace; it goes back to ingesting when every row is final.
+ * The pre action runs of the current cycle execute one at a time, in action
+ * order, inline under the run lease, with the executor and retry/backoff
+ * rules of the post-action outbox (actions.ts#advanceActionRun).
  *
  * The first row that is not final decides: due -> execute it now and go on
- * with the next row; waiting for its backoff (or running in a worker that may
- * still be alive) -> stop, the scheduler tick advances the run again later.
- * The run.triggered rows are enqueued due at the transition time, which is
- * the advance's `now`, so a new run executes them in the same call.
+ * with the next row; waiting for its backoff, for its agent (an instruction)
+ * or running in a worker that may still be alive -> stop, the scheduler tick
+ * advances the run again later. The workflow.triggered rows are enqueued due
+ * at the transition time, which is the advance's `now`, so a new run executes
+ * them in the same call.
  * A failed row stops the run unless its action has continueOnError; skipped
  * rows (action removed, connection disabled, not applicable, ...) count as
  * done. Pre rows are never claimed by the outbox drain.
@@ -53,6 +73,37 @@ export type PreActionsContext = {
   /** Extends the run lease before an execution; false when the lease was lost. */
   renewLease(): Promise<boolean>;
 };
+
+/**
+ * From ingesting: the outcome that runs this cycle's workflow.triggered
+ * actions first (enqueuing them the first time), or null when they are done
+ * or the workflow has none.
+ */
+export async function enterPreActions(run: {
+  id: string;
+  organizationId: string;
+  workflowId: string;
+  cycle: number;
+}): Promise<StepOutcome | null> {
+  const rows = await withDb((db) =>
+    db.workflowActionRun.findMany({
+      where: {
+        runId: run.id,
+        cycle: run.cycle,
+        stage: WorkflowActionStage.Pre,
+      },
+      select: { status: true },
+    })
+  );
+  if (rows.length > 0) {
+    return rows.every((row) => isFinalActionRunStatus(row.status))
+      ? null
+      : transition(WorkflowRunStatus.PreActions);
+  }
+  return (await hasEnabledPreActions(run))
+    ? transition(WorkflowRunStatus.PreActions, [WorkflowRunEvent.Triggered])
+    : null;
+}
 
 export async function runPreActions(
   context: PreActionsContext
@@ -96,30 +147,28 @@ type PreActionRow = WorkflowActionRun & {
   action: { position: number; continueOnError: boolean } | null;
 };
 
-const FINAL_ACTION_RUN_STATUSES: ReadonlySet<string> = new Set<string>([
-  WorkflowActionRunStatus.Succeeded,
-  WorkflowActionRunStatus.Failed,
-  WorkflowActionRunStatus.Skipped,
-]);
-
 const WAIT_ROW: RowState = { kind: RowStateKind.Wait };
 
-/** A final row as it is, a due pending row executed now, anything else waits. */
+/**
+ * A final row as it is; a due pending row executed now and a waiting one
+ * checked (under a renewed lease); anything else waits.
+ */
 async function settlePreActionRun(
   row: PreActionRow,
   context: PreActionsContext
 ): Promise<RowState> {
-  if (FINAL_ACTION_RUN_STATUSES.has(row.status)) {
+  if (isFinalActionRunStatus(row.status)) {
     return finalRow(row.status, row.lastError);
   }
   const due =
     row.status === WorkflowActionRunStatus.Pending &&
     row.nextAttemptAt.getTime() <= context.now.getTime();
-  if (!(due && (await context.renewLease()))) {
+  const actionable = due || row.status === WorkflowActionRunStatus.Waiting;
+  if (!(actionable && (await context.renewLease()))) {
     return WAIT_ROW;
   }
-  const settlement = await runActionRun(row, context.now);
-  if (!settlement || settlement.status === WorkflowActionRunStatus.Pending) {
+  const settlement = await advanceActionRun(row, context.now);
+  if (!(settlement && isFinalActionRunStatus(settlement.status))) {
     return WAIT_ROW;
   }
   return finalRow(settlement.status, settlement.lastError);
@@ -133,7 +182,7 @@ function finalRow(status: string, lastError: string | null): RowState {
   };
 }
 
-/** This cycle's pre rows in action position order; removed actions last. */
+/** This cycle's pre rows in action order; removed actions last. */
 async function listPreActionRuns(run: {
   id: string;
   cycle: number;
@@ -148,22 +197,9 @@ async function listPreActionRuns(run: {
       include: {
         action: { select: { position: true, continueOnError: true } },
       },
-      orderBy: { createdAt: "asc" },
     })
   );
-  return [...rows].sort(comparePreActionRows);
-}
-
-function comparePreActionRows(left: PreActionRow, right: PreActionRow) {
-  if (left.action && right.action) {
-    const byPosition = left.action.position - right.action.position;
-    if (byPosition !== 0) {
-      return byPosition;
-    }
-  } else if (left.action || right.action) {
-    return left.action ? -1 : 1;
-  }
-  return left.createdAt.getTime() - right.createdAt.getTime();
+  return [...rows].sort(compareActionRunOrder);
 }
 
 /** A pre action removed from the workflow no longer blocks the run. */
@@ -183,6 +219,12 @@ function preActionError(
 
 /** Display name of the action type from the registry, else the type key. */
 function actionDisplayName(actionType: string): string {
+  if (actionType === WORKFLOW_INSTRUCTION_ACTION_TYPE) {
+    return "Instruction";
+  }
+  if (actionType === WORKFLOW_EMAIL_ACTION_TYPE) {
+    return WORKFLOW_EMAIL_LABEL;
+  }
   for (const provider of listIntegrationProviders()) {
     const action = provider.actions.find((entry) => entry.key === actionType);
     if (action) {

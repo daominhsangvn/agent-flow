@@ -1,11 +1,17 @@
-import {
-  type IntegrationActionSummary,
-  type IntegrationConnection,
-  IntegrationProviderKey,
-  type IntegrationProviderSummary,
-  type IntegrationTriggerSummary,
+import type {
+  IntegrationActionSummary,
+  IntegrationProviderSummary,
+  IntegrationTriggerSummary,
 } from "@repo/api/src/types/integration";
-import type { WorkflowTrigger } from "@repo/api/src/types/workflow";
+import {
+  WORKFLOW_INSTRUCTION_ACTION_TYPE,
+  type WorkflowTrigger,
+} from "@repo/api/src/types/workflow";
+import {
+  WORKFLOW_EMAIL_ACTION_TYPE,
+  WORKFLOW_EMAIL_LABEL,
+} from "@repo/api/src/types/workflow-email";
+import { WORKFLOW_INSTRUCTION_LABEL } from "./workflow-labels";
 
 /**
  * Lookups over the provider catalog (`GET /integrations/providers`) and the
@@ -18,21 +24,6 @@ export function findProvider(
   providerKey: string
 ): IntegrationProviderSummary | undefined {
   return providers.find((provider) => provider.key === providerKey);
-}
-
-/** The provider of a connection, or undefined when the connection or provider is unknown. */
-export function findConnectionProvider(
-  providers: readonly IntegrationProviderSummary[],
-  connections: readonly IntegrationConnection[],
-  connectionId: string
-): IntegrationProviderSummary | undefined {
-  if (connectionId === BUILT_IN_HTTP_CONNECTION) {
-    return findProvider(providers, IntegrationProviderKey.Webhook);
-  }
-  const connection = connections.find(
-    (candidate) => candidate.id === connectionId
-  );
-  return connection ? findProvider(providers, connection.provider) : undefined;
 }
 
 /** The trigger definition for a trigger type key, searched across every provider. */
@@ -65,30 +56,6 @@ export function findActionDefinition(
   return undefined;
 }
 
-/** Connections whose provider offers at least one trigger. */
-export function getTriggerConnections(
-  providers: readonly IntegrationProviderSummary[],
-  connections: readonly IntegrationConnection[]
-): IntegrationConnection[] {
-  return connections.filter(
-    (connection) =>
-      connection.managedByWorkflowId === null &&
-      (findProvider(providers, connection.provider)?.triggers.length ?? 0) > 0
-  );
-}
-
-/** Connections whose provider offers at least one action (usable as a pre or post action). */
-export function getActionConnections(
-  providers: readonly IntegrationProviderSummary[],
-  connections: readonly IntegrationConnection[]
-): IntegrationConnection[] {
-  return connections.filter(
-    (connection) =>
-      connection.managedByWorkflowId === null &&
-      (findProvider(providers, connection.provider)?.actions.length ?? 0) > 0
-  );
-}
-
 /** Human label of a trigger type, falling back to the raw key for an unknown type. */
 export function getTriggerLabel(
   providers: readonly IntegrationProviderSummary[] | undefined,
@@ -102,6 +69,12 @@ export function getActionLabel(
   providers: readonly IntegrationProviderSummary[] | undefined,
   type: string
 ): string {
+  if (type === WORKFLOW_INSTRUCTION_ACTION_TYPE) {
+    return WORKFLOW_INSTRUCTION_LABEL;
+  }
+  if (type === WORKFLOW_EMAIL_ACTION_TYPE) {
+    return WORKFLOW_EMAIL_LABEL;
+  }
   return findActionDefinition(providers ?? [], type)?.displayName ?? type;
 }
 
@@ -136,9 +109,3 @@ export type ManualRunTrigger = {
   displayName: string;
   manualRun: NonNullable<IntegrationTriggerSummary["manualRun"]>;
 };
-
-/**
- * Form value of a trigger that uses the workflow's own HTTP endpoint. Saved as
- * `connectionId: null`; the API creates the endpoint (URL + secret) on save.
- */
-export const BUILT_IN_HTTP_CONNECTION = "built-in-http";

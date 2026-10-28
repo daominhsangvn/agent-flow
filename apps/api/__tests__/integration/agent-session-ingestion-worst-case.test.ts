@@ -148,8 +148,6 @@ describeIfDb("desktop agent-session worst-case ingestion", () => {
           userId: user.id,
         },
         {
-          isFeatureEnabled: async () => true,
-          isOrgPolicyEnabled: async () => true,
           rateLimiter: new DesktopAgentSessionsRateLimiter(),
           upsertBatch: async (context, parsedPayload) => {
             await withDb.tx((tx) =>

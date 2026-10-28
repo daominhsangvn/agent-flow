@@ -56,7 +56,6 @@ export type SharedAgentSessionsQuery = {
   /** Free-text search over a session's name, repo, and branch (sessions/branches). */
   search?: string;
   userId?: string;
-  teamId?: string;
   projectId?: string;
   /** Multi-select Filter facets (mirror the cloud query); empty/absent = no constraint. */
   statuses?: readonly string[];

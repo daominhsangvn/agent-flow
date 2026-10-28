@@ -2,6 +2,7 @@ import type {
   Workflow,
   WorkflowRunSummary,
 } from "@repo/api/src/types/workflow";
+import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -44,6 +45,10 @@ vi.mock("../workflow-editor", () => ({
   WorkflowEditor: ({ isAdmin }: { isAdmin: boolean }) => (
     <div data-testid="workflow-editor">{isAdmin ? "admin" : "member"}</div>
   ),
+}));
+
+vi.mock("@repo/app/orchestrator/components/orchestrator-case-list", () => ({
+  OrchestratorCaseList: () => <div data-testid="case-list" />,
 }));
 
 vi.mock("../workflow-runs-table", () => ({
@@ -89,6 +94,24 @@ beforeEach(() => {
 });
 
 describe("WorkflowDetailView", () => {
+  it("shows a Cases tab and no Runs tab for an orchestrated workflow", () => {
+    const base = makeWorkflow();
+    mocks.workflow = {
+      ...base,
+      agent: { ...base.agent, mode: WorkflowAgentMode.Orchestrated },
+    };
+    render(
+      <WorkflowDetailView
+        computeTargets={COMPUTE_TARGETS}
+        isAdmin
+        workflowId={WORKFLOW_ID}
+      />
+    );
+
+    expect(screen.getByRole("tab", { name: "Cases" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Runs" })).not.toBeInTheDocument();
+  });
+
   it("shows the workflow summary and its configuration", () => {
     render(
       <WorkflowDetailView

@@ -16,7 +16,6 @@ const mockToastSuccess = vi.fn();
 const mockToastError = vi.fn();
 const mockUserProfile = vi.fn();
 const mockOrganizationProfile = vi.fn();
-const mockSessionSyncPolicyCard = vi.fn();
 const mockIntegrationConnectionsSection = vi.fn();
 
 vi.mock("next/navigation", () => ({
@@ -132,16 +131,6 @@ vi.mock("../session-frustration-card", () => ({
 
 vi.mock("../transcript-search-card", () => ({
   TranscriptSearchCard: () => null,
-}));
-
-// Observable mock: record the props (notably `isAdmin`) and render a probe so a
-// test can assert the Organization tab actually mounts the card with the current
-// admin state — removing the mount or flipping `isAdmin` then fails a test.
-vi.mock("../session-sync-policy-card", () => ({
-  SessionSyncPolicyCard: (props: { isAdmin: boolean }) => {
-    mockSessionSyncPolicyCard(props);
-    return <div data-testid="session-sync-policy-card" />;
-  },
 }));
 
 // Simulate an org admin/owner unless a test overrides it.
@@ -294,7 +283,7 @@ describe("SettingsPage tab list", () => {
     expect(screen.getByText("Admins only")).toBeInTheDocument();
   });
 
-  it("mounts the session-sync policy card on the Organization tab with the admin state (ISS-4563)", () => {
+  it("offers no session-sync toggle on the Organization tab: Sessions are always on", () => {
     render(
       <QueryClientProvider
         client={
@@ -305,26 +294,7 @@ describe("SettingsPage tab list", () => {
       </QueryClientProvider>
     );
 
-    expect(screen.getByTestId("session-sync-policy-card")).toBeInTheDocument();
-    expect(mockSessionSyncPolicyCard).toHaveBeenCalledWith(
-      expect.objectContaining({ isAdmin: true })
-    );
-  });
-
-  it("passes the non-admin state through to the session-sync policy card (ISS-4563)", () => {
-    render(
-      <QueryClientProvider
-        client={
-          new QueryClient({ defaultOptions: { queries: { retry: false } } })
-        }
-      >
-        <SettingsPage initialTab={SettingsTab.Organization} isAdmin={false} />
-      </QueryClientProvider>
-    );
-
-    expect(mockSessionSyncPolicyCard).toHaveBeenCalledWith(
-      expect.objectContaining({ isAdmin: false })
-    );
+    expect(screen.queryByText(SESSION_SYNC_TOGGLE_RE)).toBeNull();
   });
 
   it("labels the compute/integrations tab honestly (FEA-3976)", () => {
@@ -503,3 +473,5 @@ describe("SettingsPage card deep-link fragment", () => {
     expect(screen.getByText("Settings")).toBeInTheDocument();
   });
 });
+
+const SESSION_SYNC_TOGGLE_RE = /sync session data/i;

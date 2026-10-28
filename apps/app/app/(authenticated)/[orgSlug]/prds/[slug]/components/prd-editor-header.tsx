@@ -127,15 +127,12 @@ export function PRDEditorHeader({
     evaluatePrdRunInFlight ||
     requestPrdChangesRunInFlight;
 
-  const breadcrumbs: BreadcrumbEntry[] = prd.project?.teams?.[0]?.id
+  const breadcrumbs: BreadcrumbEntry[] = prd.project?.id
     ? [
-        {
-          label: prd.project.teams[0].name,
-          href: `/${orgSlug}/teams/${prd.project.teams[0].id}/projects`,
-        },
+        { label: "Projects", href: `/${orgSlug}/projects` },
         {
           label: prd.project.name,
-          href: `/${orgSlug}/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`,
+          href: `/${orgSlug}/projects/${prd.project.id}`,
         },
         { label: prd.title },
       ]

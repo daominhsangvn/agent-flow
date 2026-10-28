@@ -76,13 +76,17 @@ The two reusable orchestration procedures — **PLAN_VALIDATION_SEQUENCE** (full
 
 **Rule:** Update state.json at the START of every phase below. This is implied and not repeated per-phase.
 
-**startSha initialization:** At the very start of the run (Phase 3.0, immediately after writing the initial state.json), source startSha — first from config.env, falling back to the current git HEAD of the repo (this command runs single-shot, so HEAD is the pre-implementation baseline used by Phase 5.5 and Phase 6.5):
+**startSha initialization:** At the very start of the run (Phase 3.0, immediately after writing the initial state.json), source startSha and startShas — first from config.env, falling back to the current git HEAD of each repository (this command runs single-shot, so HEAD is the pre-implementation baseline used by Phase 5.5 and Phase 6.5):
 ```bash
 START_SHA=$(grep '^AGENTFLOW_START_SHA=' "$AGENTFLOW_WORKDIR/.agentflow-ai/config.env" 2>/dev/null | cut -d= -f2- | head -n1)
 [ -z "$START_SHA" ] && START_SHA=$(git -C "$AGENTFLOW_WORKDIR" rev-parse HEAD 2>/dev/null || echo "")
+START_SHAS=$(grep '^AGENTFLOW_START_SHAS=' "$AGENTFLOW_WORKDIR/.agentflow-ai/config.env" 2>/dev/null | cut -d= -f2- | head -n1 | tr -d '"')
+ADD_DIRS=$(grep '^AGENTFLOW_ADD_DIRS=' "$AGENTFLOW_WORKDIR/.agentflow-ai/config.env" 2>/dev/null | cut -d= -f2- | head -n1 | tr -d '"')
+[ -z "$START_SHAS" ] && START_SHAS=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/repo-baselines.sh" capture --exclude "$AGENTFLOW_WORKDIR" "$ADD_DIRS" 2>/dev/null || echo "")
 ORIGINAL_ARGS=$(grep '^AGENTFLOW_ORIGINAL_ARGS=' "$AGENTFLOW_WORKDIR/.agentflow-ai/config.env" 2>/dev/null | cut -d= -f2- | head -n1 | tr -d '"')
+echo "START_SHA=$START_SHA"; echo "START_SHAS=$START_SHAS"; echo "ORIGINAL_ARGS=$ORIGINAL_ARGS"
 ```
-Always quote `"$AGENTFLOW_WORKDIR"` in shell snippets to handle workdir paths that contain spaces. Store START_SHA in orchestrator working memory and re-include `"startSha": "$START_SHA"` on every subsequent state.json write — do NOT re-read config.env. If both sources are empty, set `startSha` to `""`. Also hold `ORIGINAL_ARGS` in working memory — use it (per the Resume-command rule above) wherever a resume command names `/code:create-plan` or `/code:execute-implementation`; if empty, fall back to the resolved workdir path.
+Always quote `"$AGENTFLOW_WORKDIR"` in shell snippets to handle workdir paths that contain spaces. Store START_SHA in orchestrator working memory and re-include `"startSha": "$START_SHA"` on every subsequent state.json write — do NOT re-read config.env. If both sources are empty, set `startSha` to `""`. Hold `START_SHAS` as `startShas` (`""` when empty; it is not written to state.json): the git baselines of the run's other repositories (`--add-dir`), `<repository root>=<sha>` entries joined by `|`. On a workspace run (the work directory is in a project workspace, which is not a repository) `startSha` is `""` and `startShas` holds the baseline of every repository. Also hold `ORIGINAL_ARGS` in working memory — use it (per the Resume-command rule above) wherever a resume command names `/code:create-plan` or `/code:execute-implementation`; if empty, fall back to the resolved workdir path.
 
 Here are the key phases you must complete:
 
@@ -145,16 +149,17 @@ NOTE: These are the only valid skip conditions, and they mirror plan-writer's de
 **Setup (values from orchestrator working memory and last plan-validate output -- no file reads):**
 - `decisionTablePath` = `decision_table_path` field from last `code:plan-validate` skill output
 - `startSha` = value held in orchestrator working memory since Phase 3.0
+- `startShas` = value held in orchestrator working memory since Phase 3.0
 - Set `dt_attempt = 0`, `dt_max_attempts = 5`, `dt_status = "pending"`, `dt_any_clarifications = false`, `dt_last_failure_reason = ""`.
 - Telemetry counters: `dt_drift_kind_counts = {"code_drift": 0, "test_drift": 0, "plan_ambiguity": 0}`, `dt_fixes_attempted = 0`, `dt_parse_failures = 0`, `dt_verifier_invocations = 0`, `dt_phase_start_iso = $(date -u +%Y-%m-%dT%H:%M:%SZ)`, `dt_phase_start_epoch_ms = $(($(date +%s) * 1000))`.
 
-If `startSha` is `""` in orchestrator working memory (no git context): log warning "startSha unavailable, skipping Phase 5.5", mark `completed`, skip to Phase 6.
+If `startSha` and `startShas` are both `""` in orchestrator working memory (no git context): log warning "No git baseline (startSha and startShas empty), skipping Phase 5.5", mark `completed`, skip to Phase 6. A workspace run has `startSha` `""` and its repositories' baselines in `startShas`: it does NOT skip.
 
 If `decisionTablePath` is `""` (no decision-table artifact in the plan): set `dt_status = "verification_failed"`. Launch haiku subagent (description: `"plan-editor"`): "In $AGENTFLOW_WORKDIR/plan.json, set decisionTable.status to 'verification_failed' if the field exists." Execute **AWAITING_USER_SEQUENCE** with: phase="Phase 5.5: Behavioral Verification", reason="Decision-table artifact path is missing from plan.json. The plan may have been created without one.", file="$AGENTFLOW_WORKDIR/plan.json", command="/code:create-plan <ORIGINAL_ARGS>". Tell the user: "plan.json has no decision-table pointer. Re-run /code:create-plan to regenerate the plan, then re-run /code:execute-implementation." **HARD STOP.**
 
 **Verification loop:**
 1. Increment `dt_attempt`. **Step 1 is the sole site that increments `dt_attempt`.** Then check: if `dt_attempt > dt_max_attempts`, set `dt_status = "verification_failed"`. Launch haiku subagent (description: `"plan-editor"`): "In $AGENTFLOW_WORKDIR/plan.json, set decisionTable.status to 'verification_failed'." Determine the escalation reason from `dt_last_failure_reason`: if `"unparseable"`, use reason=`behavior-verifier output unparseable after $dt_max_attempts attempts`; otherwise use reason=`Behavioral drift detected after $dt_max_attempts verification attempts`. Execute **AWAITING_USER_SEQUENCE** with: phase="Phase 5.5: Behavioral Verification", reason=<determined above>, file="$AGENTFLOW_WORKDIR/$decisionTablePath", command="/code:execute-implementation <ORIGINAL_ARGS>". **HARD STOP.**
-2. Launch @code:behavior-verifier with prompt: "WORKDIR=$AGENTFLOW_WORKDIR. DECISION_TABLE_PATH=$AGENTFLOW_WORKDIR/$decisionTablePath. START_SHA=$startSha. Verify final code against the decision-table artifact. Report only; do not fix code or tests." Increment `dt_verifier_invocations` by 1.
+2. Launch @code:behavior-verifier with prompt: "WORKDIR=$AGENTFLOW_WORKDIR. DECISION_TABLE_PATH=$AGENTFLOW_WORKDIR/$decisionTablePath. START_SHA=$startSha. START_SHAS=$startShas. Verify final code against the decision-table artifact. Report only; do not fix code or tests." Increment `dt_verifier_invocations` by 1.
 3. Parse verifier output:
    - If `ALIGNED` (first line of output is `ALIGNED`):
      - If `dt_any_clarifications = true`: set `dt_status = "aligned_with_clarifications"`. Launch haiku subagent (description: `"plan-editor"`): "In $AGENTFLOW_WORKDIR/plan.json, set decisionTable.status to 'aligned_with_clarifications'."
@@ -239,6 +244,7 @@ The review/fix skills self-verify and own their own diffs — do NOT hand-edit f
 **PHASE 7: LOGGING AND COMPLETION**
 
 - Append a summary of all changes made to $AGENTFLOW_WORKDIR/log.md file (via a haiku subagent, description: `"plan-editor"` — do NOT write the file yourself). Include the decision-table alignment status if one exists: activate `code:plan-validate` skill and read `decision_table_status` from its output. If `aligned`: mention `Behavioral alignment verified: .agentflow-ai/decision-tables/<filename>.md`. If `aligned_with_clarifications`: mention `Behavioral alignment verified with plan clarifications: .agentflow-ai/decision-tables/<filename>.md`. If `verification_failed`: this state should not reach Phase 7 (AWAITING_USER would have fired at Phase 5.5); log a warning if it somehow does. If `""` (simple mode or no artifact): omit the mention.
+- **Release notes (AgentFlow workflow runs only):** run `printenv AGENTFLOW_RELEASE_NOTES`. If it prints `1`, have a haiku subagent (description: `"plan-editor"` — do NOT write the file yourself) write release notes to `$AGENTFLOW_WORKDIR/release-notes.md` from `$AGENTFLOW_WORKDIR/log.md` and the plan: markdown for the people who use and review the change — what changed and why, per repository when several changed, and notable risks or follow-ups. No file lists, no task IDs. AgentFlow publishes the file as the run's release notes. If it prints nothing, skip this step.
 
 **Final verification gate (all must pass before COMPLETE):**
 

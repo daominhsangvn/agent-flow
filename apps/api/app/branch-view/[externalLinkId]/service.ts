@@ -405,12 +405,6 @@ async function buildBranchViewLoadErrorDetails(
   if (featureContext?.projectName) {
     details.projectName = featureContext.projectName;
   }
-  if (featureContext?.teamId) {
-    details.teamId = featureContext.teamId;
-  }
-  if (featureContext?.teamName) {
-    details.teamName = featureContext.teamName;
-  }
 
   return Object.keys(details).length > 0 ? { ...details } : undefined;
 }
@@ -639,8 +633,6 @@ function buildResult(
     prHtmlUrl: currentPr?.htmlUrl ?? "",
     featureSlug: featureContext?.slug ?? null,
     featureTitle: featureContext?.title ?? null,
-    teamId: featureContext?.teamId ?? null,
-    teamName: featureContext?.teamName ?? null,
     projectId: ctx.externalLink.projectId,
     projectName: featureContext?.projectName ?? null,
     headBranch: branch?.branchName ?? currentPr?.headBranch ?? "",
@@ -2165,15 +2157,10 @@ type FeatureContext = {
   slug: string;
   title: string;
   projectId: string | null;
-  teamId: string | null;
-  teamName: string | null;
   projectName: string | null;
 };
 
-type ProjectRecoveryContext = Pick<
-  FeatureContext,
-  "projectId" | "projectName" | "teamId" | "teamName"
->;
+type ProjectRecoveryContext = Pick<FeatureContext, "projectId" | "projectName">;
 
 async function resolveProjectRecoveryContext(
   ctx: PrContext,
@@ -2191,26 +2178,15 @@ async function resolveProjectRecoveryContext(
       select: {
         id: true,
         name: true,
-        teams: {
-          where: {
-            project: { organizationId: ctx.externalLink.organizationId },
-            team: { organizationId: ctx.externalLink.organizationId },
-          },
-          select: { team: { select: { id: true, name: true } } },
-          take: 1,
-        },
       },
     })
   );
   if (!project) {
     return null;
   }
-  const firstTeam = project.teams?.[0]?.team ?? null;
   return {
     projectId: project.id,
     projectName: project.name,
-    teamId: firstTeam?.id ?? null,
-    teamName: firstTeam?.name ?? null,
   };
 }
 
@@ -2289,14 +2265,6 @@ async function resolveFeatureContext(
         project: {
           select: {
             name: true,
-            teams: {
-              where: {
-                project: { organizationId: ctx.externalLink.organizationId },
-                team: { organizationId: ctx.externalLink.organizationId },
-              },
-              select: { team: { select: { id: true, name: true } } },
-              take: 1,
-            },
           },
         },
       },
@@ -2321,14 +2289,10 @@ async function resolveFeatureContext(
       : null;
   }
 
-  const firstTeam = feature.project?.teams?.[0]?.team ?? null;
-
   return {
     slug: feature.slug ?? "",
     title: feature.name,
     projectId: feature.projectId,
-    teamId: firstTeam?.id ?? null,
-    teamName: firstTeam?.name ?? null,
     projectName: feature.project?.name ?? null,
   };
 }

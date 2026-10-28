@@ -9,7 +9,6 @@ import { Check, FolderOpen, Loader2 } from "lucide-react";
 import { useState } from "react";
 
 type CreateProjectStepProps = {
-  readonly teamId: string;
   readonly onNext: (projectId: string, projectName: string) => void;
   readonly createdProjectId: string | null;
   readonly createdProjectName: string | null;
@@ -23,7 +22,6 @@ type CreateProjectStepProps = {
 };
 
 export function CreateProjectStep({
-  teamId,
   onNext,
   createdProjectId,
   createdProjectName,
@@ -66,7 +64,6 @@ export function CreateProjectStep({
       {
         name: trimmed,
         description: description.trim() || undefined,
-        teamIds: [teamId],
       },
       { onSuccess: (project) => onNext(project.id, project.name) }
     );

@@ -12,9 +12,7 @@ import {
 } from "@repo/api/src/types/comment";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
-import { getAgentSessionViewerScope } from "@/app/agent-sessions/route-helpers";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { isOrgSessionSyncPolicyEnabled } from "@/lib/org-session-sync-policy";
 import {
   errorResponse,
   forbiddenResponse,
@@ -37,37 +35,19 @@ type TraceCommentRoute =
 
 /**
  * Org-scoped aggregate list of trace comments across all sessions/branches
- * (`GET /trace-comments`, FEA-3550). Mirrors the per-session read's
- * session-monitoring gate: the gate applies only when the result set can surface
- * Session-type comments (no `targetType` filter, or `targetType=Session`), and is
- * bypassed for a branch-only query (`targetType=Branch`) exactly as
- * `traceCommentAccessError` bypasses it for the per-branch read. Org-scoping is
- * additionally enforced at the DB layer, so a caller only ever sees comments in
- * their organization.
+ * (`GET /trace-comments`, FEA-3550). Sessions are always on, so no
+ * session-monitoring flag gates it; org-scoping is enforced at the DB layer, so
+ * a caller only ever sees comments in their organization.
  */
 export function createTraceCommentsAggregateGetHandler() {
   return withAnyAuth<TraceCommentListResponse, TraceCommentRoute>(
-    async ({ user, clerkUserId }, request) => {
+    async ({ user }, request) => {
       const { params, errorResponse: parseError } = parseQueryParams(
         request,
         traceCommentListQuerySchema
       );
       if (parseError) {
         return parseError;
-      }
-
-      // Only gate on session-monitoring when the query can return Session
-      // comments. A branch-only query (`targetType=Branch`) stays ungated,
-      // matching `traceCommentAccessError`'s per-branch bypass; without this a
-      // branch inbox would 403 for viewers who lack the agent-session flag.
-      if (params.targetType !== TraceCommentTargetType.Branch) {
-        const viewerScope = await getAgentSessionViewerScope({
-          userId: user.id,
-          clerkUserId,
-        });
-        if (!viewerScope.monitoringEnabled) {
-          return forbiddenResponse();
-        }
       }
 
       const response = await traceCommentsService.listAll({
@@ -85,14 +65,6 @@ export function createTraceCommentsGetHandler(
 ) {
   return withAnyAuth<TraceComment[], TraceCommentRoute>(
     async ({ user, clerkUserId }, request, params) => {
-      const accessError = await traceCommentAccessError(targetType, {
-        userId: user.id,
-        clerkUserId,
-      });
-      if (accessError) {
-        return accessError;
-      }
-
       const target = await getRouteTarget(params, targetType);
       const surfaceResult = branchTraceCommentSurfaceFromRequest(
         request,
@@ -122,22 +94,6 @@ export function createTraceCommentsPostHandler(
 ) {
   return withAnyAuth<TraceComment, TraceCommentRoute>(
     async ({ user, clerkUserId }, request, params) => {
-      const accessError = await traceCommentAccessError(targetType, {
-        userId: user.id,
-        clerkUserId,
-      });
-      if (accessError) {
-        return accessError;
-      }
-
-      const policyError = await traceCommentSyncPolicyError(
-        targetType,
-        user.organizationId
-      );
-      if (policyError) {
-        return policyError;
-      }
-
       const { body, errorResponse: parseError } = await parseBody(
         request,
         traceCommentDraftSchema,
@@ -195,22 +151,6 @@ export function createTraceCommentsPatchHandler(
 ) {
   return withAnyAuth<TraceComment, TraceCommentRoute>(
     async ({ user, clerkUserId }, request, params) => {
-      const accessError = await traceCommentAccessError(targetType, {
-        userId: user.id,
-        clerkUserId,
-      });
-      if (accessError) {
-        return accessError;
-      }
-
-      const policyError = await traceCommentSyncPolicyError(
-        targetType,
-        user.organizationId
-      );
-      if (policyError) {
-        return policyError;
-      }
-
       const { body, errorResponse: parseError } = await parseBody(
         request,
         traceCommentUpdateSchema,
@@ -258,22 +198,6 @@ export function createTraceCommentsReplyPostHandler(
 ) {
   return withAnyAuth<TraceComment, TraceCommentRoute>(
     async ({ user, clerkUserId }, request, params) => {
-      const accessError = await traceCommentAccessError(targetType, {
-        userId: user.id,
-        clerkUserId,
-      });
-      if (accessError) {
-        return accessError;
-      }
-
-      const policyError = await traceCommentSyncPolicyError(
-        targetType,
-        user.organizationId
-      );
-      if (policyError) {
-        return policyError;
-      }
-
       const { body, errorResponse: parseError } = await parseBody(
         request,
         traceCommentReplyDraftSchema,
@@ -321,14 +245,6 @@ export function createTraceCommentsDeleteHandler(
 ) {
   return withAnyAuth<TraceCommentDeleteResult, TraceCommentRoute>(
     async ({ user, clerkUserId }, request, params) => {
-      const accessError = await traceCommentAccessError(targetType, {
-        userId: user.id,
-        clerkUserId,
-      });
-      if (accessError) {
-        return accessError;
-      }
-
       const target = await getRouteTarget(params, targetType);
       const commentId = await getRouteCommentId(params);
       const surfaceResult = branchTraceCommentSurfaceFromRequest(
@@ -359,43 +275,6 @@ export function createTraceCommentsDeleteHandler(
       }
     }
   );
-}
-
-async function traceCommentAccessError(
-  targetType: TraceCommentTargetType,
-  input: { userId: string; clerkUserId: string }
-) {
-  if (targetType === TraceCommentTargetType.Branch) {
-    return null;
-  }
-
-  const viewerScope = await getAgentSessionViewerScope(input);
-  return viewerScope.monitoringEnabled ? null : forbiddenResponse();
-}
-
-/**
- * Session-targeted trace comments are session-derived data that reaches the
- * AgentFlow cloud, so FEA-4169's server-owned org session-sync policy must gate
- * these egress mutations too (create/update/reply) — not just the desktop batch,
- * transcript, and component-invocation sync boundaries. A member (or an
- * older/compromised Desktop that ignores the local gate) must not be able to
- * upload comment bodies while the org policy is OFF. Fail-closed and independent
- * of any client-sent field, mirroring `isOrgSessionSyncPolicyEnabled`'s other
- * callers. Branch-targeted comments are not session-sync data and stay ungated,
- * matching `traceCommentAccessError`'s per-branch bypass. Deletes are a removal,
- * not an egress of new content, so they remain reachable even after an admin
- * turns the policy off (so already-synced comments can still be cleaned up).
- */
-async function traceCommentSyncPolicyError(
-  targetType: TraceCommentTargetType,
-  organizationId: string
-) {
-  if (targetType === TraceCommentTargetType.Branch) {
-    return null;
-  }
-
-  const allowed = await isOrgSessionSyncPolicyEnabled(organizationId);
-  return allowed ? null : forbiddenResponse();
 }
 
 async function getRouteTarget(

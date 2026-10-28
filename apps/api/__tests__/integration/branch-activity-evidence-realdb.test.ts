@@ -1,13 +1,10 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { BranchHeadShaSource } from "@repo/api/src/types/artifact";
+import type { BranchHeadShaSource } from "@repo/api/src/types/artifact";
 import {
   BranchActivityAtomVersion,
   BranchActivityAttributionKind,
   BranchActivityEvidenceCompleteness,
   BranchActivitySource,
 } from "@repo/api/src/types/branch-activity";
-import { ReviewDecision } from "@repo/api/src/types/branch-checks";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { ArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
@@ -24,12 +21,6 @@ import {
 const hasDatabase = Boolean(keys().DATABASE_URL);
 const occurredAt = "2026-08-12T10:00:00.000Z";
 const olderAt = "2026-08-11T10:00:00.000Z";
-const migrationPath = path.resolve(
-  import.meta.dirname,
-  "../../../../packages/database/prisma/migrations/20260812160000_iss6058_branch_activity_atoms/migration.sql"
-);
-const backfillStatementRe =
-  /INSERT INTO "branch_activity_atoms" \([\s\S]*?ON CONFLICT \("organization_id", "branch_artifact_id", "source", "source_event_id"\) DO NOTHING;/g;
 
 describe.skipIf(!hasDatabase)(
   "ISS-6058 Branch activity evidence (real Postgres)",
@@ -134,136 +125,6 @@ describe.skipIf(!hasDatabase)(
         ).resolves.toBe(0);
       });
     });
-
-    it("executes the exact trustworthy-only migration backfills idempotently", async () => {
-      await autoRollbackTransaction(async () => {
-        const headObservedAt = new Date("2026-08-10T09:00:00.000Z");
-        const openedAt = new Date("2026-08-10T10:00:00.000Z");
-        const mergedAt = new Date("2026-08-10T11:00:00.000Z");
-        const reviewSubmittedAt = new Date("2026-08-10T10:30:00.000Z");
-        const primary = await seedBranch("migration-primary", {
-          headSha: "migration-head-sha",
-          headShaSource: BranchHeadShaSource.PushWebhook,
-          headShaObservedAt: headObservedAt,
-        });
-        const routine = await seedBranchForOrganization(
-          primary.organizationId,
-          "migration-routine-refresh",
-          {
-            headSha: "routine-refresh-head-sha",
-            headShaSource: BranchHeadShaSource.ExplicitSync,
-            headShaObservedAt: new Date("2026-08-10T12:00:00.000Z"),
-          }
-        );
-        const isolated = await seedBranch("migration-isolated");
-        const pullRequestId = await seedPullRequest(primary, 6060, {
-          githubCreatedAt: openedAt,
-          mergedAt,
-          closedAt: mergedAt,
-        });
-        const mismatchedPullRequestId = await seedPullRequest(
-          {
-            organizationId: isolated.organizationId,
-            branchArtifactId: primary.branchArtifactId,
-          },
-          6061,
-          { githubCreatedAt: openedAt }
-        );
-        await withDb((db) =>
-          db.gitHubPRReview.createMany({
-            data: [
-              {
-                pullRequestId,
-                githubReviewId: "6058001",
-                authorLogin: "trusted-reviewer",
-                state: ReviewDecision.Approved,
-                htmlUrl:
-                  "https://github.com/agentflow-ai/symphony-alpha/pull/6060#pullrequestreview-6058001",
-                submittedAt: reviewSubmittedAt,
-              },
-              {
-                pullRequestId,
-                githubReviewId: " malformed-review-id ",
-                authorLogin: "malformed-reviewer",
-                state: ReviewDecision.Approved,
-                htmlUrl:
-                  "https://github.com/agentflow-ai/symphony-alpha/pull/6060#pullrequestreview-malformed",
-                submittedAt: reviewSubmittedAt,
-              },
-            ],
-          })
-        );
-
-        const backfills = await migrationBackfills();
-        await executeBackfills(backfills);
-        await executeBackfills(backfills);
-
-        const atoms = await withDb((db) =>
-          db.branchActivityAtom.findMany({
-            where: { branchArtifactId: primary.branchArtifactId },
-            orderBy: [{ occurredAt: "asc" }, { sourceEventId: "asc" }],
-            select: {
-              version: true,
-              source: true,
-              sourceEventId: true,
-              occurredAt: true,
-              pullRequestDetailId: true,
-            },
-          })
-        );
-
-        expect(atoms).toHaveLength(5);
-        expect(
-          atoms.every(({ version }) => version === BranchActivityAtomVersion.V1)
-        ).toBe(true);
-        expect(atoms).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              source: BranchActivitySource.GitHead,
-              sourceEventId: "migration-head-sha",
-              occurredAt: headObservedAt,
-            }),
-            expect.objectContaining({
-              source: BranchActivitySource.PullRequestLifecycle,
-              sourceEventId: `${pullRequestId}:opened`,
-              pullRequestDetailId: pullRequestId,
-            }),
-            expect.objectContaining({
-              source: BranchActivitySource.PullRequestLifecycle,
-              sourceEventId: `${pullRequestId}:merged`,
-              pullRequestDetailId: pullRequestId,
-            }),
-            expect.objectContaining({
-              source: BranchActivitySource.PullRequestLifecycle,
-              sourceEventId: `${pullRequestId}:closed`,
-              pullRequestDetailId: pullRequestId,
-            }),
-            expect.objectContaining({
-              source: BranchActivitySource.PullRequestReview,
-              sourceEventId: "6058001",
-              occurredAt: reviewSubmittedAt,
-              pullRequestDetailId: pullRequestId,
-            }),
-          ])
-        );
-        await expect(
-          withDb((db) =>
-            db.branchActivityAtom.count({
-              where: {
-                OR: [
-                  { pullRequestDetailId: mismatchedPullRequestId },
-                  {
-                    branchArtifactId: routine.branchArtifactId,
-                    sourceEventId: "routine-refresh-head-sha",
-                  },
-                  { sourceEventId: " malformed-review-id " },
-                ],
-              },
-            })
-          )
-        ).resolves.toBe(0);
-      });
-    });
   }
 );
 
@@ -357,22 +218,5 @@ function seedPullRequest(
       select: { id: true },
     });
     return pullRequest.id;
-  });
-}
-
-async function migrationBackfills(): Promise<string[]> {
-  const sql = await readFile(migrationPath, "utf8");
-  const backfills = sql.match(backfillStatementRe) ?? [];
-  if (backfills.length !== 3) {
-    throw new Error(`Expected 3 ISS-6058 backfills, found ${backfills.length}`);
-  }
-  return backfills;
-}
-
-async function executeBackfills(backfills: string[]): Promise<void> {
-  await withDb(async (db) => {
-    for (const backfill of backfills) {
-      await db.$executeRawUnsafe(backfill);
-    }
   });
 }

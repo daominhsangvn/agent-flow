@@ -194,17 +194,6 @@ export const documentIncludeWithContext = {
       id: true,
       organizationId: true,
       name: true,
-      teams: {
-        select: {
-          team: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-        },
-        take: 1,
-      },
     },
   },
   tagArtifacts: {
@@ -265,7 +254,6 @@ export type RawDocumentWithContext = PrismaArtifact & {
     id: string;
     organizationId: string;
     name: string;
-    teams: { team: { id: string; name: string } }[];
   } | null;
   tagArtifacts?: Array<{ tag: { id: string; name: string; color: string } }>;
 };

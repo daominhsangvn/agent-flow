@@ -4,8 +4,12 @@ import {
 } from "@agentflow-ai/loops-api/loop-step";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import {
+  type ProcessStep,
+  ProcessStepRole,
   ProcessStepType,
   type RunProcessView,
+  type RunStepState,
+  reviewGoOnLabels,
   runProcessSnapshotSchema,
   runStepStateSchema,
 } from "@repo/api/src/types/project-process";
@@ -62,7 +66,34 @@ export function buildRunProcessView(
           decided: state.approval.decision !== null,
         }
       : null,
+    review: reviewView(definition.steps, state?.review ?? null),
     stepFiles: latestStepFiles(loops),
+  };
+}
+
+/** The step under review as the run page shows it; null when none. */
+function reviewView(
+  steps: readonly ProcessStep[],
+  review: RunStepState["review"] | null
+): RunProcessView["review"] {
+  const step = review
+    ? steps.find((candidate) => candidate.id === review.stepId)
+    : undefined;
+  if (!(review && step?.type === ProcessStepType.Agent && step.review)) {
+    return null;
+  }
+  return {
+    stepId: review.stepId,
+    round: review.round,
+    planStep: step.role === ProcessStepRole.Plan,
+    waiting: review.requestedAt !== "" && review.decision === null,
+    requestedAt: review.requestedAt,
+    goOnLabels: reviewGoOnLabels(step.review),
+    feedbackLabels: step.review.feedback.labels,
+    mention: step.review.feedback.mention,
+    history: review.decision
+      ? [...review.history, review.decision]
+      : review.history,
   };
 }
 

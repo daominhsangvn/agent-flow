@@ -45,8 +45,6 @@ export type ProjectRecord = {
   status: string | null;
   priority: string | null;
   updatedAt: Date;
-  // Owning team ids; the backfill reads the first via `teams[0].teamId`.
-  teamIds: string[];
 };
 export type LoopRecord = {
   id: string;
@@ -198,7 +196,6 @@ export function makeFakeClient(seed: {
             status: p.status,
             priority: p.priority,
             updatedAt: p.updatedAt,
-            teams: p.teamIds.map((teamId) => ({ teamId })),
           }))
         ),
     },
@@ -365,7 +362,6 @@ export function project(
     status: null,
     priority: null,
     updatedAt: AT,
-    teamIds: [],
     ...over,
   };
 }

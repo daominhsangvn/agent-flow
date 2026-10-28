@@ -3,6 +3,7 @@ import {
   GitHubPRState,
   type GitHubPullRequestSummary,
 } from "@repo/api/src/types/github";
+import { IntegrationProviderKey } from "@repo/api/src/types/integration";
 import { RepoSource } from "@repo/app/loops/hooks/use-resolved-job-repos";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -153,13 +154,22 @@ describe("SelectPullRequestDialog", () => {
     });
     mockUseResolvedJobRepos.mockReturnValue({
       primary: {
-        id: "repo-1",
+        id: "project-repo-1",
         fullName: "acme/repo",
-        source: RepoSource.TeamDefault,
+        source: RepoSource.ProjectDefault,
         inPool: false,
       },
       additional: [],
-      pool: [],
+      pool: [
+        {
+          id: "project-repo-1",
+          fullName: "acme/repo",
+          provider: IntegrationProviderKey.GitHub,
+          isPrimary: true,
+          defaultBranch: null,
+          githubRepositoryId: "repo-1",
+        },
+      ],
       isLoading: false,
     });
     mockUseResolvedArtifactLinks.mockReturnValue({
@@ -429,20 +439,37 @@ describe("SelectPullRequestDialog", () => {
 
     mockUseResolvedJobRepos.mockReturnValue({
       primary: {
-        id: "repo-1",
+        id: "project-repo-1",
         fullName: "acme/repo",
-        source: RepoSource.TeamDefault,
+        source: RepoSource.ProjectDefault,
         inPool: false,
       },
       additional: [
         {
-          id: "repo-2",
+          id: "project-repo-2",
           fullName: "acme/repo-fork",
-          source: RepoSource.ProjectOverride,
+          source: RepoSource.ProjectDefault,
           inPool: false,
         },
       ],
-      pool: [],
+      pool: [
+        {
+          id: "project-repo-1",
+          fullName: "acme/repo",
+          provider: IntegrationProviderKey.GitHub,
+          isPrimary: true,
+          defaultBranch: null,
+          githubRepositoryId: "repo-1",
+        },
+        {
+          id: "project-repo-2",
+          fullName: "acme/repo-fork",
+          provider: IntegrationProviderKey.GitHub,
+          isPrimary: false,
+          defaultBranch: null,
+          githubRepositoryId: "repo-2",
+        },
+      ],
       isLoading: false,
     });
     // repo-1 succeeds, repo-2 fails
@@ -550,20 +577,37 @@ describe("SelectPullRequestDialog", () => {
 
     mockUseResolvedJobRepos.mockReturnValue({
       primary: {
-        id: "repo-1",
+        id: "project-repo-1",
         fullName: "acme/repo",
-        source: RepoSource.TeamDefault,
+        source: RepoSource.ProjectDefault,
         inPool: false,
       },
       additional: [
         {
-          id: "repo-2",
+          id: "project-repo-2",
           fullName: "acme/repo-2",
-          source: RepoSource.ProjectOverride,
+          source: RepoSource.ProjectDefault,
           inPool: false,
         },
       ],
-      pool: [],
+      pool: [
+        {
+          id: "project-repo-1",
+          fullName: "acme/repo",
+          provider: IntegrationProviderKey.GitHub,
+          isPrimary: true,
+          defaultBranch: null,
+          githubRepositoryId: "repo-1",
+        },
+        {
+          id: "project-repo-2",
+          fullName: "acme/repo-2",
+          provider: IntegrationProviderKey.GitHub,
+          isPrimary: false,
+          defaultBranch: null,
+          githubRepositoryId: "repo-2",
+        },
+      ],
       isLoading: false,
     });
     mockGet.mockImplementation((url: string) => {
@@ -611,20 +655,37 @@ describe("SelectPullRequestDialog", () => {
   it("shows all-repos-fail error when all repos fail", async () => {
     mockUseResolvedJobRepos.mockReturnValue({
       primary: {
-        id: "repo-1",
+        id: "project-repo-1",
         fullName: "acme/repo",
-        source: RepoSource.TeamDefault,
+        source: RepoSource.ProjectDefault,
         inPool: false,
       },
       additional: [
         {
-          id: "repo-2",
+          id: "project-repo-2",
           fullName: "acme/repo-fork",
-          source: RepoSource.ProjectOverride,
+          source: RepoSource.ProjectDefault,
           inPool: false,
         },
       ],
-      pool: [],
+      pool: [
+        {
+          id: "project-repo-1",
+          fullName: "acme/repo",
+          provider: IntegrationProviderKey.GitHub,
+          isPrimary: true,
+          defaultBranch: null,
+          githubRepositoryId: "repo-1",
+        },
+        {
+          id: "project-repo-2",
+          fullName: "acme/repo-fork",
+          provider: IntegrationProviderKey.GitHub,
+          isPrimary: false,
+          defaultBranch: null,
+          githubRepositoryId: "repo-2",
+        },
+      ],
       isLoading: false,
     });
     mockGet.mockRejectedValue(new Error("Network error"));

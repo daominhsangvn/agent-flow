@@ -46,6 +46,7 @@ vi.mock("../editor/editable-document-title", () => ({
 }));
 vi.mock("../../../users/hooks/use-users", () => ({
   useCurrentUser: () => ({ data: null, isLoading: false }),
+  useOrganizationUsers: () => ({ data: [], isLoading: false }),
 }));
 
 const STAND_IN_TESTID = "empty-content-stand-in";

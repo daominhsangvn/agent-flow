@@ -10,17 +10,14 @@ import {
   inheritSnapshotFromParent,
   parseStoredSnapshot,
 } from "@/app/documents/repository-snapshot-helpers";
-import { loadProjectRepoDefaults } from "@/app/projects/repository-resolver";
+import { listProjectRepositoryCheckouts } from "@/app/projects/project-repository-checkouts";
 
-// Projects without project repositories: the team-pool paths under test.
+// Project repositories are the only source of project defaults.
 vi.mock("@/app/projects/project-repository-checkouts", async (original) => ({
   ...(await original<
     typeof import("@/app/projects/project-repository-checkouts")
   >()),
   listProjectRepositoryCheckouts: vi.fn(() => Promise.resolve([])),
-}));
-vi.mock("@/app/projects/repository-resolver", () => ({
-  loadProjectRepoDefaults: vi.fn(),
 }));
 
 describe("buildSnapshotFromLoopSelection", () => {
@@ -171,158 +168,38 @@ describe("parseStoredSnapshot", () => {
   });
 });
 
-function teamRepo(installationRepositoryId: string, fullName: string) {
-  return {
-    installationRepositoryId,
-    repository: { fullName },
-  };
-}
-
 describe("buildSnapshotFromProjectDefaults", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("returns an empty 'none' snapshot when the project has no resolved defaults", async () => {
-    vi.mocked(loadProjectRepoDefaults).mockResolvedValue(null);
+  it("returns an empty 'none' snapshot when the project has no repositories", async () => {
+    vi.mocked(listProjectRepositoryCheckouts).mockResolvedValue([]);
 
     const snapshot = await buildSnapshotFromProjectDefaults(
       "project-1",
-      "org-1",
-      {}
+      "org-1"
     );
 
     expect(snapshot.source).toBe(SnapshotSource.None);
     expect(snapshot.repositories).toEqual([]);
   });
 
-  it("builds a single-repo snapshot when override has only a primary", async () => {
-    vi.mocked(loadProjectRepoDefaults).mockResolvedValue({
-      override: {
-        primaryRepoId: "repo-1",
-        selectedRepoIds: ["repo-1"],
-      },
-      primary: {
-        installationRepositoryId: "repo-1",
-        fullName: "acme/api",
-      },
-      teamRepos: [teamRepo("repo-1", "acme/api")] as any,
-    });
+  it("puts the primary at position 0 and the rest as additional", async () => {
+    vi.mocked(listProjectRepositoryCheckouts).mockResolvedValue([
+      { fullName: "acme/web" },
+      { fullName: "acme/api" },
+    ] as Awaited<ReturnType<typeof listProjectRepositoryCheckouts>>);
 
     const snapshot = await buildSnapshotFromProjectDefaults(
       "project-1",
-      "org-1",
-      {}
+      "org-1"
     );
 
     expect(snapshot.source).toBe(SnapshotSource.ProjectDefaults);
-    expect(snapshot.repositories).toHaveLength(1);
-    expect(snapshot.repositories[0]).toMatchObject({
-      fullName: "acme/api",
-      role: RepositoryRole.Primary,
-      position: 0,
-    });
-    expect(snapshot.repositories[0]).not.toHaveProperty("branch");
-  });
-
-  it("includes additional repos with role=additional starting at position 1", async () => {
-    vi.mocked(loadProjectRepoDefaults).mockResolvedValue({
-      override: {
-        primaryRepoId: "repo-1",
-        selectedRepoIds: ["repo-1", "repo-2", "repo-3"],
-      },
-      primary: {
-        installationRepositoryId: "repo-1",
-        fullName: "acme/api",
-      },
-      teamRepos: [
-        teamRepo("repo-1", "acme/api"),
-        teamRepo("repo-2", "acme/web"),
-        teamRepo("repo-3", "acme/shared"),
-      ] as any,
-    });
-
-    const snapshot = await buildSnapshotFromProjectDefaults(
-      "project-1",
-      "org-1",
-      {}
-    );
-
-    expect(snapshot.repositories).toHaveLength(3);
-    expect(snapshot.repositories[0]).toMatchObject({
-      fullName: "acme/api",
-      role: RepositoryRole.Primary,
-      position: 0,
-    });
-    expect(snapshot.repositories[1]).toMatchObject({
-      fullName: "acme/web",
-      role: RepositoryRole.Additional,
-      position: 1,
-    });
-    expect(snapshot.repositories[2]).toMatchObject({
-      fullName: "acme/shared",
-      role: RepositoryRole.Additional,
-      position: 2,
-    });
-  });
-
-  it("skips unknown additional repo ids and reassigns contiguous positions", async () => {
-    vi.mocked(loadProjectRepoDefaults).mockResolvedValue({
-      override: {
-        primaryRepoId: "repo-1",
-        selectedRepoIds: ["repo-1", "ghost-repo", "repo-2"],
-      },
-      primary: {
-        installationRepositoryId: "repo-1",
-        fullName: "acme/api",
-      },
-      teamRepos: [
-        teamRepo("repo-1", "acme/api"),
-        teamRepo("repo-2", "acme/web"),
-      ] as any,
-    });
-
-    const snapshot = await buildSnapshotFromProjectDefaults(
-      "project-1",
-      "org-1",
-      {}
-    );
-
-    expect(snapshot.repositories).toHaveLength(2);
-    expect(snapshot.repositories[0]).toMatchObject({
-      fullName: "acme/api",
-      role: RepositoryRole.Primary,
-      position: 0,
-    });
-    // After filtering out the unknown id, the surviving additional repo gets
-    // position 1 (contiguous) — not position 2 (which would leave a gap).
-    expect(snapshot.repositories[1]).toMatchObject({
-      fullName: "acme/web",
-      role: RepositoryRole.Additional,
-      position: 1,
-    });
-  });
-
-  it("falls back to legacy primary fullName when override.primary points outside the team pool", async () => {
-    vi.mocked(loadProjectRepoDefaults).mockResolvedValue({
-      override: {
-        primaryRepoId: "legacy-repo",
-        selectedRepoIds: ["legacy-repo"],
-      },
-      primary: {
-        installationRepositoryId: "legacy-repo",
-        fullName: "acme/legacy",
-      },
-      teamRepos: [] as any,
-    });
-
-    const snapshot = await buildSnapshotFromProjectDefaults(
-      "project-1",
-      "org-1",
-      {}
-    );
-
-    expect(snapshot.source).toBe(SnapshotSource.ProjectDefaults);
-    expect(snapshot.repositories[0]?.fullName).toBe("acme/legacy");
+    expect(snapshot.repositories).toEqual([
+      { fullName: "acme/web", role: RepositoryRole.Primary, position: 0 },
+      { fullName: "acme/api", role: RepositoryRole.Additional, position: 1 },
+    ]);
   });
 });

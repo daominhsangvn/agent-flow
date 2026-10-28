@@ -5,7 +5,6 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  createTeam: vi.fn(),
   createProject: vi.fn(),
   completeWizard: vi.fn(),
   completeWizardPending: false,
@@ -21,9 +20,6 @@ vi.mock("@repo/app/onboarding/hooks/use-onboarding", () => ({
     isPending: mocks.completeWizardPending,
   }),
 }));
-vi.mock("@repo/app/teams/hooks/use-teams", () => ({
-  useCreateTeam: () => ({ mutate: mocks.createTeam, isPending: false }),
-}));
 vi.mock("@repo/app/projects/hooks/use-projects", () => ({
   useCreateProject: () => ({ mutate: mocks.createProject, isPending: false }),
 }));
@@ -31,12 +27,9 @@ vi.mock("@repo/app/projects/hooks/use-projects", () => ({
 import { OnboardingWizard } from "../onboarding-wizard";
 
 const WIZARD_STATE_KEY = "onboarding_wizard_state";
-const TEAM_HEADING = "Create your team";
 const PROJECT_HEADING = "Create your first project";
 const POST_WIZARD_ROUTE = "/my-tasks?from=onboarding";
-const TEAM_NAME_LABEL = /team name/i;
 const PROJECT_NAME_LABEL = /project name/i;
-const CREATE_TEAM_BUTTON = /create team/i;
 const CREATE_PROJECT_BUTTON = /create project/i;
 const CONTINUE_BUTTON = /continue/i;
 
@@ -56,18 +49,8 @@ function resolveMutation(mutate: ReturnType<typeof vi.fn>, result: unknown) {
   });
 }
 
-/** Drive the team step to completion, which is how the project step mounts. */
-function completeTeamStep() {
-  fireEvent.change(screen.getByLabelText(TEAM_NAME_LABEL), {
-    target: { value: "Engineering" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: CREATE_TEAM_BUTTON }));
-  resolveMutation(mocks.createTeam, { id: "team-1", name: "Engineering" });
-}
-
 describe("OnboardingWizard — ISS-5490 trim", () => {
   beforeEach(() => {
-    mocks.createTeam.mockReset();
     mocks.createProject.mockReset();
     mocks.completeWizard.mockReset();
     mocks.completeWizardPending = false;
@@ -79,19 +62,15 @@ describe("OnboardingWizard — ISS-5490 trim", () => {
     sessionStorage.clear();
   });
 
-  it("opens on the team step and shows a two-step indicator", () => {
+  it("opens on the project step and shows a one-step indicator", () => {
     render(<OnboardingWizard />);
 
-    expect(screen.getByText(TEAM_HEADING)).toBeTruthy();
-    expect(screen.getByText("Step 1 of 2")).toBeTruthy();
+    expect(screen.getByText(PROJECT_HEADING)).toBeTruthy();
+    expect(screen.getByText("Step 1 of 1")).toBeTruthy();
   });
 
   it("completes the wizard and leaves for My Tasks once the project lands", () => {
     render(<OnboardingWizard />);
-    completeTeamStep();
-
-    expect(screen.getByText(PROJECT_HEADING)).toBeTruthy();
-
     fireEvent.change(screen.getByLabelText(PROJECT_NAME_LABEL), {
       target: { value: "Web app" },
     });
@@ -104,7 +83,6 @@ describe("OnboardingWizard — ISS-5490 trim", () => {
     // downstream is left to mark the wizard finished.
     expect(mocks.completeWizard).toHaveBeenCalledTimes(1);
     expect(mocks.completeWizard.mock.calls[0][0]).toEqual({
-      createdTeamId: "team-1",
       createdProjectId: "project-1",
     });
 
@@ -117,8 +95,6 @@ describe("OnboardingWizard — ISS-5490 trim", () => {
     // A tab open across the deploy restores a step the trim removed.
     seedWizardState({
       currentStep: OnboardingStep.ConnectOptionalIntegrations,
-      createdTeamId: null,
-      createdTeamName: null,
       createdProjectId: null,
       createdProjectName: null,
     });
@@ -126,25 +102,20 @@ describe("OnboardingWizard — ISS-5490 trim", () => {
     render(<OnboardingWizard />);
 
     // Not a blank card: the user lands on the sequence's first step instead.
-    expect(screen.getByText(TEAM_HEADING)).toBeTruthy();
-    expect(screen.getByText("Step 1 of 2")).toBeTruthy();
+    expect(screen.getByText(PROJECT_HEADING)).toBeTruthy();
+    expect(screen.getByText("Step 1 of 1")).toBeTruthy();
   });
 
-  it("starts the project step over when no team came with it", () => {
-    // Passes the step check and still dead-ends: the project step needs a team
-    // to attach the project to, so the wizard's own guard renders neither step
-    // and the card comes up blank.
+  it("opens a stored legacy create-team step on the project step", () => {
     seedWizardState({
-      currentStep: OnboardingStep.CreateProject,
-      createdTeamId: null,
-      createdTeamName: null,
+      currentStep: OnboardingStep.CreateTeam,
       createdProjectId: null,
       createdProjectName: null,
     });
 
     render(<OnboardingWizard />);
 
-    expect(screen.getByText(TEAM_HEADING)).toBeTruthy();
+    expect(screen.getByText(PROJECT_HEADING)).toBeTruthy();
   });
 
   it("ignores a stored state that is not a wizard state", () => {
@@ -155,7 +126,7 @@ describe("OnboardingWizard — ISS-5490 trim", () => {
 
     render(<OnboardingWizard />);
 
-    expect(screen.getByText(TEAM_HEADING)).toBeTruthy();
+    expect(screen.getByText(PROJECT_HEADING)).toBeTruthy();
   });
 
   it("ignores stored text that is not JSON at all", () => {
@@ -163,12 +134,11 @@ describe("OnboardingWizard — ISS-5490 trim", () => {
 
     render(<OnboardingWizard />);
 
-    expect(screen.getByText(TEAM_HEADING)).toBeTruthy();
+    expect(screen.getByText(PROJECT_HEADING)).toBeTruthy();
   });
 
   it("does not complete twice when Continue is clicked mid-flight", () => {
     const { rerender } = render(<OnboardingWizard />);
-    completeTeamStep();
 
     fireEvent.change(screen.getByLabelText(PROJECT_NAME_LABEL), {
       target: { value: "Web app" },

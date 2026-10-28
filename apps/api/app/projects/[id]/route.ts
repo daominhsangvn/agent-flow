@@ -10,7 +10,6 @@ import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveProjectId } from "@/lib/identifier-utils";
 
 import {
-  badRequestResponse,
   deleteResponse,
   errorResponse,
   notFoundResponse,
@@ -21,7 +20,7 @@ import {
   applyCustomFieldsFromBody,
   mergeCustomFieldsIntoResponse,
 } from "../../custom-fields/route-helpers";
-import { InvalidProjectTeamsError, projectsService } from "../service";
+import { projectsService } from "../service";
 import { updateProjectValidator } from "../validators";
 
 /**
@@ -120,29 +119,22 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
         );
       }
 
-      const teamId = projectWithDetails.teams[0]?.id;
-      if (teamId) {
-        dispatchAssignmentNotification({
-          previousAssigneeId: existing.assigneeId,
-          newAssigneeId: projectInput.assigneeId,
-          actorUserId: user.id,
-          organizationId: user.organizationId,
-          entityType: AssignmentEntityType.Project,
-          entityTitle: projectWithDetails.name,
-          entityUrl: getNotificationEntityPath({
-            kind: NotificationEntityKind.Project,
-            teamId,
-            projectId: projectWithDetails.id,
-          }),
-          subjectId: projectWithDetails.id,
-        });
-      }
+      dispatchAssignmentNotification({
+        previousAssigneeId: existing.assigneeId,
+        newAssigneeId: projectInput.assigneeId,
+        actorUserId: user.id,
+        organizationId: user.organizationId,
+        entityType: AssignmentEntityType.Project,
+        entityTitle: projectWithDetails.name,
+        entityUrl: getNotificationEntityPath({
+          kind: NotificationEntityKind.Project,
+          projectId: projectWithDetails.id,
+        }),
+        subjectId: projectWithDetails.id,
+      });
 
       return successResponse(projectWithDetails);
     } catch (error) {
-      if (error instanceof InvalidProjectTeamsError) {
-        return badRequestResponse(error.message);
-      }
       return errorResponse("Failed to update project", error);
     }
   },

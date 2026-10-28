@@ -12,7 +12,6 @@ import {
 export type AgentSessionCsvExportRow = {
   date: string;
   user: string;
-  team: string;
   project: string;
   harnessType: string;
   model: string;
@@ -27,16 +26,11 @@ export type AgentSessionCsvExportRow = {
 export function toCsvExportRows(
   record: AgentSessionExportRecord
 ): AgentSessionCsvExportRow[] {
-  const teamNames = (record.user?.teamMemberships ?? [])
-    .map((membership) => membership.team.name)
-    .filter(Boolean)
-    .join(", ");
   const baseRow = {
     date: toLocalDateOnly(record.sessionStartedAt, record.deviceTimeZone),
     user: record.user
       ? displayUserName(toBasicUser(record.user))
       : "Unattributed",
-    team: teamNames || "Unattributed",
     project: record.artifact.project?.name ?? "Unattributed",
     harnessType: record.harness,
   };
@@ -82,7 +76,6 @@ function aggregateCsvExportRow(
     const key = [
       row.date,
       userKey,
-      row.team,
       row.project,
       row.harnessType,
       row.model,
@@ -119,7 +112,7 @@ function sortCsvExportRows(
 
 /**
  * Stream the export cohort (`where`) in keyset-paginated batches, fold each
- * session's per-model rows into the per-(date, user, team, project, harness,
+ * session's per-model rows into the per-(date, user, project, harness,
  * model) aggregation, and return the rows in the stable display sort. The `where`
  * is resolved by the caller (`buildUsageSummaryWhere`) so the export paints the
  * SAME cohort as the Sessions table (FEA-4326). The batch order keeps the

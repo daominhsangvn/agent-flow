@@ -1,8 +1,8 @@
 # Headless runner
 
 The headless runner executes AgentFlow agent loops (PLAN, EXECUTE) on a
-server, a VM, a WSL2 distribution or a Docker container, without the desktop
-app. It is a plain Node.js process that connects to the AgentFlow API exactly
+server, a VM, a WSL2 distribution, a Docker container or directly on Windows,
+without the desktop app. It is a plain Node.js process that connects to the AgentFlow API exactly
 like the desktop app does, registers as a compute target, and runs the Claude
 Code CLI with the vendored plugins (`agent-plugins/`, loaded with
 `--plugin-dir`).
@@ -73,9 +73,11 @@ docker buildx build -f deploy/runner/Dockerfile -t agentflow-runner:base .
 ```
 
 It contains Node.js 24, git, gh, jq, python3 (+ PyYAML), ripgrep, Claude Code
-(official apt repository, `stable` channel; `--build-arg
-CLAUDE_CODE_CHANNEL=latest` for the latest one), the runner and the plugins,
-and runs as the unprivileged user `runner`.
+(official apt repository, `latest` channel, so every build ships the newest
+release; `--build-arg CLAUDE_CODE_CHANNEL=stable` for the one about a week
+behind), the runner and the plugins, and runs as the unprivileged user
+`runner`. Loops run the Claude Code version set for the runner in AgentFlow
+(see [Claude Code version](#claude-code-version)).
 
 Run it:
 
@@ -90,6 +92,7 @@ docker run -d --name agentflow-runner-1 --restart unless-stopped \
   -v agentflow-runner-1-data:/home/runner/.agentflow-runner \
   -v agentflow-runner-1-claude:/home/runner/.claude \
   -v agentflow-runner-1-learnings:/home/runner/.agentflow-ai \
+  -v agentflow-runner-1-claude-versions:/home/runner/.local/share/claude \
   agentflow-runner:base
 ```
 
@@ -110,6 +113,9 @@ Volumes:
   per computer in AgentFlow (Settings → computers → Model provider): it is
   sent with each loop and never stored on the runner.
 - `/home/runner/.agentflow-ai`: AgentFlow learnings (self-learning).
+- `/home/runner/.local/share/claude`: the Claude Code versions installed for
+  the version set in AgentFlow, so a recreated container does not download
+  them again.
 
 Several loops run at once (`AGENTFLOW_RUNNER_MAX_CONCURRENT`, default 2),
 for one project or several. Each has its own workspace folder, worktrees,
@@ -150,7 +156,7 @@ reports the tool as missing and agents cannot run it. Add the directory in
 `su runner -s /bin/bash -lc '<tool> --version'` in the Dockerfile.
 
 Run one image per set of toolchains and assign its runners to the projects
-that need them (Project → Repositories → Runners). Build all of a project's
+that need them (Project → Integrations → Runners). Build all of a project's
 runners from the same image: a new loop goes to whichever is least busy. A
 runner with every toolchain (e.g. .NET, Rust and Node.js) can serve every
 project. The runner reports the toolchains it finds on its `PATH` (node, npm,
@@ -164,8 +170,12 @@ shows them on each runner.
 
 Supported: Ubuntu 22.04 and 24.04, Debian 12, x86_64 or arm64.
 
-1. **Build the release package** on a machine with the repository (any OS,
-   Node.js 22+ and pnpm):
+1. **Get the release package:** download
+   `agentflow-runner-<version>-linux.tar.gz` from the repository's GitHub
+   Releases (tags `runner-v*`, see [Releases](#releases)), or build it on a
+   machine with the repository (any OS,
+   Node.js 24+ as the repository's engines require, and pnpm; the built
+   runner itself needs only Node.js 22+):
 
    ```bash
    pnpm install
@@ -232,8 +242,81 @@ export AGENTFLOW_API_URL=… AGENTFLOW_API_KEY=… AGENTFLOW_RUNNER_WORKSPACE=~/
 node apps/desktop/dist-headless/runner.mjs
 ```
 
-Native Windows is not supported (loops run through `bash run-loop.sh`); use
-Docker Desktop or WSL2 on Windows machines.
+On Windows, use Docker Desktop, WSL2, or Option D.
+
+## Option D: Windows
+
+Runs the runner and its agents directly on Windows, with the machine's own
+toolchains, databases and network (VPN). It is meant for putting agents on a
+developer's Windows machine that already builds and runs the project. The
+agents can do anything the Windows account can, so run the runner under a
+dedicated, non-administrator account where possible, and give that account
+only the databases and shares the agents should use. Prefer Docker or a VM
+when the project builds on Linux.
+
+**Requirements** (PowerShell; open a new terminal afterwards):
+
+```powershell
+winget install OpenJS.NodeJS.LTS          # Node.js 22+
+winget install Git.Git                    # git, and the bash the loops run in
+winget install jqlang.jq
+winget install Python.Python.3.12
+winget install GitHub.cli                 # pull requests on GitHub
+python -m pip install --user pyyaml
+irm https://claude.ai/install.ps1 | iex   # Claude Code, native installer
+```
+
+Plus each project's own toolchain (.NET SDK or Visual Studio Build Tools,
+Node.js, ...). Install Claude Code with the native installer: an npm install
+is a `claude.cmd`, which the runner cannot start without a shell.
+
+**Install.** Download `agentflow-runner-<version>-windows.zip` from the
+repository's GitHub Releases (see [Releases](#releases)), or build it on any
+machine with the repository:
+
+```bash
+pnpm -C apps/desktop package:headless --windows
+# dist-headless/agentflow-runner-<version>-windows.zip
+```
+
+Unzip it on the Windows machine and run `start-runner.cmd`. The first start
+asks four questions, then connects:
+
+| Question | Default |
+|---|---|
+| AgentFlow API URL | — |
+| API key (`sk_live_...`) | — |
+| Runner name | The Windows user name, accents removed and every other character run turned into `-` (`Nguyễn Văn An` → `Nguyen-Van-An`) |
+| Workspace | `%USERPROFILE%\.agentflow\_works` |
+
+The answers are saved to `%USERPROFILE%\.agentflow-runner\runner.env`;
+`setup-runner.cmd` (`node runner.mjs setup`) asks again. The runner reads
+that file on every platform (see "Configuration"), and any other variable in
+it reaches the loops, e.g. `CLAUDE_CODE_OAUTH_TOKEN`, or a connection string
+that points the agents at their own database:
+
+```
+ConnectionStrings__DefaultConnection=Server=localhost;Database=App_Agent;Trusted_Connection=True;TrustServerCertificate=True
+```
+
+**What is different on Windows:**
+
+- Loop scripts run in Git for Windows' `bin\bash.exe`, found next to the
+  `git.exe` on PATH or in the default install locations; set
+  `AGENTFLOW_GIT_BASH_PATH` to use another. WSL's `System32\bash.exe` is never
+  used. Claude Code gets the same bash (`CLAUDE_CODE_GIT_BASH_PATH`), and the
+  paths passed to scripts use forward slashes (`C:/Users/...`).
+- Windows builds of Python and jq print `\r\n`, which bash keeps in every
+  `$(...)`. The runner writes shims to `<data dir>\shims` and puts them first
+  on the loops' PATH: `python3` (the first of `python3`, `python`, `py -3`
+  that runs Python 3), `jq` (with `--binary`), and a `sitecustomize.py` on
+  `PYTHONPATH` that makes Python print `\n`. Loops also get `PYTHONUTF8=1`.
+- Stopping a loop ends its whole process tree with `taskkill /T /F`; Windows
+  has no graceful equivalent, so the scripts get no chance to clean up.
+- The Claude Code version set in AgentFlow is not installed: loops run the
+  `claude` on PATH. Keep it current with `claude update`.
+- To start the runner with Windows, add `start-runner.cmd` to a Task
+  Scheduler task that runs at logon of the runner's account.
 
 ## After installing
 
@@ -243,7 +326,40 @@ Docker Desktop or WSL2 on Windows machines.
 3. Select it as the compute target of a workflow (Workflows → edit → Agent
    team).
 
+## Claude Code version
+
+Settings → Compute & Integrations → Local Compute Targets → the runner →
+**Model provider** → **Claude Code version**: `latest` (the default) or an
+exact release such as `2.1.296`, for instance when a proxy accepts only one
+version. It is sent with every loop, like the model provider
+(`src/headless/claude-code-versions.ts`):
+
+- When a loop starts, the runner resolves `latest` to a release number (the
+  official installer's `https://downloads.claude.ai/claude-code-releases/latest`).
+  If the version is neither installed nor the image's own, it runs
+  `claude install <version>`, Claude Code's native installer, which verifies
+  the release checksum, and checks the result with `--version`. A version that
+  cannot be installed fails the loop with the reason; the runner never falls
+  back to another version. If `latest` cannot be looked up (one retry), the
+  newest version on the runner runs, installed or the image's own.
+- The loop runs that binary by absolute path, and `~/.local/bin/claude`
+  (first on `PATH`) points at it, so `docker exec agentflow-runner-1 claude
+  --version` reports the version the last loop used. A change takes effect
+  with the next loop; running loops keep their version.
+- Installed versions are kept in `~/.local/share/claude/versions` (the
+  `/home/runner/.local/share/claude` volume): switching back to one is
+  immediate, a new one downloads about 100 MB.
+- `DISABLE_AUTOUPDATER=1` (set by the image) keeps Claude Code from updating
+  itself away from the version set. Set it in `runner.env` on a systemd
+  runner.
+- The desktop app ignores the setting and keeps its own `claude`.
+
 ## Configuration
+
+Settings come from the environment and from `<data dir>/runner.env`, written
+by `node runner.mjs setup` (one `NAME=value` per line; a variable set in the
+environment wins). A start from a terminal with no API URL or key asks the
+setup questions first.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -251,14 +367,21 @@ Docker Desktop or WSL2 on Windows machines.
 | `AGENTFLOW_API_KEY` | required | `sk_live_` key with the `write` scope. |
 | `AGENTFLOW_RUNNER_NAME` | hostname | Compute target name. Set it: a container's hostname changes on every `docker run`. |
 | `AGENTFLOW_WEB_APP_URL` | API URL | Web app origin (links only). |
+| `AGENTFLOW_MCP_URL` | the API's | MCP endpoint instruction agents use for integration tools (docs/workflows.md "Integration tools"). The API names it (its own `AGENTFLOW_MCP_URL`, default `http://localhost:3010/mcp`); set it when the runner reaches the MCP server under another address, e.g. `http://host.docker.internal:3010/mcp` from a container. |
 | `AGENTFLOW_RUNNER_WORKSPACE` | `/workspace` | Repositories are cloned here and loops work in worktrees next to them. Project repositories are cloned by URL with per-loop credentials from the API (docs/workflows.md "How loops use them"); the runner needs no git or `gh` login. |
 | `AGENTFLOW_RUNNER_DATA_DIR` | `~/.agentflow-runner` | Identity, job store, sealed loop tokens, status file. Keep it private. |
+| `AGENTFLOW_RUNNER_MODE` | `auto` | `personal`: one project, in a folder of this computer, with its credentials (see "Personal runner"). |
+| `AGENTFLOW_RUNNER_PROJECT_KEY` | — | Personal: the AgentFlow project key (slug) whose steps the runner runs. |
+| `AGENTFLOW_RUNNER_PROJECT_DIR` | — | Personal: the project folder loops run in; replaces the workspace. |
+| `AGENTFLOW_RUNNER_PARALLEL` | `false` | Personal: `true` lets several loops run in the folder at once (the project's commands make their own worktrees); `false` runs them in turn. |
+| `AGENTFLOW_RUNNER_SKIP_PERMISSIONS` | `false` | Personal: `true` lets the agent use any tool without a permission prompt (`--permission-mode bypassPermissions`). |
 | `AGENTFLOW_RUNNER_MAX_CONCURRENT` | `2` | Commands executed at the same time. |
-| `AGENTFLOW_RUNNER_GATEWAY_PORT` | `47821` | Local gateway port, loopback only (the next 10 ports are tried if taken). |
+| `AGENTFLOW_RUNNER_GATEWAY_PORT` | any free port | Local gateway port, loopback only. Setup asks for it (Enter: any free port). A configured port that is taken stops the runner. The port in use is logged at start and written to `<data dir>/gateway-port`. |
 | `AGENTFLOW_RUNNER_REWRITE_CALLBACK_URL` | `true` | Send loop callbacks to `AGENTFLOW_API_URL` instead of the API's own `API_BASE_URL`, which is often a host-local address. |
 | `AGENTFLOW_RUNNER_REPORT_SESSIONS` | `true` | Report every loop as an agent session, and the runner's agents (see "Sessions and Agents"). `false` turns it off. |
 | `AGENTFLOW_ALLOW_HTTP_HOSTS` | — | Comma-separated host names allowed over plain http besides localhost. Also honoured by the desktop app. |
-| `AGENTFLOW_PLUGINS_DIR` | set by the image / service | The `agent-plugins` directory. |
+| `AGENTFLOW_PLUGINS_DIR` | set by the image / service; else `agent-plugins` next to `runner.mjs` | The `agent-plugins` directory. |
+| `AGENTFLOW_GIT_BASH_PATH` | found next to `git.exe` | Windows only: Git for Windows' `bin\bash.exe`, which runs the loop scripts. |
 | `GH_TOKEN` / `GITHUB_TOKEN` | — | gh and git (HTTPS) authentication. |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | `AgentFlow Runner` | Fallback git identity; loops commit as the loop's user. |
 | `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_*` | — | Claude credentials, passed through to `claude`. |
@@ -271,7 +394,8 @@ Docker Desktop or WSL2 on Windows machines.
 | `AGENTFLOW_API_URL: Origin must use https …` | Plain http to a non-local host; use https or list the host in `AGENTFLOW_ALLOW_HTTP_HOSTS`. |
 | Exits with code 3, `Cannot start: missing required tools …` | `bash`, `git`, `claude`, `jq` or `python3` is not on the PATH, the plugins are not found, or the workspace is not writable. |
 | `No Claude credentials found` warning | Expected when the runner's model provider is set in AgentFlow; otherwise loops fail at the first `claude` call. |
-| System Check shows "Claude authentication: No Claude credential found" | Same: set a model provider for the computer in AgentFlow, or a credential on the runner. The row is a warning, not a required check. |
+| System Check shows "Claude authentication: No Claude credential found" | Neither a model provider in AgentFlow nor a credential on the runner. Set the model provider (Settings → Local Compute Targets → the runner → **Model provider**) and run the check again: the row then reads "AgentFlow model provider (<host>)". The runner asks the API for it with its own key; an older runner image always showed this warning, so rebuild it. The row is a warning, not a required check. |
+| System Check on a runner has no "Claude MCP" / "Codex MCP" rows | Expected: runners only run loops and health checks, never the AgentFlow MCP server or Codex, so those rows do not apply. The "Gateway Version" row shows the runner's version as a local build; it is never compared with desktop releases. |
 | `Connection degraded: …` in a loop | The API is unreachable or rejects the key (revoked, missing `write` scope); the runner keeps retrying. |
 | A command fails with `operation not supported by the headless runner` | Expected for desktop-only features (file browsing, chats, deploys); runners only run loops and health checks. |
 
@@ -338,12 +462,11 @@ pages, the way the desktop app reports its local sessions
   Agents page; the subagents, skills and commands a loop invokes count as
   their usage.
 
-AgentFlow ingests them only when the organization allows session sync
-(Settings → Organization → **Sync session data to the cloud**) and the
-`desktop-agent-session-sync` feature flag is on (PostHog, or
-`AGENTFLOW_FEATURE_FLAGS` on a deployment without PostHog: see
-self-hosting.md). A refusal pauses the reporting for five minutes. Set
-`AGENTFLOW_RUNNER_REPORT_SESSIONS=false` to turn it off on a runner.
+AgentFlow always ingests them: no organization setting or feature flag
+switches it off, and the data stays in the deployment's own database. A
+refused or failed report (the API down, say) pauses the reporting for five
+minutes. Set `AGENTFLOW_RUNNER_REPORT_SESSIONS=false` to turn it off on a
+runner.
 
 ## Secret guard
 
@@ -444,6 +567,224 @@ A project process step (docs/workflows.md "Project process") runs as a
 The tools a toolkit's scripts call (`bash`, `git`, `jq`, project
 toolchains, ...) must be installed on the runner like any other loop tool.
 
+## Personal runner
+
+A runner in **personal** mode works for one AgentFlow project on a person's
+own computer, in the project folder they already use, so the commands they
+type by hand today run unchanged when a workflow starts them. It is a
+migration aid, not a replacement for the auto runner.
+
+| | Auto (default) | Personal |
+|---|---|---|
+| Projects | any | one, by its AgentFlow project key (the project's slug, e.g. `PRO-1`) |
+| Where loops work | clones in the workspace, one worktree per loop | the project folder itself: no clone, no worktree |
+| Credentials | per-loop git credentials from AgentFlow; AgentFlow's integration tools | everything on the computer: git config and credential helpers, ssh, `gh`, the person's `~/.claude` (plugins, commands, MCP servers). Only the Claude model provider set for the computer comes from AgentFlow with each loop |
+| Commits | AgentFlow commits as the loop's user (`finish: push`) | the step's own commands commit, push and open pull requests; `finish: push` steps are refused |
+| Loops | PLAN, EXECUTE, STEP, ... | process steps (STEP loops) only |
+| At once | `AGENTFLOW_RUNNER_MAX_CONCURRENT` | one, the other runs waiting their turn, or several when the project's commands make their own worktrees (`AGENTFLOW_RUNNER_PARALLEL=true`) |
+| Permission prompts | the loop's allowed tools | the loop's allowed tools and the person's `permissions.allow`, or none at all (`AGENTFLOW_RUNNER_SKIP_PERMISSIONS=true`) |
+| Per computer | any number, each with its own `AGENTFLOW_RUNNER_DATA_DIR` | any number, one per project key |
+| Claude Code | the version set in AgentFlow | the `claude` on PATH (no pinning: `~/.local/bin/claude` is shared by the account) |
+
+**Set up.** `node runner.mjs setup` (Windows: `setup-runner.cmd`) asks for the
+mode first; Enter keeps `auto`. Personal asks for the API URL and key, the
+project key, the project folder (it must exist), whether the project's
+commands can run several tasks at once in that folder (default no), whether
+the agent may use any tool without a permission prompt (default no), the
+runner name (default `<user name>-<project key>`) and the local gateway port
+(Enter: any free port). The answers go to
+`<data dir>/personal/<project key>/runner.env`; start it with
+
+```bash
+node runner.mjs --project PRO-1          # Windows: start-runner.cmd --project PRO-1
+node runner.mjs setup --project PRO-1    # asks that runner's questions again
+```
+
+Each personal runner has its own data directory (identity, job store, loop
+tokens, status, Windows shims), so any number of them, for different
+projects, run side by side with auto runners. Runners are not limited; a
+lock file (`runner.lock`) only keeps a second process off a data directory
+already in use, since both would be the same computer in AgentFlow.
+
+**How a step runs** (`apps/desktop/src/server/operations/personal-runner.ts`):
+
+- The loop must carry the runner's project key (AgentFlow sends the
+  project's slug with every loop); another project's loop, a loop that is
+  not a STEP and a `finish: push` step are refused with that reason, which
+  fails the loop.
+- **One at a time** (the default): AgentFlow does not start a step on the
+  runner while another loop holds it. The step waits (`runner_busy`, tried
+  again every minute) and the runs take the runner in turn
+  (`apps/api/lib/workflows/engine/personal-runner-queue.ts`); two runs that
+  start at the same moment are ordered by their loops' creation. A loop that
+  still reaches a busy runner is refused.
+- **Several at once** (`AGENTFLOW_RUNNER_PARALLEL=true`): every run has its own
+  work directory, `.agentflow-ai/runs/<run id>` (the `AGENTFLOW_WORKDIR` of
+  its agent), holding its `issue.md`, `questions.json`, agent output and
+  session, so parallel runs never read each other's questions or answers.
+  The project's commands must keep their own work apart (a worktree or a
+  branch per ticket); the runner does not.
+- The agent runs from the project folder. A run's first step creates its
+  work directory empty and removes work directories unused for 30 days; in a
+  git repository `.agentflow-ai/` is added to `.git/info/exclude`. Nothing
+  else is written into the folder: no `CLAUDE.md`, no `.claude/agents`, no
+  toolkit links. The step's instructions (where the run's files are, how to
+  ask questions, the toolkit's notes) go to `--append-system-prompt`.
+- The agent gets no AgentFlow integration tools (they act with the
+  connection's credentials); the workflow's own actions still run in
+  AgentFlow as usual. Tools beyond the loop's `--allowedTools` (e.g. the
+  person's Jira MCP server) need the command's `allowed-tools` front matter,
+  the person's Claude Code `permissions.allow`, or
+  `AGENTFLOW_RUNNER_SKIP_PERMISSIONS=true` (`--permission-mode
+  bypassPermissions`: the agent may then do anything the account can):
+  nobody is at the terminal to approve a prompt.
+- Questions work like any step with `questions: ask`: the command writes
+  `$AGENTFLOW_WORKDIR/questions.json` and stops; the run shows them in
+  AgentFlow, and the answers resume the same session.
+- The folder is never removed or reset; worktree clean-up skips it.
+- A workflow chooses a person's runner per item with runner rules
+  (docs/workflows.md "Runner rules"), e.g. the assignee's. A personal runner
+  a workflow or a rule names is used even when the project lists other
+  runners.
+
+### Writing commands for a personal runner
+
+A command written for a person at a terminal runs on a personal runner with
+small changes. The runner tells the agent all of this in its system prompt
+too; writing it into the command keeps the command correct when someone
+runs it by hand.
+
+1. **Never ask in the terminal.** Nobody answers, so the step ends without
+   doing anything. Where the command would ask (`AskUserQuestion`, "Proceed?
+   yes/no", "Overwrite?"), it writes the questions and stops:
+
+   ```markdown
+   When you need a decision you cannot make from the ticket or the code:
+   - If `$AGENTFLOW_WORKDIR` is set (an AgentFlow run), write the questions to
+     `$AGENTFLOW_WORKDIR/questions.json` as a JSON array, e.g.
+     `[{"id": "q1", "question": "Export CSV or XLSX?", "options": ["CSV", "XLSX"]}]`,
+     then stop. Do not ask in the terminal.
+   - Otherwise ask the user as usual.
+   ```
+
+   At most 30 questions, 2,000 characters each, 10 options of 500
+   characters. The answers come back as the next prompt of the same session:
+   pick up where the command stopped (write the answers where the command
+   keeps them, e.g. `clarifications.md`, then go on).
+2. **Never wait for a confirmation.** Decide with a stated default, or ask
+   through the file. An `--auto` flag, as `/brep.ship` has, is the simplest
+   switch: the step's instruction passes it (`/speckit.clarify-all
+   {{issue.key}} --auto`).
+3. **Keep the run's own files in `$AGENTFLOW_WORKDIR`.** It holds the ticket
+   (`issue.md`). Another run may work in the same folder at the same time
+   when the runner runs in parallel: anything specific to one ticket goes
+   there or under a path named after the ticket (`BREP-12/...`), never in a
+   shared file such as `./clarifications.md`.
+4. **Allow the tools it needs** in its front matter (`allowed-tools:
+   Bash(git:*), mcp__jira__*, ...`), or set
+   `AGENTFLOW_RUNNER_SKIP_PERMISSIONS=true` on the runner.
+5. **Report through files the step collects.** A step's `artifacts` globs and
+   its `reply` file are read after the agent stops (paths under
+   `.agentflow-ai/work/` mean the run's work directory); post actions can then
+   comment them on the ticket, or the command does it itself with the
+   person's Jira tools.
+
+## Capabilities (AGENTFLOW.md)
+
+A runner tells AgentFlow what it can do in an `AGENTFLOW.md`, so the project's
+orchestrator knows which command of which runner to send a request to. A
+personal runner reads it from its project folder; an auto runner reads it from
+the root of the default branch of the project's toolkit repository (see
+"Reading it from a toolkit" below). The front matter lists the
+commands and skills (the part AgentFlow reads and later checks); the body
+describes them in detail for the orchestrator.
+
+```markdown
+---
+runner: Dev (LeaveDesk)          # a display name for the runner's role
+commands:
+  - name: /plan-ticket           # the slash command as typed in Claude Code
+    args: <ticket-key>
+    description: Plan a ticket from its PRD
+    mode: write                  # read | write (required)
+    produces: plan               # prd | plan | testcases | code | answer | ...
+    needs: [prd]                 # what must exist before it runs
+    asks: true                   # may stop with questions
+    push: false                  # commits and pushes
+    attach: ["PLAN-*.md"]        # files it writes for the ticket (in its work dir)
+  - name: /explain-code
+    mode: read
+    produces: answer
+skills: [tdd, systematic-debugging]
+---
+
+# Dev runner (LeaveDesk)
+
+## /plan-ticket
+Reads the PRD attached to the ticket (PRD-<KEY>.md), explores leavedesk-app
+and writes the plan to $AGENTFLOW_WORKDIR/plan.md. Use it once the ticket has
+an approved PRD; to answer questions about a plan, resume its session.
+```
+
+- The runner uploads the file when it connects and whenever it changes
+  (`src/headless/headless-capabilities-reporter.ts`, `PUT
+  /compute-targets/{id}/capabilities` with the owner's API key). No file: the
+  runner logs it once and uploads nothing.
+- Before uploading, the runner checks that each declared command is in
+  `.claude/commands` (`/ns:cmd` is `ns/cmd.md`) or `.claude/skills` of the
+  project folder or `~/.claude`, and each skill in `.claude/skills`; what it
+  cannot find is uploaded as a warning (a plugin's command cannot be checked
+  this way).
+- `attach` lists globs of files the command writes for the ticket, relative to
+  the task's work directory: `<workspace root>/.agentflow-ai/work/` on an auto
+  runner, `$AGENTFLOW_WORKDIR` on a personal runner. When the loop ends the
+  runner collects the matches as bytes (at most 20 files, 4 MB each, 5 MB in
+  total), and the orchestrator can attach them to the ticket. Only
+  orchestrator tasks use it (process steps use `artifacts` and
+  `$AGENTFLOW_ATTACH`). Name the files in the command's body text.
+- The API parses the front matter itself (`parseRunnerCapabilitiesMarkdown`,
+  `packages/api/src/types/runner-capabilities.ts`) and keeps one file per
+  runner and project (`compute_target_capabilities`); a file whose front matter
+  does not parse is kept with its problems.
+### Reading it from a toolkit (auto runners)
+
+The `capabilities_refresh` operation makes an auto runner clone or fetch the
+toolkit repository, read `AGENTFLOW.md` from `refs/remotes/origin/<default
+branch>`, and upload it with `source: toolkit` through the same `PUT
+/compute-targets/{id}/capabilities`. It always uploads after a successful read,
+so `uploadedAt` shows the last check.
+
+- **Triggers.** (1) **Refresh** on a toolkit row, or **Read from a runner's
+  toolkit** in Project → Runners → Commands (org admins). (2) A daily cron,
+  `/cron/refresh-runner-capabilities`, which refreshes toolkit files older than
+  20 h (at most 100 per run, online runners only). (3) Saving the project
+  process with a changed `toolkit` (repository or mounts) refreshes the
+  runners that already have a toolkit file for the project and the project's
+  assigned runners.
+- **Which repository.** The one named in the form; else the `toolkit.repository`
+  of the runner's previously uploaded file for the project; else the project
+  process's `toolkit.repository`. With none, the request is refused. The
+  repository must be one of the project's repositories.
+- **Credential.** The runner's git credential helper calls
+  `POST /compute-targets/{id}/capabilities/refresh/{refreshId}/git-credential`
+  with the runner's own API key. The API issues a credential only while that
+  refresh is queued, accepted or running, only to the runner's owner, and only
+  for the repository the command names. Nothing is written to disk.
+- **Status.** `GET /compute-targets/{id}/capabilities/refresh/{refreshId}`
+  answers pending, succeeded or failed (with the reason).
+- **Older and personal runners.** The runner advertises the capability flag
+  `toolkitCapabilitiesRefresh`. A runner without it, a personal runner, or an
+  offline runner is refused with a message naming the machine; upload the file
+  by hand with `PUT /compute-targets/{id}/capabilities` instead.
+- **Warnings.** Declared commands and skills are checked against the
+  repository's `.claude/` tree; the runner also warns when the front matter
+  names no toolkit or a different repository than the one it was read from.
+
+- Project → Integrations → **Commands** shows
+  each runner's commands, problems, warnings and the file;
+  `GET /projects/{id}/runner-capabilities` returns them.
+- The file is sent to AgentFlow: never put a secret in it.
+
 ## How it relates to the desktop app
 
 The runner is built from the desktop source (`apps/desktop/src/headless/`) and
@@ -456,8 +797,24 @@ if anything else pulls Electron in.
 
 | | Desktop app | Headless runner |
 |---|---|---|
-| Operations | Everything the web app can ask a workstation to do | Only `symphony_loop`, `symphony_loop_kill`, `symphony_status`, `symphony_logs`, `health_check`; everything else is refused |
+| Operations | Everything the web app can ask a workstation to do | Only `symphony_loop`, `symphony_loop_kill`, `symphony_status`, `symphony_logs`, `health_check`, `capabilities_refresh`, the orchestrator ops (`orchestrator_turn`, `orchestrator_turn_cancel`); everything else is refused |
 | Session capture, cost tracking, dashboards | Yes | No |
 | Sign-in | Browser login (managed key) | A `sk_live_` API key in the environment |
 | Browser-signed commands | Supported | Not supported (the runner does not advertise command signing) |
 | Secrets at rest | OS keychain (`safeStorage`) | AES-256-GCM with a key file in the data directory |
+
+## Releases
+
+`.github/workflows/runner-release.yml` builds both packages and attaches them
+to a GitHub Release. To publish one, bump `version` in
+`apps/desktop/package.json`, commit, and push the matching tag:
+
+```bash
+git tag runner-v<version>
+git push origin runner-v<version>
+```
+
+The workflow fails if the tag does not match the version. It also checks on a
+Windows machine that the zip unpacks and `runner.mjs` parses before
+publishing. Running the workflow by hand (Actions → Runner release → Run
+workflow) builds the packages as a workflow artifact without a release.

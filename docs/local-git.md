@@ -19,6 +19,7 @@ Local Git web UI.
 ```bash
 docker compose up -d local-git
 pnpm local-git:init --org my-team
+# restart the API (pnpm dev) so it reads the new values
 ```
 
 `local-git:init` (scripts/local-git-init.mjs) is idempotent. It
@@ -28,9 +29,10 @@ pnpm local-git:init --org my-team
   Without a password one is generated and printed once: change it in Local
   Git → Settings;
 - with `--org`, creates an organization for the team's repositories;
-- prints a new access token (scopes `write:repository`, `write:organization`,
-  `write:user`, `write:issue`) and the values of the connection form. Every run
-  issues another token; revoke old ones in Local Git → Settings → Applications.
+- issues a new access token (scopes `write:repository`, `write:organization`,
+  `write:user`, `write:issue`) and writes it, with the addresses, to
+  `apps/api/.env.local` (`--no-env` prints them instead). Every run issues
+  another token; revoke old ones in Local Git → Settings → Applications.
 
 The web UI is at **http://localhost:3300** (`LOCAL_GIT_PORT`; set
 `LOCAL_GIT_URL` too when browsers reach it under another address). Sign-in is
@@ -38,20 +40,33 @@ required and new repositories are private. Data lives in the `local_git_data`
 volume (`docker run --rm -v agentflow_local_git_data:/data -v "$PWD:/backup"
 alpine tar czf /backup/local-git.tgz /data` backs it up).
 
-## Connect AgentFlow
+## The default connection
 
-Settings → Integrations → Connections → Add connection → **Local Git**:
+Local Git is the default git hosting, so nobody adds its connection: when the
+API has `LOCAL_GIT_TOKEN`, every organization has a **Local Git** connection
+(Settings → Integrations → Connections lists it as *Default*, and Add
+connection no longer offers Local Git). The API creates each organization's
+connection the first time its connections are listed, and refreshes it when
+these values change (`apps/api/lib/integrations/server-connections.ts`):
 
-| Field | Value |
+| Variable (`apps/api/.env.local`) | Value |
 |-------|-------|
-| Server URL | Where the AgentFlow API reaches it: `http://localhost:3300` when the API runs on the same machine. |
-| Runner URL | Where runners reach it, when that differs: `http://host.docker.internal:3300` for runner containers on this machine, the machine's network address for runners elsewhere. Empty = the server URL. Repositories added before a change keep their old clone URL: remove and add them again. |
-| Access token | The token printed by `pnpm local-git:init`. |
-| Owner | The organization (or user) whose repositories projects can add, and where new ones are created. Empty = every repository the token can see; new ones go to the token's account. |
+| `LOCAL_GIT_SERVER_URL` | Where the AgentFlow API reaches it: `http://localhost:3300` (default) when the API runs on the same machine. |
+| `LOCAL_GIT_RUNNER_URL` | Where runners reach it, when that differs: `http://host.docker.internal:3300` for runner containers on this machine, the machine's network address for runners elsewhere. Empty = the server URL. Repositories added before a change keep their old clone URL: remove and add them again. |
+| `LOCAL_GIT_TOKEN` | The access token `pnpm local-git:init` issued. Without it there is no default connection, and an admin can add a Local Git connection by hand instead. |
+| `LOCAL_GIT_OWNER` | The organization (or user) whose repositories projects can add, and where new ones are created. Empty = every repository the token can see; new ones go to the token's account. |
+
+The default connection is read-only in Settings (Test still works): change
+it through these variables and restart the API. A Local Git connection an
+admin added earlier for the same server (same server and runner URLs) is
+adopted as the default rather than duplicated: it keeps its id, so the
+project repositories and workflow actions using it keep working. It is
+recognised by having no creator, and written under a per-organization
+advisory lock, so concurrent requests never create two.
 
 ## Use it in a project
 
-Project → Repositories → **Add repository** → choose the Local Git connection:
+Project → Integrations → **Add repository** → choose the Local Git connection:
 
 - **Add** an existing repository from the list, or
 - **Create and add**: a new private repository with a first commit on `main`

@@ -105,9 +105,6 @@ export type DocumentEditorScaffoldProps = {
   /** Delete dialog title (e.g. "PRD", "Implementation Plan", "Issue") */
   deleteDialogTitle: string;
 
-  /** Optional teamId for MoveEntityDialog (Feature passes a value) */
-  moveDialogTeamId?: string | null;
-
   /**
    * Open straight into edit mode on first mount when the current version is the
    * latest and its content is empty (ISS-4382). The org-level Document editor
@@ -177,7 +174,6 @@ export function DocumentEditorScaffold({
   feedArtifactType,
   hideRepositoriesInMetadataBar = false,
   deleteDialogTitle,
-  moveDialogTeamId,
   startInEditModeWhenEmpty = false,
   emptyContentPlaceholder = "Add description...",
   hideMoveAction = false,
@@ -576,7 +572,6 @@ export function DocumentEditorScaffold({
           entity={{ id: document.id, projectId: document.projectId }}
           onOpenChange={chrome.setShowMoveDialog}
           open={chrome.showMoveDialog}
-          teamId={moveDialogTeamId ?? undefined}
         />
       )}
 

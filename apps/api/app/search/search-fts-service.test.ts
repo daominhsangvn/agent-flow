@@ -49,7 +49,6 @@ type Candidate = {
   updated_at: Date;
   slug: string | null;
   entity_subtype: string | null;
-  team_id: string | null;
   anchor_entity_id: string | null;
 };
 
@@ -240,7 +239,6 @@ function candidate(over: Partial<Candidate> = {}): Candidate {
     updated_at: new Date("2026-01-01"),
     slug: null,
     entity_subtype: null,
-    team_id: null,
     anchor_entity_id: null,
     ...over,
   };
@@ -367,7 +365,6 @@ describe("searchFtsService.searchUnified — per-hit re-authorization (redaction
           entity_id: "d1",
           slug: "my-prd",
           entity_subtype: "PRD",
-          team_id: null,
         }),
       ],
       visible: { [SearchEntityType.Document]: ["d1"] },
@@ -379,7 +376,6 @@ describe("searchFtsService.searchUnified — per-hit re-authorization (redaction
     expect(hit.entitySubtype).toBe("PRD");
     // A null projection column is OMITTED, never serialized as null/undefined,
     // so a version-skewed/old client sees the optional field absent.
-    expect("teamId" in hit).toBe(false);
   });
 
   it("returns the anchor_entity_id route field for a pull_request hit (FEA-3930)", async () => {
@@ -423,7 +419,6 @@ describe("searchFtsService.searchUnified — per-hit re-authorization (redaction
           entity_id: "l1",
           slug: null,
           entity_subtype: null,
-          team_id: null,
         }),
       ],
       visible: { [SearchEntityType.Loop]: ["l1"] },
@@ -432,7 +427,6 @@ describe("searchFtsService.searchUnified — per-hit re-authorization (redaction
     const hit = (await searchFtsService.searchUnified(baseParams())).results[0];
     expect("slug" in hit).toBe(false);
     expect("entitySubtype" in hit).toBe(false);
-    expect("teamId" in hit).toBe(false);
   });
 });
 

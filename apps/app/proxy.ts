@@ -15,7 +15,7 @@ import {
 import { shouldEnableContentSecurityPolicy } from "./lib/content-security-policy";
 import { getPossibleElectronHostnames } from "./lib/engineer/electron-probe";
 // SECURITY CRITICAL: the localhost-only gateway guard. Enforced here, in the
-// Clerk middleware chain, before any gateway request is allowed through. The
+// auth middleware chain, before any gateway request is allowed through. The
 // implementation lives in a leaf module so the 403/401 decisions are unit-
 // testable; do NOT bypass or remove this call (arbitrary command execution risk).
 import { gatewayGuard } from "./lib/engineer/gateway-guard";
@@ -28,7 +28,7 @@ const ELECTRON_HOSTNAMES = getPossibleElectronHostnames().map(
   ({ hostname }) => hostname
 );
 
-// Clerk middleware wraps other middleware in its callback
+// The @repo/auth middleware wraps other middleware in its callback
 export default authMiddleware(
   async (auth, request) => {
     const securityHeadersResponse = await securityHeaders();

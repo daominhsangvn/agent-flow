@@ -60,7 +60,6 @@ function makeProjectRow(overrides: Record<string, unknown> = {}) {
     priority: Priority.Medium,
     updatedAt: new Date("2024-01-01"),
     assignee: null,
-    teams: [{ team: { id: "team-1", name: "Team A" } }],
     ...overrides,
   };
 }

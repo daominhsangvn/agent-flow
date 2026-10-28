@@ -234,13 +234,6 @@ async function searchProjects(
         priority: true,
         updatedAt: true,
         assignee: basicUserSelect,
-        teams: {
-          select: {
-            team: { select: { id: true, name: true } },
-          },
-          orderBy: { createdAt: "asc" },
-          take: 1,
-        },
       },
       ...SEARCH_ORDER,
     })
@@ -254,8 +247,6 @@ async function searchProjects(
       slug: r.slug,
       status: r.status,
       priority: r.priority,
-      teamName: r.teams[0]?.team.name ?? null,
-      teamId: r.teams[0]?.team.id ?? null,
       assignee: r.assignee,
       updatedAt: r.updatedAt,
     })),

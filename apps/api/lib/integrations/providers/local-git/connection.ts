@@ -50,7 +50,7 @@ export const localGitConnectionFields: IntegrationFieldDescriptor[] = [
     label: "Access token",
     kind: IntegrationFieldKind.Secret,
     required: true,
-    description: `Access token of the Local Git account agents push as, with the scopes ${LOCAL_GIT_TOKEN_SCOPES}. \`pnpm local-git:init\` creates the account and prints one.`,
+    description: `Access token of the Local Git account agents push as, with the scopes ${LOCAL_GIT_TOKEN_SCOPES}. \`pnpm local-git:init --no-env\` creates the account and prints one (without --no-env it writes it to the API's environment, and the API provides this connection to every organization).`,
   },
   {
     key: "owner",

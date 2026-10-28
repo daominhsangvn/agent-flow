@@ -1,2 +1,0 @@
--- AlterEnum
-ALTER TYPE "LoopCommand" ADD VALUE 'REQUEST_PRD_CHANGES';

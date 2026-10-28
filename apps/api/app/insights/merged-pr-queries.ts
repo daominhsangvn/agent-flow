@@ -230,7 +230,7 @@ const PROJECTED_PR_IDENTITY_SQL = Prisma.sql`
  *
  * `predicate` is the PR-side half of the WHERE, over the `p`
  * (`pull_request_detail`) and `a` (branch `artifacts`) aliases this statement
- * joins; the org/user/team scope comes from {@link artifactScopeSql}.
+ * joins; the org/user scope comes from {@link artifactScopeSql}.
  *
  * This used to pair an exact `count()` with a {@link MERGED_PR_SCAN_CAP}-capped
  * identity scan and subtract the duplicates the scan could see. That shipped up
@@ -284,15 +284,6 @@ function artifactScopeSql(ctx: InsightsScopeContext): Prisma.Sql {
   const org = Prisma.sql`a.organization_id = ${ctx.organizationId}::uuid`;
   if (ctx.scope === InsightsScope.Me) {
     return Prisma.sql`${org} AND a.created_by_id = ${ctx.userId}::uuid`;
-  }
-  if (ctx.scope === InsightsScope.Team && !ctx.teamId) {
-    return Prisma.sql`false`;
-  }
-  if (ctx.scope === InsightsScope.Team && ctx.teamId) {
-    return Prisma.sql`${org} AND EXISTS (
-      SELECT 1 FROM team_members tm
-      WHERE tm.user_id = a.created_by_id AND tm.team_id = ${ctx.teamId}::uuid
-    )`;
   }
   return org;
 }

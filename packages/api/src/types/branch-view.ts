@@ -172,8 +172,6 @@ export type BranchViewLoadErrorDetails = {
   producedByPlanTitle?: string;
   projectId?: string;
   projectName?: string;
-  teamId?: string;
-  teamName?: string;
 };
 
 export const BranchViewFileCacheSyncErrorCode = {
@@ -477,8 +475,6 @@ export type BranchViewData = {
   prHtmlUrl: string;
   featureSlug: string | null;
   featureTitle: string | null;
-  teamId: string | null;
-  teamName: string | null;
   projectId: string | null;
   projectName: string | null;
   headBranch: string;

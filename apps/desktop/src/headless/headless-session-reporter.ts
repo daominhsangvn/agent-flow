@@ -12,9 +12,9 @@
  *
  * It uses the same routes and payloads as the desktop app's sync lanes
  * (`POST /desktop/agent-sessions/sync`, `POST /desktop/components/sync`) with
- * the runner's API key. AgentFlow ingests them only when the organization
- * allows session sync (Settings → Organization); a refusal pauses the
- * reporter for a while instead of retrying every tick.
+ * the runner's API key. AgentFlow always ingests them (there is no
+ * organization setting or flag for session sync); a refused or failing sync
+ * pauses the reporter for a while instead of retrying every tick.
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -28,6 +28,10 @@ import {
 } from "@repo/api/src/types/agent-session";
 import type { JobStore, LocalJob } from "../main/jobs/job-store.js";
 import { gatewayLog } from "../main/logging/gateway-logger.js";
+import {
+  type BranchDiffStats,
+  loopBranchDiffStats,
+} from "./headless-branch-diff.js";
 import {
   buildSyncedSession,
   createLoopSessionStream,
@@ -123,6 +127,11 @@ type LoopState = {
   finalReported: boolean;
   /** Read while the worktree exists; finalization removes it. */
   workBranch: string | null;
+  /**
+   * The work branch's diff for a finished loop that committed to it (null
+   * when it did not), read once it ended; kept when git can no longer tell.
+   */
+  branchDiff: BranchDiffStats | null;
   /** When the transcripts were last archived (epoch ms; 0 = never). */
   transcriptsArchivedAt: number;
   /** The finished loop's transcripts are archived in full. */
@@ -280,6 +289,9 @@ export function startHeadlessSessionReporter(
     if (!(await syncWorkspaceOnce(computeTargetId, workspace))) {
       return false;
     }
+    if (!isRunning) {
+      state.branchDiff = await finishedLoopBranchDiff(job, state, now());
+    }
     const session = buildSyncedSession(state.stream, {
       loopId: job.loopId,
       name: sessionName(job),
@@ -293,6 +305,7 @@ export function startHeadlessSessionReporter(
       sourceArtifactId: job.artifactId ?? null,
       baseBranch: job.baseBranch ?? null,
       workBranch: state.workBranch,
+      branchDiffStats: state.branchDiff,
       runnerName: deps.runnerName,
       command: job.command,
     });
@@ -366,6 +379,7 @@ function newLoopState(): LoopState {
     reported: "",
     finalReported: false,
     workBranch: null,
+    branchDiff: null,
     transcriptsArchivedAt: 0,
     transcriptsFinal: false,
     transcriptsFinalTried: false,
@@ -401,6 +415,7 @@ function readNewLines(job: LocalJob, state: LoopState, at: string): void {
       Object.assign(state, newLoopState(), {
         reported: state.reported,
         workBranch: state.workBranch,
+        branchDiff: state.branchDiff,
         transcriptsArchivedAt: state.transcriptsArchivedAt,
       });
     }
@@ -785,4 +800,27 @@ export function worktreeBranch(worktreeDir: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The code a finished loop committed on its work branch (headless-branch-diff.ts),
+ * or what was read before when git can no longer tell (e.g. its worktree is gone).
+ */
+async function finishedLoopBranchDiff(
+  job: LocalJob,
+  state: LoopState,
+  now: Date
+): Promise<BranchDiffStats | null> {
+  if (!(job.worktreeDir && job.baseBranch && state.workBranch)) {
+    return state.branchDiff;
+  }
+  const result = await loopBranchDiffStats({
+    worktreeDir: job.worktreeDir,
+    baseBranch: job.baseBranch,
+    workBranch: state.workBranch,
+    startedAt: job.startedAt,
+    endedAt: job.completedAt ?? job.updatedAt,
+    now,
+  });
+  return result.known ? result.stats : state.branchDiff;
 }

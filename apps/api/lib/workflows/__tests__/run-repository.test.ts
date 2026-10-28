@@ -31,6 +31,14 @@ const mocks = vi.hoisted(() => ({
   }>,
   locks: 0,
   failRunLookup: false,
+  attached: [] as unknown[],
+}));
+
+vi.mock("@/lib/workflows/engine/run-session-pull-requests", () => ({
+  attachPullRequestsToRunSessions: vi.fn((input: unknown) => {
+    mocks.attached.push(input);
+    return Promise.resolve();
+  }),
 }));
 
 vi.mock("@repo/database", () => {
@@ -41,13 +49,17 @@ vi.mock("@repo/database", () => {
           return Promise.reject(new Error("connection reset"));
         }
         return Promise.resolve(
-          "workflow" in args.select
-            ? { workflow: { projectId: mocks.projectId } }
+          "projectId" in args.select
+            ? { projectId: mocks.projectId }
             : { repository: mocks.stored }
         );
       }),
       findUnique: vi.fn(() =>
-        Promise.resolve({ repository: mocks.stored, prUrl: mocks.prUrl })
+        Promise.resolve({
+          organizationId: IDS.org,
+          repository: mocks.stored,
+          prUrl: mocks.prUrl,
+        })
       ),
       updateMany: vi.fn((args: Update) => {
         mocks.runUpdates.push(args);
@@ -125,6 +137,7 @@ beforeEach(() => {
   mocks.runUpdates = [];
   mocks.locks = 0;
   mocks.failRunLookup = false;
+  mocks.attached = [];
 });
 
 describe("recordRunRepositories", () => {
@@ -269,5 +282,45 @@ describe("recordActionOutputs", () => {
     await recordActionOutputs(IDS.run, opened);
 
     expect(mocks.runUpdates[0]?.data).not.toHaveProperty("prUrl");
+  });
+
+  it("lists the pull requests on the run's sessions, with their repository", async () => {
+    mocks.stored = [snapshotOf(API_ROW, { branch: "feat/iss-7" })];
+
+    await recordActionOutputs(IDS.run, {
+      pullRequests: [
+        {
+          repositoryId: IDS.api,
+          url: "https://github.com/contoso/api/pull/42",
+          number: 42,
+          branch: "feat/iss-7",
+          title: "ISS-7: Export CSV",
+        },
+        // Not a repository of the run: not listed.
+        {
+          repositoryId: "unknown-repository",
+          url: "https://github.com/contoso/docs/pull/3",
+          number: 3,
+          branch: "feat/iss-7",
+        },
+      ],
+    });
+
+    expect(mocks.attached).toEqual([
+      {
+        runId: IDS.run,
+        organizationId: IDS.org,
+        pullRequests: [
+          {
+            repositoryId: IDS.api,
+            repository: "contoso/api",
+            url: "https://github.com/contoso/api/pull/42",
+            number: 42,
+            branch: "feat/iss-7",
+            title: "ISS-7: Export CSV",
+          },
+        ],
+      },
+    ]);
   });
 });

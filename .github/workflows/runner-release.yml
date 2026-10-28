@@ -1,0 +1,120 @@
+# Builds the headless runner packages and publishes them as a GitHub Release
+# (docs/runner.md):
+#
+#   agentflow-runner-<version>-linux.tar.gz   Option C: Linux server (systemd)
+#   agentflow-runner-<version>-windows.zip    Option D: Windows
+#
+# Release: bump "version" in apps/desktop/package.json, commit, then push a
+# matching tag:
+#
+#   git tag runner-v<version> && git push origin runner-v<version>
+#
+# Running the workflow by hand (Actions -> Runner release -> Run workflow)
+# builds the same packages as a workflow artifact without creating a release.
+name: Runner release
+
+on:
+  push:
+    tags: ["runner-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: runner-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      # Same install as deploy/runner/Dockerfile: the bundle builds workspace
+      # packages from source, so only the desktop closure is needed and no
+      # postinstall (Electron download, Prisma generate) has to run.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --filter desktop... --ignore-scripts
+
+      - name: Read version
+        id: version
+        run: |
+          version=$(node -p 'require("./apps/desktop/package.json").version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "runner-v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match apps/desktop/package.json version $version (expected runner-v$version)."
+            exit 1
+          fi
+
+      - name: Package for Linux
+        run: pnpm -C apps/desktop package:headless
+        env:
+          BUILD_COMMIT_HASH: ${{ github.sha }}
+
+      - name: Package for Windows
+        run: pnpm -C apps/desktop package:headless --windows
+        env:
+          BUILD_COMMIT_HASH: ${{ github.sha }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentflow-runner-${{ steps.version.outputs.version }}
+          path: |
+            apps/desktop/dist-headless/agentflow-runner-*-linux.tar.gz
+            apps/desktop/dist-headless/agentflow-runner-*-windows.zip
+          if-no-files-found: error
+
+  # The zip is built on Linux; this checks it unpacks and parses on Windows.
+  windows-smoke:
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agentflow-runner-*
+          merge-multiple: true
+
+      - name: Unpack and check
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem agentflow-runner-*-windows.zip | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath out
+          foreach ($file in "runner.mjs", "healthcheck.mjs", "start-runner.cmd", "setup-runner.cmd", "README.txt", "agent-plugins") {
+            if (-not (Test-Path "out/agentflow-runner/$file")) { throw "missing $file" }
+          }
+          node --check out/agentflow-runner/runner.mjs
+          if ($LASTEXITCODE -ne 0) { throw "runner.mjs does not parse" }
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [package, windows-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentflow-runner-${{ needs.package.outputs.version }}
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: AgentFlow runner ${{ needs.package.outputs.version }}
+          files: |
+            agentflow-runner-*-linux.tar.gz
+            agentflow-runner-*-windows.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true

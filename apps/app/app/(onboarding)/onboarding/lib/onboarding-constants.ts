@@ -2,21 +2,20 @@ import { OnboardingStep } from "@repo/api/src/types/onboarding";
 import { z } from "zod";
 
 /**
- * ISS-5490: the wizard sequence — the two steps that genuinely gate entry.
+ * ISS-5490: the wizard sequence — the one step that genuinely gates entry.
  *
- * A team and a project are structural: nothing in the product has anywhere to
- * live without them, and the checklist's own completion derivation keys off
- * their existence. Everything the previous nine-step sequence also asked for
- * (desktop download, GitHub, Anthropic key, optional integrations, teammates)
- * is a row in the "Complete Your Setup" checklist on My Tasks, derived from
- * live data, so gating on it up front asked for it twice and blocked the
- * product on the first ask.
+ * A project is the one structural prerequisite: nothing in the product has
+ * anywhere to live without it, and the checklist's own completion derivation
+ * keys off its existence. Everything the previous nine-step sequence also asked
+ * for (desktop download, GitHub, Anthropic key, optional integrations,
+ * teammates) is a row in the "Complete Your Setup" checklist on My Tasks,
+ * derived from live data, so gating on it up front asked for it twice and
+ * blocked the product on the first ask.
  *
  * Typed as `readonly OnboardingStep[]` rather than the literal tuple so
  * `indexOf`/`includes` still accept a step restored from an older build.
  */
 export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
-  OnboardingStep.CreateTeam,
   OnboardingStep.CreateProject,
 ];
 
@@ -24,8 +23,6 @@ const WIZARD_STATE_KEY = "onboarding_wizard_state";
 
 const WIZARD_STATE_SCHEMA = z.object({
   currentStep: z.enum(OnboardingStep),
-  createdTeamId: z.string().nullable(),
-  createdTeamName: z.string().nullable(),
   createdProjectId: z.string().nullable(),
   createdProjectName: z.string().nullable(),
 });
@@ -64,27 +61,12 @@ export function loadWizardState(): WizardState | null {
 /**
  * Resolve which step a restored state may actually open on.
  *
- * Takes the whole state, not just the step, because a step is only reachable
- * with the identities it renders from. Two ways a stored state dead-ends:
- *
- * - The step is not in this sequence. `WizardState` outlives a deploy, so a user
- *   mid-wizard when ISS-5490 shipped restores `WELCOME`, `CONNECT_GITHUB`, … and
- *   the wizard, which renders per-step, matches no branch.
- * - The step is `CREATE_PROJECT` but no team was created. The project step needs
- *   a team to attach the project to, so the wizard guards on it — and a state
- *   that passes the first check fails that guard, which is the same blank card
- *   by a different route.
- *
- * Either way the fallback is the sequence's first step: at most a re-entered
- * team name, against a card with no way forward.
+ * `WizardState` outlives a deploy, so a user mid-wizard when the sequence
+ * changed restores a step this sequence no longer contains (`WELCOME`,
+ * `CONNECT_GITHUB`, `CREATE_TEAM`, …) and the wizard, which renders per-step,
+ * would match no branch. The fallback is the sequence's first step.
  */
 export function clampStep(state: WizardState): OnboardingStep {
-  if (
-    state.currentStep === OnboardingStep.CreateProject &&
-    state.createdTeamId === null
-  ) {
-    return ONBOARDING_STEPS[0];
-  }
   return ONBOARDING_STEPS.includes(state.currentStep)
     ? state.currentStep
     : ONBOARDING_STEPS[0];

@@ -54,15 +54,23 @@ RUN --mount=type=cache,id=af-runner-pnpm-store,target=/pnpm/store,sharing=locked
     pnpm config set fetch-retries 5 && \
     pnpm config set fetch-timeout 600000 && \
     pnpm install --frozen-lockfile --filter desktop... --ignore-scripts --prefer-offline
-RUN pnpm config set ignore-scripts true
+# The closure was just installed from the frozen lockfile. pnpm 11 defaults to
+# verify-deps-before-run=install, which reinstalls the whole pruned workspace,
+# without the store cache, before build:headless whenever the source layers
+# below are newer than a cached install layer, i.e. on every code change.
+RUN pnpm config set ignore-scripts true \
+    && pnpm config set verify-deps-before-run false
 COPY --from=pruner /repo/out/full/ ./
 ARG BUILD_COMMIT_HASH=unknown
 RUN BUILD_COMMIT_HASH="${BUILD_COMMIT_HASH}" pnpm -C apps/desktop build:headless
 
 # --- Runtime ---
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
-# "stable" (about a week behind, skips bad releases) or "latest".
-ARG CLAUDE_CODE_CHANNEL=stable
+# "latest" (default: every build ships the newest release) or "stable" (about
+# a week behind, skips bad releases). Loops run the version set per runner in
+# AgentFlow (Model provider → Claude Code version, `latest` by default); the
+# runner installs it under ~/.local when it differs from this one.
+ARG CLAUDE_CODE_CHANNEL=latest
 # Fingerprint of the Claude Code release signing key (docs: code.claude.com/docs/en/setup).
 ARG CLAUDE_CODE_KEY_FINGERPRINT=31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE
 
@@ -91,7 +99,16 @@ RUN set -eux; \
 RUN usermod --login runner --home /home/runner --move-home node \
     && groupmod --new-name runner node \
     && install -d -o runner -g runner -m 0755 /workspace \
-    && install -d -o runner -g runner -m 0700 /home/runner/.agentflow-runner /home/runner/.claude /home/runner/.agentflow-ai
+    && install -d -o runner -g runner -m 0700 /home/runner/.agentflow-runner /home/runner/.claude /home/runner/.agentflow-ai \
+    && install -d -o runner -g runner -m 0755 /home/runner/.local /home/runner/.local/bin \
+       /home/runner/.local/share /home/runner/.local/share/claude
+
+# ~/.local/bin/claude points at the Claude Code version set in AgentFlow (see
+# src/headless/claude-code-versions.ts). Put it first on PATH for login shells,
+# which the runner reads PATH from, as ENV PATH below does for `docker exec`.
+RUN printf '%s\n' 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac' \
+      > /etc/profile.d/claude-code-versions.sh \
+    && su runner -s /bin/bash -lc 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) exit 1 ;; esac'
 
 COPY --from=builder /app/apps/desktop/dist-headless/ /opt/agentflow-runner/
 COPY --from=pruner /repo/agent-plugins/ /opt/agentflow-runner/agent-plugins/
@@ -101,6 +118,7 @@ RUN chmod 0755 /usr/local/bin/agentflow-runner-entrypoint \
 
 ENV SHELL=/bin/bash \
     HOME=/home/runner \
+    PATH=/home/runner/.local/bin:$PATH \
     AGENTFLOW_PLUGINS_DIR=/opt/agentflow-runner/agent-plugins \
     AGENTFLOW_RUNNER_WORKSPACE=/workspace \
     AGENTFLOW_RUNNER_DATA_DIR=/home/runner/.agentflow-runner \
@@ -109,9 +127,10 @@ ENV SHELL=/bin/bash \
 USER runner
 WORKDIR /workspace
 # Workspace (checkouts and loop worktrees), runner identity, Claude Code state
-# (sessions; no credentials: the model provider comes with each loop) and
-# AgentFlow learnings all survive recreating the container.
-VOLUME ["/workspace", "/home/runner/.agentflow-runner", "/home/runner/.claude", "/home/runner/.agentflow-ai"]
+# (sessions; no credentials: the model provider comes with each loop),
+# AgentFlow learnings and the Claude Code versions installed for AgentFlow all
+# survive recreating the container.
+VOLUME ["/workspace", "/home/runner/.agentflow-runner", "/home/runner/.claude", "/home/runner/.agentflow-ai", "/home/runner/.local/share/claude"]
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD ["node", "/opt/agentflow-runner/healthcheck.mjs"]

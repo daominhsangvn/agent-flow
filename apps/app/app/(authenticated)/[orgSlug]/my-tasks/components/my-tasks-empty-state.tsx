@@ -5,11 +5,12 @@ import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { MyTasksRecencyEmptyState } from "@repo/app/my-tasks/components/my-tasks-recency-empty-state";
 import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
+import { Link } from "@repo/navigation/link";
 import { CheckSquareIcon } from "lucide-react";
 import { useState } from "react";
-import { CreateDocumentModal } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-document-modal";
-import { CreateIssueModal } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/create-issue-modal";
-import { TeamModal } from "@/app/(authenticated)/[orgSlug]/teams/components/team-modal";
+import { CreateDocumentModal } from "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/create-document-modal";
+import { CreateIssueModal } from "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/create-issue-modal";
+import { useOrgSlug } from "@/hooks/use-org-slug";
 
 type MyTasksEmptyStateProps = {
   readonly projects: ProjectWithDetails[];
@@ -41,13 +42,14 @@ type MyTasksEmptyStateProps = {
  *
  * The description is per-branch because the action slot is: with project
  * context the buttons name both create paths, so the copy stays short and does
- * not repeat them; without it the only door is team creation, so the copy names
+ * not repeat them; without it the only door is project creation, so the copy names
  * that instead of promising two paths that are not on screen.
  */
 export function MyTasksEmptyState({
   projects,
   recencyWindow,
 }: MyTasksEmptyStateProps) {
+  const orgSlug = useOrgSlug();
   const [showPrdModal, setShowPrdModal] = useState(false);
   const [showFeatureModal, setShowFeatureModal] = useState(false);
 
@@ -56,9 +58,7 @@ export function MyTasksEmptyState({
   }
 
   const defaultProject = projects[0];
-  const defaultTeamId = defaultProject?.teams[0]?.id;
-
-  const hasProjectContext = !!defaultProject && !!defaultTeamId;
+  const hasProjectContext = !!defaultProject;
 
   return (
     <>
@@ -75,15 +75,15 @@ export function MyTasksEmptyState({
               </Button>
             </div>
           ) : (
-            <TeamModal
-              trigger={<Button variant="outline">Create a Team</Button>}
-            />
+            <Button asChild variant="outline">
+              <Link href={`/${orgSlug}/projects`}>Create a project</Link>
+            </Button>
           )
         }
         description={
           hasProjectContext
             ? "Ready to start something new?"
-            : "Create a team to start assigning work."
+            : "Create a project to start assigning work."
         }
         icon={CheckSquareIcon}
         title="Your queue is clear"
@@ -96,13 +96,11 @@ export function MyTasksEmptyState({
             onOpenChange={setShowPrdModal}
             open={showPrdModal}
             projectId={defaultProject.id}
-            teamId={defaultTeamId}
           />
           <CreateIssueModal
             onOpenChange={setShowFeatureModal}
             open={showFeatureModal}
             projectId={defaultProject.id}
-            teamId={defaultTeamId}
           />
         </>
       )}

@@ -6,7 +6,7 @@ import { documentKeys } from "../document-keys";
 import { artifactLinkKeys } from "../use-artifact-links";
 import { invalidateArtifactCaches } from "../use-documents";
 
-const PROJECT_LIST_KEY = projectKeys.list({ teamId: "team-1" });
+const PROJECT_LIST_KEY = projectKeys.list({ scope: "team-1" });
 
 function seededClient(): QueryClient {
   const queryClient = new QueryClient();

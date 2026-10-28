@@ -14,14 +14,22 @@ import {
 } from "./client";
 import { JiraDeployment } from "./constants";
 import { parseJiraDate } from "./dates";
-import { isJiraBotUser, jiraUserActor } from "./identity";
+import { isJiraBotIdentity, isJiraBotUser, jiraUserActor } from "./identity";
 import {
+  addedLabels,
   assignsFromBot,
   assignsToBot,
+  hasConditionFacts,
   isAssignedToBot,
   isAssigneeChange,
+  isLabelsChange,
+  type JiraConditionFacts,
   type JiraIssueOccurrence,
+  type JiraIssueState,
   jiraAssignedEvent,
+  jiraConditionsEvent,
+  jiraIssueState,
+  labelTokens,
 } from "./issue-events";
 import {
   type JiraHistory,
@@ -50,6 +58,10 @@ import {
  * - `jira.issue_labeled` is not polled: Jira search cannot tell when a label
  *   was added (labels are not supported by `CHANGED`), and polling every
  *   labeled issue on the site would flood the delivery log.
+ * - `jira.issue_conditions` events are emitted for the assignments and the
+ *   label changes of the polled issues (so only issues assigned to the bot),
+ *   each with the issue state right after that change, replayed from the
+ *   changelog. Mentions are not polled.
  */
 
 export const JIRA_POLL_MAX_ISSUES = 50;
@@ -105,14 +117,16 @@ export async function pollJira(
         `Could not read the changelog of ${issue.key}: ${histories.error.message}`
       );
     }
+    const input: IssueEventsInput = {
+      siteUrl: ctx.connection.config.siteUrl,
+      issue,
+      histories: histories.value,
+      windowStart,
+      account,
+    };
     events.push(
-      ...issueAssignmentEvents({
-        siteUrl: ctx.connection.config.siteUrl,
-        issue,
-        histories: histories.value,
-        windowStart,
-        account,
-      })
+      ...issueAssignmentEvents(input),
+      ...issueConditionEvents(input)
     );
   }
   if (page.value.truncated) {
@@ -376,4 +390,131 @@ function latestDate(dates: ReadonlyArray<Date | null>): Date | null {
     }
   }
   return latest;
+}
+
+/**
+ * jira.issue_conditions events of the issue's changes inside the window
+ * (and of its creation, when it was created inside it), oldest first. Each
+ * carries the issue state right after that change, so a combination is
+ * judged as a webhook delivered at that moment would have been.
+ */
+export function issueConditionEvents(input: IssueEventsInput): InboundEvent[] {
+  const histories = sortByCreated(input.histories);
+  const replay = replayIssueStates(input, histories);
+  const events: InboundEvent[] = [];
+  const created = createdConditionsEvent(input, replay.initial);
+  if (created) {
+    events.push(created);
+  }
+  histories.forEach((history, index) => {
+    const createdAt = parseJiraDate(history.created);
+    const state = replay.after[index];
+    if (
+      !(state && createdAt) ||
+      createdAt < input.windowStart ||
+      isJiraBotUser(input.account, history.author)
+    ) {
+      return;
+    }
+    const facts = historyConditionFacts(history, input.account);
+    if (hasConditionFacts(facts)) {
+      events.push(
+        jiraConditionsEvent({
+          occurrence: occurrence(input, createdAt, history.author),
+          facts,
+          state,
+          changeId: history.id,
+        })
+      );
+    }
+  });
+  return events;
+}
+
+/** An issue created in the window, with the state it was created in. */
+function createdConditionsEvent(
+  input: IssueEventsInput,
+  initial: JiraIssueState
+): InboundEvent | null {
+  const fields = input.issue.fields;
+  const createdAt = parseJiraDate(fields.created);
+  if (
+    !createdAt ||
+    createdAt < input.windowStart ||
+    isJiraBotUser(input.account, fields.creator)
+  ) {
+    return null;
+  }
+  const facts: JiraConditionFacts = {
+    becameAssigned: initial.assignedToBot,
+    addedLabels: initial.labels,
+    mentioned: false,
+  };
+  if (!hasConditionFacts(facts)) {
+    return null;
+  }
+  return jiraConditionsEvent({
+    occurrence: occurrence(input, createdAt, fields.creator ?? fields.reporter),
+    facts,
+    state: initial,
+    changeId: null,
+  });
+}
+
+function historyConditionFacts(
+  history: JiraHistory,
+  account: IntegrationAccount
+): JiraConditionFacts {
+  const items = history.items ?? [];
+  return {
+    becameAssigned: items.some((item) => assignsToBot(item, account)),
+    addedLabels: [
+      ...new Set(items.filter(isLabelsChange).flatMap(addedLabels)),
+    ],
+    mentioned: false,
+  };
+}
+
+type IssueStateReplay = {
+  /** The state the issue was created in (before its first change). */
+  initial: JiraIssueState;
+  /** The state right after each history (same order as the histories). */
+  after: JiraIssueState[];
+};
+
+/**
+ * Walks the changelog back from the issue's current state: the state after
+ * a history is the state before the next one, and undoing a history restores
+ * its `from` values.
+ */
+function replayIssueStates(
+  input: IssueEventsInput,
+  sortedHistories: JiraHistory[]
+): IssueStateReplay {
+  let state = jiraIssueState(input.issue, input.account);
+  const after: JiraIssueState[] = [];
+  for (let index = sortedHistories.length - 1; index >= 0; index--) {
+    after[index] = state;
+    state = undoHistory(state, sortedHistories[index], input.account);
+  }
+  return { initial: state, after };
+}
+
+function undoHistory(
+  state: JiraIssueState,
+  history: JiraHistory | undefined,
+  account: IntegrationAccount
+): JiraIssueState {
+  let { assignedToBot, labels } = state;
+  for (const item of history?.items ?? []) {
+    if (isAssigneeChange(item)) {
+      assignedToBot = isJiraBotIdentity(account, [
+        item.tmpFromAccountId,
+        item.from,
+      ]);
+    } else if (isLabelsChange(item)) {
+      labels = [...new Set(labelTokens(item.fromText ?? item.from))];
+    }
+  }
+  return { assignedToBot, labels };
 }

@@ -42,8 +42,8 @@ export type DesktopIdentity = {
    * omits it entirely, and the desktop must degrade to the prior device-consent
    * behavior (treat "field absent" as "no org policy → keep current behavior")
    * rather than fail-closed, so upgrading the desktop before the server never
-   * suppresses sync for existing users. A NEW server always sends an explicit
-   * boolean (default `false` for orgs, `true` for the enabled AgentFlow org).
+   * suppresses sync for existing users. The current server always sends
+   * `true`: session sync is always on, with no org policy to switch it off.
    */
   sessionSyncPolicyEnabled?: boolean;
   /**

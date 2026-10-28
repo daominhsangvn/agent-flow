@@ -149,6 +149,8 @@ export type LoopRequestBody = {
    * the computer writes them to the root `CLAUDE.md` of the loop workspace.
    */
   projectInstructions?: string;
+  /** See {@link ContextPack.projectKey}. */
+  projectKey?: string;
   /** See {@link ContextPack.replan}. */
   replan?: boolean;
   /** See {@link ContextPack.agentPolicy}. */
@@ -221,6 +223,7 @@ export const LoopRequestBodySchema = z.object({
   localRepoPath: z.string().optional(),
   userContext: z.string().optional(),
   projectInstructions: z.string().optional(),
+  projectKey: z.string().optional(),
   additionalRepos: z
     .array(
       z

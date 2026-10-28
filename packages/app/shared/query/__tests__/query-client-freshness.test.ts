@@ -37,7 +37,7 @@ import {
 
 // A real shipped listing key, so the contract is exercised against the key shape
 // production actually emits rather than a synthetic one.
-const LIST_KEY = projectKeys.list({ teamId: "team-freshness" });
+const LIST_KEY = projectKeys.list({ scope: "team-freshness" });
 
 /**
  * Mount a client plus a subscribed observer on `LIST_KEY` and let the initial
@@ -424,8 +424,8 @@ describe("both halves of a surface refresh together (ISS-5975)", () => {
     // stale mounted query on the client, so the two halves cannot land on
     // different populations.
     const client = makeQueryClient();
-    const tableKey = projectKeys.list({ teamId: "sessions-table" });
-    const tilesKey = projectKeys.list({ teamId: "sessions-usage-tiles" });
+    const tableKey = projectKeys.list({ scope: "sessions-table" });
+    const tilesKey = projectKeys.list({ scope: "sessions-usage-tiles" });
     const fetchTable = vi.fn(() => Promise.resolve("rows"));
     const fetchTiles = vi.fn(() => Promise.resolve("totals"));
     client.mount();

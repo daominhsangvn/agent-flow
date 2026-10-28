@@ -1,16 +1,17 @@
 "use client";
 
 import {
-  INTEGRATION_NAME_MAX,
-  INTEGRATION_POLL_INTERVAL_DEFAULT_SECONDS,
-  INTEGRATION_POLL_INTERVAL_MAX_SECONDS,
-  INTEGRATION_POLL_INTERVAL_MIN_SECONDS,
   type IntegrationConnection,
   IntegrationConnectionStatus,
-  IntegrationDeliveryMode,
+  type IntegrationFieldDescriptor,
+  IntegrationFieldKind,
   type IntegrationProviderSummary,
   type UpdateIntegrationConnectionInput,
 } from "@repo/api/src/types/integration";
+import {
+  type YamlProblem,
+  YamlProblemSeverity,
+} from "@repo/app/shared/lib/yaml-problems";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -20,23 +21,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
-import { Input } from "@repo/design-system/components/ui/input";
-import { Label } from "@repo/design-system/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
-import { Switch } from "@repo/design-system/components/ui/switch";
 import { ArrowLeftIcon, ExternalLinkIcon, Loader2Icon } from "lucide-react";
-import { type FormEvent, useState } from "react";
-import { z } from "zod";
+import { type FormEvent, lazy, Suspense, useMemo, useState } from "react";
 import {
   useCreateIntegrationConnection,
   useUpdateIntegrationConnection,
 } from "../hooks/use-integrations";
+import {
+  type ConnectionYamlContext,
+  connectionToYaml,
+  getSecretSettingFields,
+  parseConnectionYaml,
+} from "../lib/connection-yaml";
 import {
   buildFieldValues,
   collectFieldValues,
@@ -50,10 +46,9 @@ import {
 import {
   DELIVERY_MODE_DESCRIPTIONS,
   DELIVERY_MODE_LABELS,
-  getDefaultDeliveryMode,
-  getSelectableDeliveryModes,
 } from "../lib/integration-labels";
 import { IntegrationMutationErrorTitle } from "../lib/mutation-error";
+import { IntegrationConnectionProjects } from "./integration-connection-projects";
 import { IntegrationFieldForm } from "./integration-field-form";
 import { MutationErrorMessage } from "./mutation-error-message";
 import { ProviderIcon } from "./provider-icon";
@@ -73,8 +68,10 @@ export type IntegrationConnectionDialogProps = {
  * is open: every open starts from fresh state (the parent unmounts it on
  * close), so no reset effect is needed.
  *
- * Create is two steps: pick a provider from the catalog, then fill the
- * provider's connection fields. Edit skips the picker; the provider of a
+ * Create is two steps: pick a provider from the catalog, then write the
+ * connection as YAML (name, the provider's settings, inbound mode) with
+ * suggestions and inline problems; secrets go in the password fields under
+ * the editor, never in the YAML. Edit skips the picker; the provider of a
  * connection never changes.
  */
 export function IntegrationConnectionDialog({
@@ -98,7 +95,7 @@ export function IntegrationConnectionDialog({
       }}
       open
     >
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <ConnectionDialogBody
           connection={connection}
           isEdit={isEdit}
@@ -214,11 +211,12 @@ type ConnectionFormProps = {
   onCreated: ((connection: IntegrationConnection) => void) | undefined;
 };
 
-type ConnectionFormErrors = {
-  name?: string;
-  pollIntervalSeconds?: string;
-  fields: IntegrationFieldErrors;
-};
+// The code editor loads with the dialog step that shows it.
+const LazyConnectionYamlEditor = lazy(() =>
+  import("./connection-yaml-editor").then((module) => ({
+    default: module.ConnectionYamlEditor,
+  }))
+);
 
 function ConnectionForm({
   provider,
@@ -230,67 +228,63 @@ function ConnectionForm({
   const createConnection = useCreateIntegrationConnection();
   const updateConnection = useUpdateIntegrationConnection();
   const isEdit = Boolean(connection);
-  const deliveryModes = getSelectableDeliveryModes(provider);
-
-  const [name, setName] = useState(
-    connection?.name ?? defaultConnectionName(provider)
+  const context = useMemo<ConnectionYamlContext>(
+    () => ({ provider, isEdit }),
+    [provider, isEdit]
   );
-  const [values, setValues] = useState<IntegrationFieldValues>(() =>
-    buildFieldValues(provider.connectionFields, connection?.config)
+  const [text, setText] = useState(() =>
+    connectionToYaml(provider, connection)
   );
-  const [deliveryMode, setDeliveryMode] = useState<IntegrationDeliveryMode>(
-    connection?.deliveryMode ?? getDefaultDeliveryMode(provider)
+  const [secretValues, setSecretValues] = useState<IntegrationFieldValues>(() =>
+    buildFieldValues(getSecretSettingFields(provider))
   );
-  const [pollInterval, setPollInterval] = useState(
-    String(
-      connection?.pollIntervalSeconds ??
-        INTEGRATION_POLL_INTERVAL_DEFAULT_SECONDS
-    )
+  const [secretErrors, setSecretErrors] = useState<IntegrationFieldErrors>({});
+  const [submitAttempted, setSubmitAttempted] = useState(false);
+  const result = useMemo(
+    () => parseConnectionYaml(text, context),
+    [text, context]
   );
-  const [enabled, setEnabled] = useState(
-    connection?.status !== IntegrationConnectionStatus.Disabled
-  );
-  const [errors, setErrors] = useState<ConnectionFormErrors>({ fields: {} });
   const isPending = createConnection.isPending || updateConnection.isPending;
+  // While the YAML does not read, the secrets are judged against the stored
+  // settings.
+  const values: IntegrationFieldValues = {
+    ...(result.settings ??
+      buildFieldValues(provider.connectionFields, connection?.config)),
+    ...secretValues,
+  };
   // Changing where the credentials are sent (e.g. the Jira site URL) needs
   // the stored secrets typed again; the API rejects the update otherwise.
   const reentry = getConnectionSecretReentry(provider, connection, values);
+  const secretFields = reentry.fields.filter(isSecretField);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const nextErrors = validateConnectionForm({
-      name,
-      pollInterval,
-      deliveryMode,
-      fieldErrors: validateFieldValues(reentry.fields, values, {
-        secretFields: reentry.secretFields,
-      }),
+    setSubmitAttempted(true);
+    const errors = validateFieldValues(secretFields, values, {
+      secretFields: reentry.secretFields,
     });
-    setErrors(nextErrors);
-    if (hasConnectionFormErrors(nextErrors)) {
+    setSecretErrors(errors);
+    const yaml = result.value;
+    if (!yaml || hasFieldErrors(errors)) {
       return;
     }
-
-    const { config, secrets } = collectFieldValues(
-      provider.connectionFields,
-      values
-    );
+    const { config, secrets } = collectFieldValues(provider.connectionFields, {
+      ...yaml.config,
+      ...secretValues,
+    });
     const shared = {
-      name: name.trim(),
+      name: yaml.name,
       config,
       secrets,
-      deliveryMode,
-      pollIntervalSeconds: parsePollInterval(pollInterval),
+      deliveryMode: yaml.deliveryMode,
+      pollIntervalSeconds: yaml.pollIntervalSeconds,
     };
 
     if (connection) {
       updateConnection.mutate(
         {
           id: connection.id,
-          input: {
-            ...shared,
-            ...statusChange(connection, enabled),
-          },
+          input: { ...shared, ...statusChange(connection, yaml.enabled) },
         },
         { onSuccess: onClose }
       );
@@ -308,7 +302,7 @@ function ConnectionForm({
   };
 
   return (
-    <form className="space-y-5" noValidate onSubmit={handleSubmit}>
+    <form className="space-y-4" noValidate onSubmit={handleSubmit}>
       <DialogHeader>
         <DialogTitle className="flex items-center gap-2">
           <ProviderIcon className="size-5" provider={provider.key} />
@@ -335,72 +329,67 @@ function ConnectionForm({
         </DialogDescription>
       </DialogHeader>
 
-      <div className="space-y-2">
-        <Label htmlFor="integration-connection-name">
-          Name
-          <span aria-hidden="true" className="text-destructive">
-            *
-          </span>
-        </Label>
-        <Input
-          aria-describedby={
-            errors.name ? "integration-connection-name-error" : undefined
-          }
-          aria-invalid={errors.name ? true : undefined}
-          id="integration-connection-name"
-          maxLength={INTEGRATION_NAME_MAX}
-          onChange={(event) => setName(event.target.value)}
-          value={name}
+      <p className="text-muted-foreground text-xs">
+        Write the connection as YAML. Suggestions appear as you type and
+        Ctrl+Space shows them anywhere; problems are underlined.
+      </p>
+      <Suspense
+        fallback={
+          <pre className="max-h-[36rem] overflow-auto rounded-md border p-3 font-mono text-xs">
+            {text}
+          </pre>
+        }
+      >
+        <LazyConnectionYamlEditor
+          context={context}
+          onChange={setText}
+          value={text}
         />
-        {errors.name ? (
-          <p
-            className="text-destructive text-sm"
-            id="integration-connection-name-error"
-          >
-            {errors.name}
-          </p>
-        ) : null}
-      </div>
+      </Suspense>
+      {result.value ? (
+        <p className="text-muted-foreground text-xs">
+          <span className="font-medium text-foreground">
+            Inbound events: {DELIVERY_MODE_LABELS[result.value.deliveryMode]}.
+          </span>{" "}
+          {DELIVERY_MODE_DESCRIPTIONS[result.value.deliveryMode]}
+        </p>
+      ) : null}
 
-      <IntegrationFieldForm
-        disabled={isPending}
-        errors={errors.fields}
-        fields={reentry.fields}
-        idPrefix="integration-connection-field"
-        notices={reentry.hints}
-        onChange={setValues}
-        secretFields={reentry.secretFields}
-        values={values}
-      />
-
-      <DeliverySettings
-        deliveryMode={deliveryMode}
-        deliveryModes={deliveryModes}
-        disabled={isPending}
-        onDeliveryModeChange={setDeliveryMode}
-        onPollIntervalChange={setPollInterval}
-        pollInterval={pollInterval}
-        pollIntervalError={errors.pollIntervalSeconds}
-      />
-
-      {isEdit ? (
-        <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
+      {secretFields.length > 0 ? (
+        <section
+          aria-labelledby="integration-connection-secrets"
+          className="space-y-3 rounded-lg border p-3"
+        >
           <div className="space-y-0.5">
-            <Label htmlFor="integration-connection-enabled">
-              Connection enabled
-            </Label>
+            <h3
+              className="font-medium text-sm"
+              id="integration-connection-secrets"
+            >
+              Secrets
+            </h3>
             <p className="text-muted-foreground text-xs">
-              A disabled connection ignores inbound events and skips its pre and
-              post actions.
+              Never written in the YAML and never shown again after saving.
             </p>
           </div>
-          <Switch
-            checked={enabled}
+          <IntegrationFieldForm
             disabled={isPending}
-            id="integration-connection-enabled"
-            onCheckedChange={setEnabled}
+            errors={secretErrors}
+            fields={secretFields}
+            idPrefix="integration-connection-field"
+            notices={reentry.hints}
+            onChange={(next) => setSecretValues(pickValues(next, secretFields))}
+            secretFields={reentry.secretFields}
+            values={values}
           />
-        </div>
+        </section>
+      ) : null}
+
+      {submitAttempted ? (
+        <ConnectionYamlProblems problems={result.problems} />
+      ) : null}
+
+      {connection ? (
+        <IntegrationConnectionProjects connectionId={connection.id} />
       ) : null}
 
       <MutationErrorMessage
@@ -426,171 +415,66 @@ function ConnectionForm({
         ) : (
           <span />
         )}
-        <div className="flex gap-2">
-          <Button
-            disabled={isPending}
-            onClick={onClose}
-            type="button"
-            variant="outline"
-          >
-            Cancel
-          </Button>
-          <Button disabled={isPending} type="submit">
-            {isPending ? <Loader2Icon className="size-4 animate-spin" /> : null}
-            {getSubmitLabel(isEdit, isPending)}
-          </Button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          {submitAttempted && !result.value ? (
+            <p className="text-destructive text-sm" role="alert">
+              Fix the problems in the YAML before saving.
+            </p>
+          ) : null}
+          <div className="flex gap-2">
+            <Button
+              disabled={isPending}
+              onClick={onClose}
+              type="button"
+              variant="outline"
+            >
+              Cancel
+            </Button>
+            <Button disabled={isPending} type="submit">
+              {isPending ? (
+                <Loader2Icon className="size-4 animate-spin" />
+              ) : null}
+              {getSubmitLabel(isEdit, isPending)}
+            </Button>
+          </div>
         </div>
       </DialogFooter>
     </form>
   );
 }
 
-function DeliverySettings({
-  deliveryMode,
-  deliveryModes,
-  onDeliveryModeChange,
-  pollInterval,
-  onPollIntervalChange,
-  pollIntervalError,
-  disabled,
-}: Readonly<{
-  deliveryMode: IntegrationDeliveryMode;
-  deliveryModes: IntegrationDeliveryMode[];
-  onDeliveryModeChange: (mode: IntegrationDeliveryMode) => void;
-  pollInterval: string;
-  onPollIntervalChange: (value: string) => void;
-  pollIntervalError: string | undefined;
-  disabled: boolean;
-}>) {
+/** The problems of the YAML by line, errors and warnings, after a save attempt. */
+function ConnectionYamlProblems({
+  problems,
+}: Readonly<{ problems: readonly YamlProblem[] }>) {
+  if (problems.length === 0) {
+    return null;
+  }
   return (
-    <div className="space-y-4 rounded-lg border p-3">
-      <div className="space-y-2">
-        <Label htmlFor="integration-connection-delivery-mode">
-          Inbound events
-        </Label>
-        <Select
-          disabled={disabled}
-          onValueChange={(value) =>
-            onDeliveryModeChange(parseDeliveryMode(value))
+    <ul
+      aria-label="Problems"
+      className="space-y-1 rounded-md border p-3 text-sm"
+      data-testid="connection-yaml-problems"
+    >
+      {problems.map((problem) => (
+        <li
+          className={
+            problem.severity === YamlProblemSeverity.Error
+              ? "text-destructive"
+              : "text-muted-foreground"
           }
-          value={deliveryMode}
+          key={`${problem.from}-${problem.message}`}
         >
-          <SelectTrigger
-            className="w-full"
-            id="integration-connection-delivery-mode"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {deliveryModes.map((mode) => (
-              <SelectItem key={mode} value={mode}>
-                {DELIVERY_MODE_LABELS[mode]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className="text-muted-foreground text-xs">
-          {DELIVERY_MODE_DESCRIPTIONS[deliveryMode]}
-        </p>
-      </div>
-      {deliveryMode === IntegrationDeliveryMode.Poll ? (
-        <div className="space-y-2">
-          <Label htmlFor="integration-connection-poll-interval">
-            Poll interval (seconds)
-          </Label>
-          <Input
-            aria-describedby={
-              pollIntervalError
-                ? "integration-connection-poll-interval-error"
-                : undefined
-            }
-            aria-invalid={pollIntervalError ? true : undefined}
-            disabled={disabled}
-            id="integration-connection-poll-interval"
-            inputMode="numeric"
-            max={INTEGRATION_POLL_INTERVAL_MAX_SECONDS}
-            min={INTEGRATION_POLL_INTERVAL_MIN_SECONDS}
-            onChange={(event) => onPollIntervalChange(event.target.value)}
-            type="number"
-            value={pollInterval}
-          />
-          {pollIntervalError ? (
-            <p
-              className="text-destructive text-sm"
-              id="integration-connection-poll-interval-error"
-            >
-              {pollIntervalError}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-const deliveryModeSchema = z.enum(IntegrationDeliveryMode);
-
-const pollIntervalSchema = z.coerce
-  .number()
-  .int()
-  .min(INTEGRATION_POLL_INTERVAL_MIN_SECONDS)
-  .max(INTEGRATION_POLL_INTERVAL_MAX_SECONDS);
-
-export const POLL_INTERVAL_ERROR = `Enter a whole number of seconds between ${INTEGRATION_POLL_INTERVAL_MIN_SECONDS} and ${INTEGRATION_POLL_INTERVAL_MAX_SECONDS}`;
-export const CONNECTION_NAME_REQUIRED_ERROR = "Name is required";
-
-function parseDeliveryMode(value: string): IntegrationDeliveryMode {
-  const parsed = deliveryModeSchema.safeParse(value);
-  return parsed.success ? parsed.data : IntegrationDeliveryMode.None;
-}
-
-/**
- * The poll interval sent to the API. A blank or invalid value only matters in
- * poll mode (where validation blocks the save); otherwise the default is sent.
- */
-function parsePollInterval(value: string): number {
-  const parsed = pollIntervalSchema.safeParse(value.trim());
-  return parsed.success
-    ? parsed.data
-    : INTEGRATION_POLL_INTERVAL_DEFAULT_SECONDS;
-}
-
-function validateConnectionForm({
-  name,
-  pollInterval,
-  deliveryMode,
-  fieldErrors,
-}: {
-  name: string;
-  pollInterval: string;
-  deliveryMode: IntegrationDeliveryMode;
-  fieldErrors: IntegrationFieldErrors;
-}): ConnectionFormErrors {
-  const errors: ConnectionFormErrors = { fields: fieldErrors };
-  if (name.trim() === "") {
-    errors.name = CONNECTION_NAME_REQUIRED_ERROR;
-  }
-  if (
-    deliveryMode === IntegrationDeliveryMode.Poll &&
-    (pollInterval.trim() === "" ||
-      !pollIntervalSchema.safeParse(pollInterval.trim()).success)
-  ) {
-    errors.pollIntervalSeconds = POLL_INTERVAL_ERROR;
-  }
-  return errors;
-}
-
-function hasConnectionFormErrors(errors: ConnectionFormErrors): boolean {
-  return (
-    Boolean(errors.name) ||
-    Boolean(errors.pollIntervalSeconds) ||
-    hasFieldErrors(errors.fields)
+          Line {problem.line}: {problem.message}
+        </li>
+      ))}
+    </ul>
   );
 }
 
 /**
- * The status to send with an update: only when the admin flipped the enabled
- * switch. Re-sending "active" for a connection in the "error" state would
+ * The status to send with an update: only when the admin flipped
+ * `enabled`. Re-sending "active" for a connection in the "error" state would
  * claim the error was fixed; the server re-validates instead.
  */
 function statusChange(
@@ -633,8 +517,20 @@ function getConnectionSecretReentry(
   });
 }
 
-function defaultConnectionName(provider: IntegrationProviderSummary): string {
-  return provider.displayName;
+function isSecretField(field: IntegrationFieldDescriptor): boolean {
+  return field.kind === IntegrationFieldKind.Secret;
+}
+
+/** The values of `fields` only. */
+function pickValues(
+  values: IntegrationFieldValues,
+  fields: readonly IntegrationFieldDescriptor[]
+): IntegrationFieldValues {
+  return Object.fromEntries(
+    fields
+      .filter((field) => Object.hasOwn(values, field.key))
+      .map((field) => [field.key, values[field.key]])
+  );
 }
 
 function getSubmitLabel(isEdit: boolean, isPending: boolean): string {

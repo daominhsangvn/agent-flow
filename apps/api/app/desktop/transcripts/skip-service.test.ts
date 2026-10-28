@@ -13,8 +13,6 @@ const mocks = vi.hoisted(() => {
       update: vi.fn(),
     },
     sessionDetail: { findUnique: vi.fn() },
-    // FEA-4169: the default org-policy gate reads Organization via withDb.
-    organization: { findUnique: vi.fn() },
     $executeRaw: vi.fn(),
   };
   const withDb = Object.assign(
@@ -74,9 +72,6 @@ import { TranscriptSyncErrorReason, transcriptSyncService } from "./service";
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.findOwnedById.mockResolvedValue({ id: CT });
-  mocks.db.organization.findUnique.mockResolvedValue({
-    sessionSyncPolicyEnabled: true,
-  });
   mocks.db.sessionTranscript.findUnique.mockResolvedValue(null);
   mocks.db.sessionDetail.findUnique.mockResolvedValue(null);
   mocks.db.sessionTranscript.upsert.mockResolvedValue({});

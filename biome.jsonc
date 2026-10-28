@@ -1488,7 +1488,7 @@
         "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/__tests__/branch-pr-comments-section.test.tsx",
         "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/branch-diff-view.tsx",
         "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/branch-pr-comments-section.tsx",
-        "apps/app/app/(authenticated)/\\[orgSlug\\]/teams/\\[teamId\\]/projects/\\[projectId\\]/components/__tests__/create-document-modal.test.tsx",
+        "apps/app/app/(authenticated)/\\[orgSlug\\]/projects/\\[projectId\\]/components/__tests__/create-document-modal.test.tsx",
         "apps/app/lib/__tests__/desktop-managed-onboarding.test.ts",
         "apps/app/lib/engineer/__tests__/relay-client.test.ts",
         "apps/app/lib/system-check/pre-loop-system-check-provider.tsx",
@@ -1785,6 +1785,10 @@
   "files": {
     "includes": [
       "**/*",
+      // Vendored third-party agent skills (skills-lock.json); .claude/skills symlinks into .agents
+      "!.agents",
+      "!.claude/skills/motion-framer",
+      "!.claude/skills/ui-ux-pro-max",
       // shadcn/ui upstream conventions: these directories use interface declarations,
       // barrel exports, and patterns that conflict with project Biome rules
       "!packages/design-system/components/ui",

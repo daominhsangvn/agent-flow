@@ -9,7 +9,6 @@ const {
   mockClearOperationBacklog,
   mockHeartbeat,
   mockIsDirectDesktopAuthSigningEligible,
-  mockIsAgentSessionSyncSupportedForUser,
 } = vi.hoisted(() => ({
   mockRegister: vi.fn(),
   mockListNonTerminal: vi.fn(),
@@ -18,7 +17,6 @@ const {
   mockClearOperationBacklog: vi.fn(),
   mockHeartbeat: vi.fn(),
   mockIsDirectDesktopAuthSigningEligible: vi.fn(),
-  mockIsAgentSessionSyncSupportedForUser: vi.fn(),
 }));
 
 vi.mock("../desktop-command-store", () => ({
@@ -78,10 +76,6 @@ vi.mock("../compute-target-signing-eligibility", () => ({
     Unknown: "unknown",
   },
   isDirectDesktopAuthSigningEligible: mockIsDirectDesktopAuthSigningEligible,
-}));
-
-vi.mock("../agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: mockIsAgentSessionSyncSupportedForUser,
 }));
 
 vi.mock("../desktop-agent-sessions-handler", () => ({
@@ -162,7 +156,6 @@ function installSuccessfulHelloDefaults() {
     status: "ineligible",
     reason: "missing_gateway",
   });
-  mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(false);
 }
 
 function makeSocket() {
@@ -393,6 +386,7 @@ describe("handleSocketHello — command-signing capability behavior", () => {
       targetGatewayId: "gateway-behavioral",
     });
     expect(getHelloAck(socket).serverCapabilities).toEqual({
+      ...SESSION_SYNC_CAPABILITIES,
       computeTargetSigning: true,
     });
   });
@@ -422,6 +416,7 @@ describe("handleSocketHello — command-signing capability behavior", () => {
       targetGatewayId: "gateway-behavioral",
     });
     expect(getHelloAck(socket).serverCapabilities).toEqual({
+      ...SESSION_SYNC_CAPABILITIES,
       computeTargetSigning: true,
     });
   });
@@ -456,35 +451,17 @@ describe("handleSocketHello — command-signing capability behavior", () => {
       helloStartedAt: Date.now(),
     });
 
-    expect(getHelloAck(socket).serverCapabilities).toBeUndefined();
-  });
-
-  it("keeps agentSessionSync independent when signing is omitted", async () => {
-    mockIsDirectDesktopAuthSigningEligible.mockResolvedValue({
-      status: "ineligible",
-      reason: "no_active_managed_key",
-    });
-    mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(true);
-    const socket = makeSocket();
-
-    await handleSocketHello(
-      socket as any,
-      makeAuthContext(),
-      makeHelloPayload(),
-      {
-        helloStartedAt: Date.now(),
-      }
+    // Agent-session sync is always advertised, with or without signing.
+    expect(getHelloAck(socket).serverCapabilities).toEqual(
+      SESSION_SYNC_CAPABILITIES
     );
-
-    expect(getHelloAck(socket).serverCapabilities).toEqual({
-      agentSessionSync: true,
-      // FEA-4138: the sync lane advertises gzip decompression whenever sync
-      // itself is supported (a server-version capability, not a per-org gate).
-      agentSessionSyncCompression: true,
-      // ISS-4541/ISS-4578: the sync lane also advertises additive multi-part
-      // activity-tiling merge alongside sync (same server-version gate).
-      agentSessionSyncActivityChunking: true,
-      agentSessionSyncMonitoredActivity: true,
-    });
   });
 });
+
+/** What every hello ack advertises: agent-session sync is always on. */
+const SESSION_SYNC_CAPABILITIES = {
+  agentSessionSync: true,
+  agentSessionSyncCompression: true,
+  agentSessionSyncActivityChunking: true,
+  agentSessionSyncMonitoredActivity: true,
+};

@@ -736,6 +736,17 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/User Select Popover"
   },
   {
+    "id": "workflow-stat-tile",
+    "label": "Workflow Stat Tile",
+    "sourcePath": "packages/design-system/components/ui/primitives/workflow-stat-tile.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Primitives"
+    ],
+    "storyStatus": "catalog-only",
+    "storyTitle": "Design System/Primitives/Workflow Stat Tile"
+  },
+  {
     "id": "card",
     "label": "Card",
     "sourcePath": "packages/design-system/components/ui/card.tsx",
@@ -2908,6 +2919,28 @@ export const appCoreComponentCatalog =
     "storyTitle": "App Core/Insights/Tile Content"
   },
   {
+    "id": "integration-field-form",
+    "label": "Integration Field Form",
+    "sourcePath": "packages/app/integrations/components/integration-field-form.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Integrations"
+    ],
+    "storyId": "integration-field-form",
+    "storyTitle": "App Core/Integrations/Integration Field Form"
+  },
+  {
+    "id": "mutation-error-message",
+    "label": "Mutation Error Message",
+    "sourcePath": "packages/app/integrations/components/mutation-error-message.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Integrations"
+    ],
+    "storyId": "mutation-error-message",
+    "storyTitle": "App Core/Integrations/Mutation Error Message"
+  },
+  {
     "id": "loop-status-badge",
     "label": "Loop Status Badge",
     "sourcePath": "packages/app/loops/components/loop-status-badge.tsx",
@@ -3335,6 +3368,39 @@ export const appCoreComponentCatalog =
     ],
     "storyId": "tag-picker",
     "storyTitle": "App Core/Tags/Tag Picker"
+  },
+  {
+    "id": "workflow-actions-preview",
+    "label": "Actions Preview",
+    "sourcePath": "packages/app/workflows/components/workflow-actions-preview.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Workflows"
+    ],
+    "storyId": "workflow-actions-preview",
+    "storyTitle": "App Core/Workflows/Actions Preview"
+  },
+  {
+    "id": "workflow-configuration-guide",
+    "label": "Configuration Guide",
+    "sourcePath": "packages/app/workflows/components/workflow-configuration-guide.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Workflows"
+    ],
+    "storyId": "workflow-configuration-guide",
+    "storyTitle": "App Core/Workflows/Configuration Guide"
+  },
+  {
+    "id": "workflow-run-tool-calls-card",
+    "label": "Run Tool Calls Card",
+    "sourcePath": "packages/app/workflows/components/workflow-run-tool-calls-card.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Workflows"
+    ],
+    "storyId": "workflow-run-tool-calls-card",
+    "storyTitle": "App Core/Workflows/Run Tool Calls Card"
   }
 ] as const satisfies readonly StorybookCatalogEntry[];
 

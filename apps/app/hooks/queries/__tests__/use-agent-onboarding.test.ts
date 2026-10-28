@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { useAgentOnboarding } from "../use-agent-onboarding";
+import { AgentRunnerStatus, useAgentOnboarding } from "../use-agent-onboarding";
 import { createWrapper } from "./test-utils";
 
 const mockApiClient = {
@@ -41,9 +41,6 @@ describe("useAgentOnboarding", () => {
       if (path.startsWith("/agent-components")) {
         return Promise.resolve({ items: [], total: 0, hasMore: false });
       }
-      if (path === "/integrations/github") {
-        return Promise.resolve({ connected: true, installation: {} });
-      }
       if (path === "/compute-targets") {
         return Promise.resolve([{ id: "ct-1", isOnline: true }]);
       }
@@ -63,8 +60,7 @@ describe("useAgentOnboarding", () => {
 
     expect(result.current.shouldShow).toBe(true);
     expect(result.current.needsBootstrap).toBe(true);
-    expect(result.current.hasGitHub).toBe(true);
-    expect(result.current.hasElectron).toBe(true);
+    expect(result.current.runner).toBe(AgentRunnerStatus.Online);
     expect(result.current.prereqsMet).toBe(true);
     expect(result.current.isAdmin).toBe(true);
   });
@@ -77,9 +73,6 @@ describe("useAgentOnboarding", () => {
           total: 1,
           hasMore: false,
         });
-      }
-      if (path === "/integrations/github") {
-        return Promise.resolve({ connected: true, installation: {} });
       }
       if (path === "/compute-targets") {
         return Promise.resolve([{ id: "ct-1", isOnline: true }]);
@@ -152,7 +145,7 @@ describe("useAgentOnboarding", () => {
     expect(mockApiClient.get).not.toHaveBeenCalled();
   });
 
-  test("prereqsMet is false when GitHub is not connected", async () => {
+  test("does not ask for GitHub: an online runner is the whole prerequisite", async () => {
     mockApiClient.get.mockImplementation((path: string) => {
       if (path.startsWith("/agent-components")) {
         return Promise.resolve({ items: [], total: 0, hasMore: false });
@@ -174,23 +167,13 @@ describe("useAgentOnboarding", () => {
       expect(result.current.isLoading).toBe(false);
     });
 
-    expect(result.current.hasGitHub).toBe(false);
-    expect(result.current.prereqsMet).toBe(false);
+    expect(result.current.prereqsMet).toBe(true);
+    const requested = mockApiClient.get.mock.calls.map(([path]) => path);
+    expect(requested).not.toContain("/integrations/github");
   });
 
-  test("prereqsMet is false when no compute target is online", async () => {
-    mockApiClient.get.mockImplementation((path: string) => {
-      if (path.startsWith("/agent-components")) {
-        return Promise.resolve({ items: [], total: 0, hasMore: false });
-      }
-      if (path === "/integrations/github") {
-        return Promise.resolve({ connected: true, installation: {} });
-      }
-      if (path === "/compute-targets") {
-        return Promise.resolve([]);
-      }
-      return Promise.resolve({});
-    });
+  test("a runner that is installed but offline does not meet the prerequisite", async () => {
+    mockComputeTargets([{ id: "ct-1", isOnline: false }]);
 
     const { result } = renderHook(() => useAgentOnboarding(), {
       wrapper: createWrapper(),
@@ -200,7 +183,35 @@ describe("useAgentOnboarding", () => {
       expect(result.current.isLoading).toBe(false);
     });
 
-    expect(result.current.hasElectron).toBe(false);
+    expect(result.current.runner).toBe(AgentRunnerStatus.Offline);
+    expect(result.current.prereqsMet).toBe(false);
+  });
+
+  test("without any runner the prerequisite is to install one", async () => {
+    mockComputeTargets([]);
+
+    const { result } = renderHook(() => useAgentOnboarding(), {
+      wrapper: createWrapper(),
+    });
+
+    await vi.waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    expect(result.current.runner).toBe(AgentRunnerStatus.None);
     expect(result.current.prereqsMet).toBe(false);
   });
 });
+
+/** An org with no agents yet, whose user can start loops on `targets`. */
+function mockComputeTargets(targets: { id: string; isOnline: boolean }[]) {
+  mockApiClient.get.mockImplementation((path: string) => {
+    if (path.startsWith("/agent-components")) {
+      return Promise.resolve({ items: [], total: 0, hasMore: false });
+    }
+    if (path === "/compute-targets") {
+      return Promise.resolve(targets);
+    }
+    return Promise.resolve({});
+  });
+}

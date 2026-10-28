@@ -4,6 +4,10 @@ import {
   type IntegrationConnection,
   type IntegrationInboundDetails,
 } from "@repo/api/src/types/integration";
+import {
+  createProjectConnectionInputSchema,
+  type ProjectConnection,
+} from "@repo/api/src/types/project-connection";
 import type { z } from "zod";
 import { bearer, deleteQuietly, readApiResult } from "./api-result";
 import { getApiBaseUrl } from "./api-url";
@@ -62,6 +66,48 @@ export async function deleteIntegrationConnection(
   await deleteQuietly(
     request,
     `${getApiBaseUrl()}/integrations/connections/${connectionId}`,
+    token
+  );
+}
+
+/** Adds an organization connection to a project under a key (org admins). */
+export async function createProjectConnection(
+  request: APIRequestContext,
+  {
+    projectId,
+    input,
+    token,
+  }: {
+    projectId: string;
+    input: z.input<typeof createProjectConnectionInputSchema>;
+    token: string;
+  }
+): Promise<ProjectConnection> {
+  const response = await request.post(
+    `${getApiBaseUrl()}/projects/${projectId}/connections`,
+    {
+      data: createProjectConnectionInputSchema.parse(input),
+      headers: bearer(token),
+    }
+  );
+  return readApiResult<ProjectConnection>(
+    response,
+    `Add ${input.key} to the project`
+  );
+}
+
+export async function deleteProjectConnection(
+  request: APIRequestContext,
+  projectId: string | null,
+  projectConnectionId: string | null,
+  token: string
+): Promise<void> {
+  if (!(projectId && projectConnectionId)) {
+    return;
+  }
+  await deleteQuietly(
+    request,
+    `${getApiBaseUrl()}/projects/${projectId}/connections/${projectConnectionId}`,
     token
   );
 }

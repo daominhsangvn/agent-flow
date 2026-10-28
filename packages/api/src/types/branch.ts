@@ -669,7 +669,6 @@ export type BranchQueryFilters = {
   // Cloud-only dimensions — ignored by the local source; REST routes reject
   // unsupported dimensions until their downstream predicates are implemented.
   userId?: string;
-  teamId?: string;
   contributorUserId?: string;
   projectId?: string;
   limit?: number;

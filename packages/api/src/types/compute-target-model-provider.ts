@@ -47,6 +47,33 @@ export const MODEL_PROVIDER_MODEL_ENV_KEYS: readonly string[] = [
 export const MODEL_PROVIDER_ENV_MAX = 30;
 const ENV_VALUE_MAX = 4096;
 
+/**
+ * Claude Code version a headless runner runs loops with: `latest`, looked up
+ * when each loop starts, or an exact release. The runner installs a missing
+ * version with Claude Code's native installer; the desktop app keeps its own
+ * `claude`.
+ */
+export const ClaudeCodeVersionChannel = {
+  Latest: "latest",
+} as const;
+export type ClaudeCodeVersionChannel =
+  (typeof ClaudeCodeVersionChannel)[keyof typeof ClaudeCodeVersionChannel];
+
+/** An exact Claude Code release such as `2.1.296` (no path separators). */
+export const CLAUDE_CODE_RELEASE_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+const CLAUDE_CODE_VERSION_MAX = 64;
+
+export const claudeCodeVersionSchema = z
+  .string()
+  .trim()
+  .max(CLAUDE_CODE_VERSION_MAX)
+  .refine(
+    (value) =>
+      value === ClaudeCodeVersionChannel.Latest ||
+      CLAUDE_CODE_RELEASE_RE.test(value),
+    "Use latest or a version such as 2.1.296"
+  );
+
 export type ComputeTargetModelProvider = {
   mode: ModelProviderMode;
   baseUrl: string | null;
@@ -54,6 +81,8 @@ export type ComputeTargetModelProvider = {
   /** Additional non-secret Claude Code variables. */
   env: Record<string, string>;
   token: { isSet: boolean; lastFour: string | null };
+  /** `latest` or an exact release; applies to headless runners only. */
+  claudeCodeVersion: string;
 };
 
 /** Environment sent to the computer with a loop (the computer re-checks the keys). */
@@ -79,6 +108,9 @@ export const updateComputeTargetModelProviderInputSchema = z
     env: z.record(z.string(), z.string().max(ENV_VALUE_MAX)).default({}),
     /** Omitted: keep the stored token. Null: remove it. */
     token: z.string().trim().min(1).max(ENV_VALUE_MAX).nullable().optional(),
+    claudeCodeVersion: claudeCodeVersionSchema.default(
+      ClaudeCodeVersionChannel.Latest
+    ),
   })
   .superRefine((input, ctx) => {
     if (input.mode === ModelProviderMode.Custom && !input.baseUrl) {

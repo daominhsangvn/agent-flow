@@ -53,6 +53,12 @@ vi.mock("../../hooks/use-project-repositories", () => ({
     data: [{ id: "repo-1", fullName: "acme/toolkit" }],
   }),
 }));
+vi.mock("../../hooks/use-project-connections", () => ({
+  useProjectConnections: () => ({ data: [] }),
+}));
+vi.mock("@repo/app/integrations/hooks/use-integrations", () => ({
+  useIntegrationProviders: () => ({ data: [] }),
+}));
 
 function savedProcess() {
   const [input] = mocks.saveMutate.mock.calls.at(-1) as [{ process: unknown }];

@@ -32,46 +32,10 @@ const rawInsightsQueryValidator = z
   .object({
     period: z.enum(INSIGHTS_PERIOD_OPTIONS).default(InsightsPeriod.Quarter),
     scope: z.enum(INSIGHTS_SCOPE_OPTIONS).default(InsightsScope.Me),
-    teamId: z.string().uuid("Must be a valid UUID").optional(),
     timeZone: timeZoneValidator,
   })
   .strict();
-const rawInsightsQueryPreprocessor = z
-  .object({
-    period: z.enum(INSIGHTS_PERIOD_OPTIONS).optional(),
-    scope: z.enum(INSIGHTS_SCOPE_OPTIONS).optional(),
-    teamId: z.string().uuid("Must be a valid UUID").optional(),
-    timeZone: z.string().optional(),
-  })
-  .passthrough();
 
-export const insightsQueryValidator = z
-  .preprocess((value) => {
-    const parsed = rawInsightsQueryPreprocessor.safeParse(value);
-    if (
-      !parsed.success ||
-      parsed.data.teamId === undefined ||
-      parsed.data.scope !== undefined
-    ) {
-      return value;
-    }
-    return { ...parsed.data, scope: InsightsScope.Team };
-  }, rawInsightsQueryValidator)
-  .superRefine((params, ctx) => {
-    if (params.scope === InsightsScope.Team && params.teamId === undefined) {
-      ctx.addIssue({
-        code: "custom",
-        message: "teamId is required when scope is team",
-        path: ["teamId"],
-      });
-    }
-    if (params.scope !== InsightsScope.Team && params.teamId !== undefined) {
-      ctx.addIssue({
-        code: "custom",
-        message: "teamId requires scope team",
-        path: ["teamId"],
-      });
-    }
-  });
+export const insightsQueryValidator = rawInsightsQueryValidator;
 
 export type InsightsQuery = z.infer<typeof insightsQueryValidator>;

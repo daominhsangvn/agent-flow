@@ -35,19 +35,16 @@ export const INSIGHTS_SECTION_OPTIONS = [
 ] as const;
 
 // Aggregation scope. `me` restricts to the current user's attributable data;
-// `org` aggregates the whole organization; `team` requires a team id and
-// filters to members of that team.
+// `org` aggregates the whole organization.
 export const InsightsScope = {
   Me: "me",
   Org: "org",
-  Team: "team",
 } as const;
 export type InsightsScope = (typeof InsightsScope)[keyof typeof InsightsScope];
 
 export const INSIGHTS_SCOPE_OPTIONS = [
   InsightsScope.Me,
   InsightsScope.Org,
-  InsightsScope.Team,
 ] as const;
 
 // How a numeric KPI value should be rendered. `duration` and `tokens` values

@@ -85,19 +85,16 @@ describe("searchIndexService mappers", () => {
       updatedAt: new Date("2026-01-01"),
       slug: "my-prd",
       entitySubtype: "PRD",
-      // Documents route by type+slug, not by team.
-      teamId: null,
       anchorEntityId: null,
     });
   });
 
-  it("maps a Project carrying its slug + owning team; own id is the visibility key", () => {
+  it("maps a Project carrying its slug; own id is the visibility key", () => {
     const row = projectProjection({
       id: "proj-1",
       organizationId: "org-1",
       name: "Acme",
       slug: "acme",
-      teamId: "team-1",
       description: "the acme project",
       assigneeId: null,
       status: "IN_PROGRESS",
@@ -110,7 +107,6 @@ describe("searchIndexService mappers", () => {
     expect(row.title).toBe("Acme");
     expect(row.body).toBe("the acme project");
     expect(row.slug).toBe("acme");
-    expect(row.teamId).toBe("team-1");
     // The project's status/priority ride into the projection for `:status`/`:priority`.
     expect(row.status).toBe("IN_PROGRESS");
     expect(row.priority).toBe("MEDIUM");
@@ -136,10 +132,9 @@ describe("searchIndexService mappers", () => {
     // A loop carries a status but no priority.
     expect(row.status).toBe("RUNNING");
     expect(row.priority).toBeNull();
-    // Loops route by id — no slug/subtype/team.
+    // Loops route by id — no slug/subtype.
     expect(row.slug).toBeNull();
     expect(row.entitySubtype).toBeNull();
-    expect(row.teamId).toBeNull();
     expect(row.anchorEntityId).toBeNull();
   });
 
@@ -235,7 +230,6 @@ describe("searchIndexService mappers", () => {
       // slug is the org-identity handle from the shared SSOT codec.
       slug: encodeComponentSlug("skill", "design-review", "Design Review"),
       entitySubtype: "skill",
-      teamId: null,
       anchorEntityId: null,
     });
   });

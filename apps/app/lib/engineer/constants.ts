@@ -4,8 +4,9 @@
 // share one definition without dragging the dispatch router into those bundles.
 import { GATEWAY_PATH_PREFIX } from "@repo/shared-platform/gateway-constants";
 
-export const DESKTOP_SETUP_URL =
-  "https://github.com/agentflow-ai/symphony-alpha/blob/main/docs/runbook-symphony-desktop-client-llm.md";
+/** How to install a runner (Docker or a Linux server): docs/runner.md. */
+export const RUNNER_SETUP_URL =
+  "https://github.com/daominhsangvn/agentflow/blob/main/docs/runner.md";
 
 export const VALID_PROVIDERS = new Set(["claude", "codex"]);
 

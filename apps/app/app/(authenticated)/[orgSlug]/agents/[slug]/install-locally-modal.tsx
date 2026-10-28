@@ -156,12 +156,11 @@ function renderBody({
 }
 
 /**
- * Read-only row for one of the member's own compute targets. Mirrors
- * `TargetOption` in compute-target-popover: a laptop icon tinted
- * `text-success` when online / `text-muted-foreground` when offline, with the
- * machine name over a "platform · Online|Offline" subtitle — so a target reads
- * the same wherever it appears. Not a control: the web app cannot dispatch the
- * install to it (deferred), so it carries no click affordance.
+ * Read-only row for one of the member's own compute targets: a laptop icon
+ * tinted `text-success` when online / `text-muted-foreground` when offline,
+ * with the machine name over a "platform · Online|Offline" subtitle. Not a
+ * control: the web app cannot dispatch the install to it (deferred), so it
+ * carries no click affordance.
  */
 function TargetRow({ target }: { target: ComputeTarget }) {
   return (

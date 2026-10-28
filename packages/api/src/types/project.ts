@@ -56,7 +56,6 @@ export type ProjectWithDetails = Project & {
    * backlog-style track rather than a solid 0%.
    */
   completionPopulationEmpty?: boolean;
-  teams: Array<{ id: string; name: string }>;
   /** Custom field values attached to this project. Omitted when not requested. */
   customFields?: CustomFieldValueDetail[];
   tags?: TagSummary[];
@@ -70,7 +69,6 @@ export type CreateProjectInput = {
   assigneeId?: string | null;
   slug?: string | null;
   targetDate?: Date | null;
-  teamIds?: string[];
 };
 
 export type UpdateProjectInput = {
@@ -81,7 +79,6 @@ export type UpdateProjectInput = {
   status?: ProjectStatus;
   assigneeId?: string | null;
   targetDate?: Date | null;
-  teamIds?: string[];
   settings?: JsonObject;
   codebaseSummary?: string | null;
   lastIndexedAt?: Date | null;
@@ -144,89 +141,6 @@ export function getProjectSettings(settings: JsonObject): ProjectSettings {
     result.repositoryOverrides = override.data;
   }
   return result;
-}
-
-// =============================================================================
-// Repository Default Resolution
-// =============================================================================
-
-/**
- * Minimal team-repository row shape required by the resolver. Callers map
- * their own row type onto this.
- */
-export type ResolverTeamRepo = {
-  installationRepositoryId: string;
-  isDefaultSelected: boolean;
-  isPrimary: boolean;
-};
-
-export type ResolveProjectRepoDefaultsInput = {
-  projectSettings: ProjectSettings;
-  teamRepos: ResolverTeamRepo[];
-  /** Number of distinct teams the project belongs to. */
-  teamCount: number;
-};
-
-/**
- * Resolution chain for a project's repository defaults:
- *
- *  1. Project override (`settings.repositoryOverrides`) — stale ids that no
- *     longer exist in the team pool are filtered out; the override is dropped
- *     entirely if filtering removes the primary or empties the selected list.
- *  2. Single-team inheritance — when the project belongs to exactly one team
- *     and has no override, the team's default-selected repos are inherited
- *     and the team's primary becomes the project primary.
- *  3. Otherwise null — the user must pick repos at job launch (multi-team
- *     project with no override).
- */
-export function resolveProjectRepoDefaults(
-  input: ResolveProjectRepoDefaultsInput
-): RepositoryOverrides | null {
-  const { projectSettings, teamRepos, teamCount } = input;
-  const poolIds = new Set(teamRepos.map((r) => r.installationRepositoryId));
-
-  const override = projectSettings.repositoryOverrides;
-  if (override) {
-    const filteredSelected = override.selectedRepoIds.filter((id) =>
-      poolIds.has(id)
-    );
-    // `filteredSelected` is by construction a subset of `poolIds`, so
-    // `includes(primaryRepoId)` already implies the primary is in the pool
-    // and that the list is non-empty.
-    if (filteredSelected.includes(override.primaryRepoId)) {
-      return {
-        selectedRepoIds: filteredSelected,
-        primaryRepoId: override.primaryRepoId,
-      };
-    }
-  }
-
-  if (teamCount === 1) {
-    const inherited = inheritFromSingleTeam(teamRepos);
-    if (inherited) {
-      return inherited;
-    }
-  }
-
-  return null;
-}
-
-function inheritFromSingleTeam(
-  teamRepos: ResolverTeamRepo[]
-): RepositoryOverrides | null {
-  const primary = teamRepos.find((r) => r.isPrimary);
-  if (!primary) {
-    return null;
-  }
-  const defaults = teamRepos.filter(
-    (r) =>
-      r.isDefaultSelected ||
-      r.installationRepositoryId === primary.installationRepositoryId
-  );
-  return {
-    selectedRepoIds: defaults.map((r) => r.installationRepositoryId),
-    primaryRepoId: primary.installationRepositoryId,
-  };
 }
 
 /**

@@ -181,10 +181,6 @@ vi.mock("../transcript-search-card", () => ({
   TranscriptSearchCard: () => null,
 }));
 
-vi.mock("../session-sync-policy-card", () => ({
-  SessionSyncPolicyCard: () => null,
-}));
-
 vi.mock("@repo/app/tags/components/tags-settings-tab", () => ({
   TagsSettingsTab: () => <div data-testid="tags-settings-tab" />,
 }));

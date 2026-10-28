@@ -86,11 +86,13 @@ The two reusable orchestration procedures — **PLAN_VALIDATION_SEQUENCE** (full
 
 **run event (once per Loop):** `record_run.sh` is called by `run-loop.sh` at the very start of every Loop (after RUN_ID generation, before Phase 0.9) to append a single `run` event to `perf.jsonl`; this is handled automatically by the shell script and requires no orchestrator action.
 
-**startSha initialization:** At the very start of the first iteration (before Phase 0.9, immediately after writing the initial state.json), source startSha from config.env with a single Bash call and store it in orchestrator working memory for the rest of the run:
+**startSha initialization:** At the very start of the first iteration (before Phase 0.9, immediately after writing the initial state.json), source startSha and startShas from config.env with a single Bash call and store them in orchestrator working memory for the rest of the run:
 ```bash
 START_SHA=$(grep '^AGENTFLOW_START_SHA=' "$AGENTFLOW_WORKDIR/.agentflow-ai/config.env" 2>/dev/null | cut -d= -f2- | head -n1)
+START_SHAS=$(grep '^AGENTFLOW_START_SHAS=' "$AGENTFLOW_WORKDIR/.agentflow-ai/config.env" 2>/dev/null | cut -d= -f2- | head -n1 | tr -d '"')
+echo "START_SHA=$START_SHA"; echo "START_SHAS=$START_SHAS"
 ```
-Always quote `"$AGENTFLOW_WORKDIR"` in shell snippets to handle workdir paths that contain spaces. Include `"startSha": "$START_SHA"` in this initial state.json write. On every subsequent state.json write, re-include `"startSha": "$START_SHA"` from working memory — do NOT re-read config.env or state.json. If config.env is absent or `AGENTFLOW_START_SHA` is empty, set `startSha` to `""`.
+Always quote `"$AGENTFLOW_WORKDIR"` in shell snippets to handle workdir paths that contain spaces. Include `"startSha": "$START_SHA"` in this initial state.json write. On every subsequent state.json write, re-include `"startSha": "$START_SHA"` from working memory — do NOT re-read config.env or state.json. If config.env is absent or `AGENTFLOW_START_SHA` is empty, set `startSha` to `""`. Hold `START_SHAS` as `startShas` (`""` when absent; it is not written to state.json): the git baselines of the run's other repositories, `<repository root>=<sha>` entries joined by `|`. On a workspace run (the work directory is in a project workspace, which is not a repository) `startSha` is `""` and `startShas` holds the baseline of every repository.
 
 **Multi-repo detection (MANDATORY, immediately after startSha init, first iteration only):** The planning agents do NOT reliably self-detect multi-repo mode from injected environment context — you MUST detect it deterministically here and pass it as an explicit instruction. Source the multi-repo values from config.env with a single Bash call and store them in working memory for the rest of the run:
 ```bash
@@ -186,7 +188,7 @@ Here are the key phases you must complete:
 - Activate `code:critic-cache` skill. On `CACHE_HIT`: skip to Phase 2.6. On `CACHE_MISS`: continue.
 - `mkdir -p $AGENTFLOW_WORKDIR/reviews`
 - Launch Task() **in parallel** for each critic (description: `"critic:{critic_name}"`): "WORKDIR=$AGENTFLOW_WORKDIR. Review plan as {critic_name} specialist. Read plan.md, investigation-log.md, PRD. Write to reviews/{critic_name}.review.json with findings: {severity, description, recommendation, affectedTasks}."
-- If zero reviews written: skip to Phase 3. Otherwise: stamp cache (`bash "$CLAUDE_PLUGIN_ROOT/scripts/stamp_critic_cache.sh" "$AGENTFLOW_WORKDIR"`), proceed to Phase 2.6
+- If zero reviews written (for example no critics are configured): mark Phase 2.6 as `completed` and skip to Phase 2.7 — the plan is still finalized and its decision table generated, which Phase 5.5 needs. Otherwise: stamp cache (`bash "$CLAUDE_PLUGIN_ROOT/scripts/stamp_critic_cache.sh" "$AGENTFLOW_WORKDIR"`), proceed to Phase 2.6
 
 **PHASE 2.6: PLAN REFINEMENT** (only if Phase 2.5 produced reviews)
 
@@ -255,16 +257,17 @@ NOTE: These are the only three valid skip conditions. If neither skip applies, P
 **Setup (values from orchestrator working memory and last plan-validate output -- no file reads):**
 - `decisionTablePath` = `decision_table_path` field from last `code:plan-validate` skill output
 - `startSha` = value held in orchestrator working memory since T-4.0 initialization
+- `startShas` = value held in orchestrator working memory since the same initialization
 - Set `dt_attempt = 0`, `dt_max_attempts = 5`, `dt_status = "pending"`, `dt_any_clarifications = false`, `dt_last_failure_reason = ""`.
 - Telemetry counters: `dt_drift_kind_counts = {"code_drift": 0, "test_drift": 0, "plan_ambiguity": 0}`, `dt_fixes_attempted = 0`, `dt_parse_failures = 0`, `dt_verifier_invocations = 0`, `dt_phase_start_iso = $(date -u +%Y-%m-%dT%H:%M:%SZ)`, `dt_phase_start_epoch_ms = $(($(date +%s%N | cut -c1-13)))` (macOS-portable form: `$(($(date +%s) * 1000))` if nanoseconds unavailable).
 
-If `startSha` is `""` in orchestrator working memory (no git context or resumed run predating this feature): log warning "startSha unavailable, skipping Phase 5.5", mark `completed`, skip to Phase 6.
+If `startSha` and `startShas` are both `""` in orchestrator working memory (no git context or resumed run predating this feature): log warning "No git baseline (startSha and startShas empty), skipping Phase 5.5", mark `completed`, skip to Phase 6. A workspace run has `startSha` `""` and its repositories' baselines in `startShas`: it does NOT skip.
 
 If `decisionTablePath` is `""` (Phase 2.7 generation failed or pointer not written): set `dt_status = "verification_failed"`. Launch haiku subagent (description: `"plan-editor"`): "In $AGENTFLOW_WORKDIR/plan.json, set decisionTable.status to 'verification_failed' if the field exists." Execute **AWAITING_USER_SEQUENCE** with: phase="Phase 5.5: Behavioral Verification", reason="Decision-table artifact path is missing from plan.json. Phase 2.7 generation appears to have failed.", file="$AGENTFLOW_WORKDIR/plan.json", command="/code:code $ARGUMENTS". Tell the user: "Phase 2.7 did not write a decision-table pointer into plan.json. Review plan.json and re-run /code:code $ARGUMENTS to resume." **HARD STOP.**
 
 **Verification loop:**
 1. Increment `dt_attempt`. **Step 1 is the sole site that increments `dt_attempt` -- no other step may increment it.** Then check: if `dt_attempt > dt_max_attempts`, set `dt_status = "verification_failed"`. Launch haiku subagent (description: `"plan-editor"`): "In $AGENTFLOW_WORKDIR/plan.json, set decisionTable.status to 'verification_failed'." Determine the escalation reason based on the previous iteration's outcome (tracked in `dt_last_failure_reason`, initialized to `""`): if `dt_last_failure_reason == "unparseable"`, use reason=`behavior-verifier output unparseable after $dt_max_attempts attempts`; otherwise use reason=`Behavioral drift detected after $dt_max_attempts verification attempts`. Execute **AWAITING_USER_SEQUENCE** with: phase="Phase 5.5: Behavioral Verification", reason=<determined above>, file="$AGENTFLOW_WORKDIR/$decisionTablePath", command="/code:code $ARGUMENTS". **HARD STOP.**
-2. Launch @code:behavior-verifier with prompt: "WORKDIR=$AGENTFLOW_WORKDIR. DECISION_TABLE_PATH=$AGENTFLOW_WORKDIR/$decisionTablePath. START_SHA=$startSha. Verify final code against the decision-table artifact. Report only; do not fix code or tests." Increment `dt_verifier_invocations` by 1.
+2. Launch @code:behavior-verifier with prompt: "WORKDIR=$AGENTFLOW_WORKDIR. DECISION_TABLE_PATH=$AGENTFLOW_WORKDIR/$decisionTablePath. START_SHA=$startSha. START_SHAS=$startShas. Verify final code against the decision-table artifact. Report only; do not fix code or tests." Increment `dt_verifier_invocations` by 1.
 3. Parse verifier output:
    - If `ALIGNED` (first line of output is `ALIGNED`):
      - If `dt_any_clarifications = true`: set `dt_status = "aligned_with_clarifications"`. Launch haiku subagent (description: `"plan-editor"`): "In $AGENTFLOW_WORKDIR/plan.json, set decisionTable.status to 'aligned_with_clarifications'."

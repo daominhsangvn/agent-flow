@@ -1,14 +1,15 @@
 /**
- * Local Git (git hosting on the user's own machine): the connection form in
- * Settings, and creating a repository from Project → Repositories. CI has no
- * Local Git server, so the second spec stubs the connection, its repository
- * listing and the two writes with route mocks, and asserts what the UI sends.
+ * Local Git (git hosting on the user's own machine): the connection the
+ * server provides to every organization (with LOCAL_GIT_TOKEN on the API) or,
+ * without it, the connection an admin adds in Settings; and creating a
+ * repository from Project → Repositories. CI has no Local Git server, so the
+ * second spec stubs the connection, its repository listing and the two
+ * writes with route mocks, and asserts what the UI sends.
  */
 import type { IntegrationConnection } from "@repo/api/src/types/integration";
 import { getApiBaseUrl } from "./helpers/api-url";
 import { isOrgAdminRole, requireOrgClaims } from "./helpers/better-auth";
 import { createProject, deleteProject } from "./helpers/create-project";
-import { createTeam, deleteTeam } from "./helpers/create-team";
 import { E2ETag } from "./helpers/tags";
 import { createUniqueName } from "./helpers/utils";
 import { expect, test } from "./test";
@@ -20,7 +21,7 @@ const REPOSITORIES_TAB_RE = /tab=repositories/;
 const CONNECTION_ID = "0199a5f0-0000-7000-8000-00000000a11c";
 const NOW = "2026-10-09T00:00:00.000Z";
 
-test("Local Git connection: offered in the catalog with its fields and repository creation", {
+test("Local Git connection: provided by the server, else offered in Add connection", {
   tag: E2ETag.Smoke,
 }, async ({ apiToken: token, page, request }) => {
   const { orgRole, orgSlug } = requireOrgClaims(token);
@@ -30,12 +31,13 @@ test("Local Git connection: offered in the catalog with its fields and repositor
     `${getApiBaseUrl()}/integrations/providers`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  const providers: Array<{ key: string; capabilities: string[] }> = (
-    await catalog.json()
-  ).data.providers;
-  expect(
-    providers.find((provider) => provider.key === "local_git")
-  ).toMatchObject({
+  const providers: Array<{
+    key: string;
+    capabilities: string[];
+    providedByServer: boolean;
+  }> = (await catalog.json()).data.providers;
+  const localGit = providers.find((provider) => provider.key === "local_git");
+  expect(localGit).toMatchObject({
     capabilities: expect.arrayContaining([
       "repositories",
       "repository_creation",
@@ -44,16 +46,42 @@ test("Local Git connection: offered in the catalog with its fields and repositor
   });
 
   await page.goto(`/${orgSlug}/settings?tab=integrations`);
+  if (localGit?.providedByServer) {
+    // Every organization already has it: listed as Default, never added.
+    const row = page
+      .getByRole("list", { name: "Integration connections" })
+      .getByRole("listitem")
+      .filter({ hasText: "Provided by the server" });
+    await expect(row).toContainText("Local Git", { timeout: 30_000 });
+    await expect(row).toContainText("Default");
+    await expect(
+      page.getByRole("button", { name: "Delete Local Git" })
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "Add connection" }).first().click();
+    const picker = page.getByRole("dialog");
+    await expect(
+      picker.getByRole("button", { name: LOCAL_GIT_RE })
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(picker).toHaveCount(0);
+    return;
+  }
+
+  // Without LOCAL_GIT_TOKEN on the API an admin adds it: settings in YAML,
+  // the token in its password field.
   await page.getByRole("button", { name: "Add connection" }).first().click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: LOCAL_GIT_RE }).click();
-
-  await expect(dialog.getByLabel("Server URL")).toHaveValue(
-    "http://localhost:3300"
+  const yaml = dialog.getByTestId("connection-yaml-content");
+  await expect(yaml).toContainText("serverUrl: http://localhost:3300", {
+    timeout: 30_000,
+  });
+  await expect(yaml).toContainText("runnerUrl:");
+  await expect(yaml).toContainText("owner:");
+  await expect(dialog.getByLabel("Access token")).toHaveAttribute(
+    "type",
+    "password"
   );
-  await expect(dialog.getByLabel("Runner URL")).toBeVisible();
-  await expect(dialog.getByLabel("Access token")).toBeVisible();
-  await expect(dialog.getByLabel("Owner")).toBeVisible();
 
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toHaveCount(0);
@@ -65,17 +93,10 @@ test("project repositories: create a repository in Local Git and add it", {
   const { orgRole, orgSlug } = requireOrgClaims(token);
   expect(isOrgAdminRole(orgRole), ADMIN_REQUIRED_MESSAGE).toBe(true);
 
-  let teamId: string | null = null;
   let projectId: string | null = null;
   try {
-    const team = await createTeam(request, {
-      name: createUniqueName("e2e-local-git-team"),
-      token,
-    });
-    teamId = team.id;
     const project = await createProject(request, {
       name: createUniqueName("e2e-local-git-project"),
-      teamIds: [team.id],
       token,
     });
     projectId = project.id;
@@ -131,8 +152,8 @@ test("project repositories: create a repository in Local Git and add it", {
       });
     });
 
-    await page.goto(`/${orgSlug}/teams/${team.id}/projects/${project.id}`);
-    await page.getByRole("radio", { name: "Repositories" }).click();
+    await page.goto(`/${orgSlug}/projects/${project.id}`);
+    await page.getByRole("radio", { name: "Integrations" }).click();
     await expect(page).toHaveURL(REPOSITORIES_TAB_RE);
     await page.getByRole("button", { name: "Add repository" }).click();
     await page.getByRole("combobox", { name: "Connection" }).click();
@@ -160,9 +181,6 @@ test("project repositories: create a repository in Local Git and add it", {
     if (projectId) {
       await deleteProject(request, projectId, token);
     }
-    if (teamId) {
-      await deleteTeam(request, teamId, token);
-    }
   }
 });
 
@@ -170,6 +188,7 @@ function localGitConnection(): IntegrationConnection {
   return {
     id: CONNECTION_ID,
     managedByWorkflowId: null,
+    providedByServer: true,
     provider: "local_git",
     name: "Local Git",
     status: "active",

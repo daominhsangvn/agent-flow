@@ -24,7 +24,6 @@ const PROJECT_ID = "project-1";
 const mockGenerateArtifactSlug = vi.hoisted(() => vi.fn());
 const mockWithDb = vi.hoisted(() => vi.fn());
 const mockWithDbTx = vi.hoisted(() => vi.fn());
-const mockLoadProjectRepoDefaults = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/database", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -48,9 +47,6 @@ vi.mock("@/app/projects/project-repository-checkouts", async (original) => ({
     typeof import("@/app/projects/project-repository-checkouts")
   >()),
   listProjectRepositoryCheckouts: vi.fn(() => Promise.resolve([])),
-}));
-vi.mock("@/app/projects/repository-resolver", () => ({
-  loadProjectRepoDefaults: mockLoadProjectRepoDefaults,
 }));
 
 // Keep the post-write side effects inert so the test focuses on the persisted
@@ -101,7 +97,6 @@ describe("createDocumentRecord normalizes the ISSUE alias (ISS-4397)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGenerateArtifactSlug.mockResolvedValue("ISS-1");
-    mockLoadProjectRepoDefaults.mockResolvedValue(null);
     // validateUserInOrg reads a user row via withDb; return a match.
     mockWithDb.mockImplementation(
       async (

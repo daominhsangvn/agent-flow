@@ -369,38 +369,7 @@ describe("agentSessionsService", () => {
     );
     expect(count).toHaveBeenCalledWith({ where: expectedWhere });
   });
-  it("fails closed if team scope reaches the service without teamId", async () => {
-    const findMany = vi.fn().mockResolvedValue([]);
-    const count = vi.fn().mockResolvedValue(0);
-
-    installDb({
-      sessionDetail: buildAgentSessionDbMock({
-        findMany,
-        count,
-      }),
-    });
-
-    await agentSessionsService.findSessions({
-      organizationId: "org-1",
-      filters: { viewerScope: AgentSessionViewerScope.Team },
-    });
-
-    const expectedWhere = {
-      artifact: {
-        is: {
-          organizationId: "org-1",
-        },
-      },
-      artifactId: { in: [] },
-    };
-    expect(findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expectedWhere,
-      })
-    );
-    expect(count).toHaveBeenCalledWith({ where: expectedWhere });
-  });
-  it("honors user and team filters within organization-scoped session lists", async () => {
+  it("honors the user filter within organization-scoped session lists", async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     const count = vi.fn().mockResolvedValue(0);
 
@@ -415,7 +384,6 @@ describe("agentSessionsService", () => {
       organizationId: "org-1",
       filters: {
         userId: "user-2",
-        teamId: "team-1",
         quality: "all",
       },
     });
@@ -427,15 +395,6 @@ describe("agentSessionsService", () => {
         },
       },
       userId: "user-2",
-      user: {
-        is: {
-          teamMemberships: {
-            some: {
-              teamId: "team-1",
-            },
-          },
-        },
-      },
     };
 
     expect(findMany).toHaveBeenCalledWith(

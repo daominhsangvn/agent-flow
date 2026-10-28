@@ -28,7 +28,6 @@ import {
 } from "react";
 import { ConnectGitHubIndicator } from "../../branches/components/connect-github-indicator";
 import { useFeatureFlagEnabled } from "../../shared/feature-flags/use-feature-flag-enabled";
-import type { InsightsTeamOption } from "../data/insights-data-source";
 import { useInsightsDataSource } from "../data/insights-data-source";
 import {
   type SharedDashboard,
@@ -61,11 +60,9 @@ const PERIOD_LABELS: Record<InsightsPeriod, string> = {
 const SCOPE_LABELS: Record<InsightsScope, string> = {
   [InsightsScope.Me]: "Me",
   [InsightsScope.Org]: "Organization",
-  [InsightsScope.Team]: "Team",
 };
 
 const SHARE_FEEDBACK_TIMEOUT_MS = 1800;
-const EMPTY_TEAM_OPTIONS: readonly InsightsTeamOption[] = [];
 
 /**
  * PostHog flag gating the customized-dashboard share link (FEA-2746). Reuses
@@ -96,8 +93,7 @@ export function InsightsPage({
   storageNamespace: string;
 }) {
   const source = useInsightsDataSource();
-  const { availableScopes, availableSections, availableTeams } = source;
-  const teamOptions = availableTeams ?? EMPTY_TEAM_OPTIONS;
+  const { availableScopes, availableSections } = source;
   const shareDashboardEnabled = useFeatureFlagEnabled(
     SHARE_DASHBOARD_FEATURE_FLAG_KEY
   );
@@ -125,9 +121,6 @@ export function InsightsPage({
       ? InsightsScope.Me
       : availableScopes[0]
   );
-  const [selectedTeamId, setSelectedTeamId] = useState<string | undefined>(
-    teamOptions[0]?.id
-  );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [editingTileId, setEditingTileId] = useState<string | null>(null);
   const [shareFeedback, setShareFeedback] = useState<
@@ -151,43 +144,35 @@ export function InsightsPage({
       pins.tiles.some((id) => pins.settings[id]?.comparisonOverlay === true));
   const isEnabled = (section: InsightsSection) =>
     availableSections.includes(section) && (needed.has(section) || pickerOpen);
-  const selectedTeamQueryId =
-    scope === InsightsScope.Team ? selectedTeamId : undefined;
 
   const deliveryQuery = useDeliveryInsights(
     period,
     scope,
-    selectedTeamQueryId,
     isEnabled(InsightsSection.Delivery)
   );
   const utilizationQuery = useUtilizationInsights(
     period,
     scope,
-    selectedTeamQueryId,
     isEnabled(InsightsSection.Utilization)
   );
   const agentsQuery = useAgentsInsights(
     period,
     scope,
-    selectedTeamQueryId,
     isEnabled(InsightsSection.Agents)
   );
   const deliveryComparisonQuery = useDeliveryInsights(
     period,
     comparisonScope,
-    undefined,
     shouldLoadComparison && isEnabled(InsightsSection.Delivery)
   );
   const utilizationComparisonQuery = useUtilizationInsights(
     period,
     comparisonScope,
-    undefined,
     shouldLoadComparison && isEnabled(InsightsSection.Utilization)
   );
   const agentsComparisonQuery = useAgentsInsights(
     period,
     comparisonScope,
-    undefined,
     shouldLoadComparison && isEnabled(InsightsSection.Agents)
   );
 
@@ -256,11 +241,6 @@ export function InsightsPage({
     const url = new URL(globalThis.location.href);
     url.searchParams.set("period", period);
     url.searchParams.set("scope", scope);
-    if (scope === InsightsScope.Team && selectedTeamId) {
-      url.searchParams.set("teamId", selectedTeamId);
-    } else {
-      url.searchParams.delete("teamId");
-    }
     if (shareDashboardEnabled) {
       url.searchParams.set(
         SHARE_DASHBOARD_PARAM,
@@ -306,23 +286,15 @@ export function InsightsPage({
   }, [
     period,
     scope,
-    selectedTeamId,
     shareDashboardEnabled,
     pins.tiles,
     pins.layout,
     pins.settings,
   ]);
 
-  const handleScopeChange = useCallback(
-    (value: string) => {
-      const nextScope = value as InsightsScope;
-      setScope(nextScope);
-      if (nextScope === InsightsScope.Team && !selectedTeamId) {
-        setSelectedTeamId(teamOptions[0]?.id);
-      }
-    },
-    [selectedTeamId, teamOptions]
-  );
+  const handleScopeChange = useCallback((value: string) => {
+    setScope(value as InsightsScope);
+  }, []);
 
   const handleOpenAddMetric = useCallback(() => {
     setEditingTileId(null);
@@ -357,19 +329,8 @@ export function InsightsPage({
           ? InsightsScope.Me
           : availableScopes[0]
       );
-      return;
     }
-    if (scope !== InsightsScope.Team) {
-      return;
-    }
-    if (
-      !(
-        selectedTeamId && teamOptions.some((team) => team.id === selectedTeamId)
-      )
-    ) {
-      setSelectedTeamId(teamOptions[0]?.id);
-    }
-  }, [availableScopes, scope, selectedTeamId, teamOptions]);
+  }, [availableScopes, scope]);
 
   useLayoutEffect(() => {
     const node = scrollContainerRef.current;
@@ -397,23 +358,6 @@ export function InsightsPage({
                 {availableScopes.map((option) => (
                   <SelectItem key={option} value={option}>
                     {SCOPE_LABELS[option]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
-          {scope === InsightsScope.Team && teamOptions.length > 0 ? (
-            <Select
-              onValueChange={setSelectedTeamId}
-              value={selectedTeamId ?? teamOptions[0]?.id}
-            >
-              <SelectTrigger aria-label="Team" className="h-8 w-40" size="sm">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {teamOptions.map((team) => (
-                  <SelectItem key={team.id} value={team.id}>
-                    {team.name}
                   </SelectItem>
                 ))}
               </SelectContent>

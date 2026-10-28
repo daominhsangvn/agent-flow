@@ -201,9 +201,9 @@ export function DesktopInsightsProvider({ children }: { children: ReactNode }) {
       // `org` from the cloud `/insights/*` routes over the shared client (its
       // desktop transport is the D-G IPC fetch bridge); signed out or offline
       // reads own-data from the local SQLite database over IPC.
-      getDelivery: (period, scope, teamId) =>
+      getDelivery: (period, scope) =>
         isCloud
-          ? cloudReads.getDelivery(period, scope, teamId)
+          ? cloudReads.getDelivery(period, scope)
           : (window.desktopApi.db.getInsights(
               InsightsSection.Delivery,
               period,
@@ -220,11 +220,11 @@ export function DesktopInsightsProvider({ children }: { children: ReactNode }) {
       // it splices in the local heatmap ONLY when the cloud slice is genuinely
       // missing/empty and otherwise preserves the cloud value untouched. Local
       // mode still computes the heatmap directly from the in-process DB (below).
-      getUtilization: (period, scope, teamId) =>
+      getUtilization: (period, scope) =>
         isCloud
           ? readCloudSectionWithLocalOverlay(
               InsightsSection.Utilization,
-              cloudReads.getUtilization(period, scope, teamId),
+              cloudReads.getUtilization(period, scope),
               period,
               scope,
               overlayLocalActivityHeatmap
@@ -234,11 +234,11 @@ export function DesktopInsightsProvider({ children }: { children: ReactNode }) {
               period,
               scope
             ) as Promise<UtilizationInsightsResponse>),
-      getAgents: (period: InsightsPeriod, scope, teamId) =>
+      getAgents: (period: InsightsPeriod, scope) =>
         isCloud
           ? readCloudSectionWithLocalOverlay(
               InsightsSection.Agents,
-              cloudReads.getAgents(period, scope, teamId),
+              cloudReads.getAgents(period, scope),
               period,
               scope,
               overlayLocalAutonomyTrend

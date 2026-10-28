@@ -6,7 +6,12 @@ import {
 
 export type AgentSessionFeatureIdentity = FeatureFlagIdentity;
 
-export function isAgentSessionSyncSupportedForUser(
+/**
+ * Whether the viewer has the `desktop-agent-session-sync` flag. It gates only
+ * the golden-candidates surface now: agent-session sync and the Sessions and
+ * Agents pages are always on, with no flag or org policy to switch them off.
+ */
+export function isAgentMonitoringEnabledForUser(
   identity: AgentSessionFeatureIdentity
 ): Promise<boolean> {
   return isFeatureFlagEnabledForAnyIdentity(
@@ -15,7 +20,3 @@ export function isAgentSessionSyncSupportedForUser(
     "agent_session_feature_flag_unavailable"
   );
 }
-
-/** @deprecated Use isAgentSessionSyncSupportedForUser — single flag for both sync and monitoring. */
-export const isAgentMonitoringEnabledForUser =
-  isAgentSessionSyncSupportedForUser;

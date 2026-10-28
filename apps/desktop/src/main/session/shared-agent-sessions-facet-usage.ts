@@ -28,7 +28,7 @@
  * ## What is deliberately NOT relaxed
  *
  * Only the facet's own selection is dropped. The date window, search, quality
- * segment, `userId`/`teamId`/`projectId` scope and every other facet stay, for
+ * segment, `userId`/`projectId` scope and every other facet stay, for
  * the same reason the cloud twin keeps them: they are AND constraints the facet
  * is not permitted to widen.
  */

@@ -30,10 +30,16 @@ export async function cancelRunLoops(
 
 const CANCEL_REASON = "Cancelled with its workflow run";
 
-async function cancelLoop(
+/**
+ * Cancels one loop (desktop kill, database cancellation, `cancelled` event).
+ * Also used by the orchestrator's `task_cancel`, which passes its own reason.
+ * Returns false when the loop had already reached a terminal status.
+ */
+export async function cancelLoop(
   loopId: string,
   computeTargetId: string | null,
-  organizationId: string
+  organizationId: string,
+  reason: string = CANCEL_REASON
 ): Promise<boolean> {
   if (computeTargetId) {
     await stopDesktopLoopBestEffort({ loopId, computeTargetId });
@@ -50,7 +56,7 @@ async function cancelLoop(
   }
   const event: LoopEvent = {
     type: LoopEventType.Cancelled,
-    reason: CANCEL_REASON,
+    reason,
     timestamp: new Date().toISOString(),
   };
   await loopsService.addEvent(loopId, organizationId, {

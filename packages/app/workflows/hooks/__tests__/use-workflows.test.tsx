@@ -13,20 +13,16 @@ import {
 } from "@repo/app/shared/test-utils";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PROVIDERS } from "../../../integrations/__tests__/integration-fixtures";
 import {
   ACTION_RUN_ID,
   makeRunDetail,
   makeRunSummary,
+  makeSaveWorkflowInput,
   makeWorkflow,
   RUN_ID,
   TRIGGER_ID,
   WORKFLOW_ID,
 } from "../../__tests__/workflow-fixtures";
-import {
-  toSaveWorkflowInput,
-  workflowToFormValues,
-} from "../../lib/workflow-form";
 import { WorkflowMutationErrorTitle } from "../../lib/workflow-labels";
 import {
   flattenRunPages,
@@ -71,7 +67,7 @@ const WORKFLOW_PATH = `/workflows/${WORKFLOW_ID}`;
 const RUN_PATH = `/workflow-runs/${RUN_ID}`;
 
 function saveInput(): SaveWorkflowInput {
-  return toSaveWorkflowInput(workflowToFormValues(makeWorkflow()), PROVIDERS);
+  return makeSaveWorkflowInput();
 }
 
 /** The fixture's post action run, in the given delivery state. */

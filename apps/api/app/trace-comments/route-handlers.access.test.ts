@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   user: { id: "user-1", organizationId: "org-1" },
   clerkUserId: "clerk-1",
-  getAgentSessionViewerScope: vi.fn(),
   list: vi.fn(),
 }));
 
@@ -18,10 +17,6 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
         request,
         context.params
       ),
-}));
-
-vi.mock("@/app/agent-sessions/route-helpers", () => ({
-  getAgentSessionViewerScope: mocks.getAgentSessionViewerScope,
 }));
 
 vi.mock("./service", () => ({
@@ -42,57 +37,21 @@ function routeContext() {
   return { params: Promise.resolve({ id: "target-1" }) };
 }
 
-describe("traceCommentAccessError (via trace-comment route handlers)", () => {
+describe("trace-comment reads (no session-monitoring gate)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.list.mockResolvedValue([]);
   });
 
-  it("Branch access always passes without consulting the viewer scope", async () => {
-    const handler = createTraceCommentsGetHandler(
-      TraceCommentTargetType.Branch
-    );
+  it.each([
+    TraceCommentTargetType.Session,
+    TraceCommentTargetType.Branch,
+  ])("serves %s trace comments without a feature flag", async (targetType) => {
+    const handler = createTraceCommentsGetHandler(targetType);
 
     const response = await handler(request(), routeContext());
 
     expect(response.status).toBe(200);
-    expect(mocks.getAgentSessionViewerScope).not.toHaveBeenCalled();
     expect(mocks.list).toHaveBeenCalledTimes(1);
-  });
-
-  it("Session access passes when viewer monitoring is enabled", async () => {
-    mocks.getAgentSessionViewerScope.mockResolvedValue({
-      monitoringEnabled: true,
-    });
-    const handler = createTraceCommentsGetHandler(
-      TraceCommentTargetType.Session
-    );
-
-    const response = await handler(request(), routeContext());
-
-    expect(response.status).toBe(200);
-    expect(mocks.getAgentSessionViewerScope).toHaveBeenCalledWith({
-      userId: mocks.user.id,
-      clerkUserId: mocks.clerkUserId,
-    });
-    expect(mocks.list).toHaveBeenCalledTimes(1);
-  });
-
-  it("Session access is forbidden when viewer monitoring is disabled", async () => {
-    mocks.getAgentSessionViewerScope.mockResolvedValue({
-      monitoringEnabled: false,
-    });
-    const handler = createTraceCommentsGetHandler(
-      TraceCommentTargetType.Session
-    );
-
-    const response = await handler(request(), routeContext());
-
-    expect(response.status).toBe(403);
-    expect(mocks.getAgentSessionViewerScope).toHaveBeenCalledWith({
-      userId: mocks.user.id,
-      clerkUserId: mocks.clerkUserId,
-    });
-    expect(mocks.list).not.toHaveBeenCalled();
   });
 });

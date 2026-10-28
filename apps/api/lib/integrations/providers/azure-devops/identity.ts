@@ -73,6 +73,12 @@ export function adoIdentityLabel(value: unknown): string | null {
   return identity.displayName ?? identity.uniqueName ?? identity.id;
 }
 
+/** The identity's email: its unique name when that is one (Entra ID accounts). */
+export function adoIdentityEmail(value: unknown): string | null {
+  const uniqueName = parseAdoIdentity(value)?.uniqueName ?? null;
+  return uniqueName?.includes("@") ? uniqueName : null;
+}
+
 /** InboundEvent actor for an identity value, or null when it carries nothing usable. */
 export function adoIdentityActor(value: unknown): InboundEvent["actor"] {
   const identity = parseAdoIdentity(value);

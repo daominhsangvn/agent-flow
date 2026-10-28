@@ -1,5 +1,5 @@
 import { getMultiRepoPolicy } from "@agentflow-ai/loops-api/multi-repo-policy";
-import type { ApiResult, JsonObject } from "@repo/api/src/types/common";
+import type { ApiResult } from "@repo/api/src/types/common";
 import { conflictBody, failure } from "@repo/api/src/types/common";
 import type { BackendMismatchBody } from "@repo/api/src/types/compute-target";
 import {
@@ -32,7 +32,6 @@ import {
   chooseProjectRunner,
   ProjectRunnerChoiceKind,
 } from "@/app/projects/project-runner-selection";
-import { loadProjectRepoDefaults } from "@/app/projects/repository-resolver";
 import type { UserComputePreferences } from "@/lib/loops/compute-target-resolver";
 import {
   type ComputeTargetRouteResult,
@@ -239,19 +238,10 @@ export async function resolveLoopContext(
 ) {
   const source = artifact.sourcePrd;
   const project = artifact.project;
-  // Project repositories (from integration connections) replace the GitHub
-  // App team pool for loops; the pool is only the fallback without them.
+  // Project repositories (integration connections) are the only project repo source.
   const projectCheckouts = project
     ? await listProjectRepositoryCheckouts(organizationId, project.id)
     : [];
-  const resolvedRepoDefaults =
-    project && projectCheckouts.length === 0
-      ? await loadProjectRepoDefaults({
-          projectId: project.id,
-          organizationId,
-          projectSettings: (project.settings ?? {}) as JsonObject,
-        })
-      : null;
 
   const artifactPrimary = getPrimaryRepoFromSnapshot(
     artifact.repositorySnapshot
@@ -264,8 +254,7 @@ export async function resolveLoopContext(
     body.repo?.fullName ??
     artifactPrimary?.fullName ??
     sourcePrimary?.fullName ??
-    projectCheckouts[0]?.fullName ??
-    resolvedRepoDefaults?.primary.fullName;
+    projectCheckouts[0]?.fullName;
   const targetCheckout = findRepositoryCheckout(projectCheckouts, targetRepo);
 
   // Per Q-002 of PLN-237, the resolved branch is no longer stored on the

@@ -15,74 +15,34 @@ function installDb() {
   );
 }
 
-// FEA-4169 — the service maps the server-owned org sync policy
-// (Organization.sessionSyncPolicyEnabled) onto DesktopIdentity so the desktop
-// outer gate can read it from GET /desktop/identity.
-describe("desktopIdentityService.get — sessionSyncPolicyEnabled (FEA-4169)", () => {
+// Session sync is always on, so the identity always reports it enabled —
+// with the ISS-4705 capability marker installed desktops rely on to tell a
+// capable server from an old one — whatever the org row holds.
+describe("desktopIdentityService.get — session sync is always on", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     installDb();
   });
 
-  it("selects the org policy column", async () => {
+  it.each([
+    { name: "an org", organization: { name: "Acme", slug: "acme" } },
+    { name: "a missing org relation", organization: null },
+  ])("reports session sync enabled and supported for $name", async ({
+    organization,
+  }) => {
     mocks.findFirst.mockResolvedValue({
       id: "user-1",
       organizationId: "org-1",
-      email: "kris@agentflow.ai",
-      firstName: "Kris",
-      lastName: "Wong",
-      organization: { name: "AgentFlow", sessionSyncPolicyEnabled: true },
-    });
-
-    await desktopIdentityService.get("user-1", "org-1");
-
-    const select = mocks.findFirst.mock.calls[0]?.[0]?.select;
-    expect(select?.organization?.select?.sessionSyncPolicyEnabled).toBe(true);
-  });
-
-  it("returns true for an enabled org (e.g. AgentFlow)", async () => {
-    mocks.findFirst.mockResolvedValue({
-      id: "user-1",
-      organizationId: "org-1",
-      email: "kris@agentflow.ai",
-      firstName: "Kris",
-      lastName: "Wong",
-      organization: { name: "AgentFlow", sessionSyncPolicyEnabled: true },
+      email: "person@example.com",
+      firstName: null,
+      lastName: null,
+      organization,
     });
 
     const identity = await desktopIdentityService.get("user-1", "org-1");
 
     expect(identity?.sessionSyncPolicyEnabled).toBe(true);
-  });
-
-  it("returns false for a policy-off org (the default)", async () => {
-    mocks.findFirst.mockResolvedValue({
-      id: "user-2",
-      organizationId: "org-2",
-      email: "person@example.com",
-      firstName: null,
-      lastName: null,
-      organization: { name: "Acme", sessionSyncPolicyEnabled: false },
-    });
-
-    const identity = await desktopIdentityService.get("user-2", "org-2");
-
-    expect(identity?.sessionSyncPolicyEnabled).toBe(false);
-  });
-
-  it("fails closed to false when the org relation is missing", async () => {
-    mocks.findFirst.mockResolvedValue({
-      id: "user-3",
-      organizationId: "org-3",
-      email: "person@example.com",
-      firstName: null,
-      lastName: null,
-      organization: null,
-    });
-
-    const identity = await desktopIdentityService.get("user-3", "org-3");
-
-    expect(identity?.sessionSyncPolicyEnabled).toBe(false);
+    expect(identity?.sessionSyncPolicySupported).toBe(true);
   });
 
   it("returns null when the user cannot be resolved", async () => {
@@ -91,40 +51,6 @@ describe("desktopIdentityService.get — sessionSyncPolicyEnabled (FEA-4169)", (
     const identity = await desktopIdentityService.get("nobody", "org-x");
 
     expect(identity).toBeNull();
-  });
-
-  // ISS-4705 — this (current) server always advertises the versioned capability
-  // marker so the desktop can distinguish it from an OLD server that predates the
-  // org-sync policy. The marker is emitted regardless of the policy value.
-  it("always advertises sessionSyncPolicySupported=true (enabled org)", async () => {
-    mocks.findFirst.mockResolvedValue({
-      id: "user-1",
-      organizationId: "org-1",
-      email: "kris@agentflow.ai",
-      firstName: "Kris",
-      lastName: "Wong",
-      organization: { name: "AgentFlow", sessionSyncPolicyEnabled: true },
-    });
-
-    const identity = await desktopIdentityService.get("user-1", "org-1");
-
-    expect(identity?.sessionSyncPolicySupported).toBe(true);
-  });
-
-  it("advertises sessionSyncPolicySupported=true even when the org relation is missing", async () => {
-    mocks.findFirst.mockResolvedValue({
-      id: "user-3",
-      organizationId: "org-3",
-      email: "person@example.com",
-      firstName: null,
-      lastName: null,
-      organization: null,
-    });
-
-    const identity = await desktopIdentityService.get("user-3", "org-3");
-
-    expect(identity?.sessionSyncPolicySupported).toBe(true);
-    expect(identity?.sessionSyncPolicyEnabled).toBe(false);
   });
 });
 
@@ -149,7 +75,6 @@ describe("desktopIdentityService.get — organizationSlug (ISS-4898)", () => {
       organization: {
         name: "AgentFlow",
         slug: "agentflow",
-        sessionSyncPolicyEnabled: true,
       },
     });
 
@@ -169,7 +94,6 @@ describe("desktopIdentityService.get — organizationSlug (ISS-4898)", () => {
       organization: {
         name: "AgentFlow",
         slug: "agentflow",
-        sessionSyncPolicyEnabled: true,
       },
     });
 
@@ -207,7 +131,6 @@ describe("desktopIdentityService.get — organizationSlug (ISS-4898)", () => {
       organization: {
         name: "Acme",
         slug: "",
-        sessionSyncPolicyEnabled: false,
       },
     });
 

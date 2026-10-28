@@ -7,6 +7,7 @@ import { IntegrationProviderKey } from "@repo/api/src/types/integration";
 import {
   WORKFLOW_DEFAULT_TITLE_TEMPLATE,
   type WorkflowAgentConfig,
+  type WorkflowRunSourceDocumentType,
   workflowAgentConfigSchema,
 } from "@repo/api/src/types/workflow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,15 +17,12 @@ import {
   markIssueInReview,
   type RunDocumentsInput,
 } from "@/lib/workflows/engine/documents";
-import {
-  deliveredSourceStatus,
-  isPrdItemType,
-  sourceDocumentType,
-} from "@/lib/workflows/engine/source-document";
+import { deliveredSourceStatus } from "@/lib/workflows/engine/source-document";
 
 /**
- * The run's source document (engine/documents.ts): a product requirement is
- * imported as a PRD the plan is generated from; anything else as an Issue.
+ * The run's source document (engine/documents.ts): an item the PRD
+ * instruction classified as a product requirement is imported as a PRD the
+ * plan is generated from; anything else as an Issue.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -99,7 +97,10 @@ function item(
   };
 }
 
-function input(source: SourceItem): RunDocumentsInput {
+function input(
+  source: SourceItem,
+  sourceType: WorkflowRunSourceDocumentType
+): RunDocumentsInput {
   return {
     run: {
       id: RUN,
@@ -113,6 +114,7 @@ function input(source: SourceItem): RunDocumentsInput {
     runAsUserId: USER,
     agent,
     item: source,
+    sourceType,
     withPlanDocument: true,
   };
 }
@@ -134,38 +136,11 @@ beforeEach(() => {
   mocks.db.workflowRun.updateMany.mockResolvedValue({ count: 1 });
 });
 
-describe("source item type", () => {
-  it("names a PRD whatever its spelling", () => {
-    for (const type of [
-      "prd",
-      "PRD",
-      "Product Requirements Document",
-      "product-requirement",
-    ]) {
-      expect(isPrdItemType(type)).toBe(true);
-    }
-    for (const type of [
-      null,
-      "",
-      "Bug",
-      "Story",
-      "New Feature",
-      "prd-review",
-    ]) {
-      expect(isPrdItemType(type)).toBe(false);
-    }
-  });
-
-  it("imports a PRD as a PRD and anything else as an Issue", () => {
-    expect(sourceDocumentType(item("prd"))).toBe(DocumentType.Prd);
-    expect(sourceDocumentType(item("Bug"))).toBe(DocumentType.Feature);
-    expect(sourceDocumentType(item(null))).toBe(DocumentType.Feature);
-  });
-});
-
 describe("ensureRunDocuments", () => {
   it("imports a product requirement as an approved PRD and plans from it", async () => {
-    const result = await ensureRunDocuments(input(item("prd")));
+    const result = await ensureRunDocuments(
+      input(item("Feature"), DocumentType.Prd)
+    );
 
     expect(result).toEqual({
       ok: true,
@@ -191,7 +166,9 @@ describe("ensureRunDocuments", () => {
   });
 
   it("imports a bug as an Issue in progress, as before", async () => {
-    await ensureRunDocuments(input(item("Bug", "Total is wrong")));
+    await ensureRunDocuments(
+      input(item("Bug", "Total is wrong"), DocumentType.Feature)
+    );
 
     const source = mocks.createDocument.mock.calls[0]?.[2];
     expect(source).toMatchObject({
@@ -199,6 +176,33 @@ describe("ensureRunDocuments", () => {
       status: IssueStatus.InProgress,
     });
     expect(source.content).toContain("## Description\n\nTotal is wrong");
+  });
+
+  it("follows the classification, not the item's type", async () => {
+    await ensureRunDocuments(input(item("PRD"), DocumentType.Feature));
+
+    expect(mocks.createDocument.mock.calls[0]?.[2]).toMatchObject({
+      type: DocumentType.Feature,
+      status: IssueStatus.InProgress,
+    });
+  });
+
+  it("refreshes a resumed PRD as a PRD", async () => {
+    const resumed = input(item("Feature"), DocumentType.Prd);
+    await ensureRunDocuments({
+      ...resumed,
+      run: {
+        ...resumed.run,
+        cycle: 2,
+        featureDocumentId: SOURCE_ID,
+        planDocumentId: PLAN_ID,
+      },
+    });
+
+    expect(mocks.createDocument).not.toHaveBeenCalled();
+    const content = mocks.createNewVersion.mock.calls[0]?.[3];
+    expect(content).toContain(PRD_MARKDOWN);
+    expect(content).not.toContain("## Description");
   });
 });
 

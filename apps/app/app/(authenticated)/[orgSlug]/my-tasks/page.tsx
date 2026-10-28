@@ -52,7 +52,7 @@ import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { useCallback, useMemo, useState } from "react";
-import { DocumentsView } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/documents-view";
+import { DocumentsView } from "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/documents-view";
 import { Header } from "@/app/(authenticated)/components/header";
 import { AgentOnboardingCard } from "../../components/agent-onboarding-card";
 import { InviteSpotlightHost } from "../../components/invite-spotlight-host";

@@ -1,6 +1,9 @@
 import {
   type SaveWorkflowInput,
   saveWorkflowInputSchema,
+  WORKFLOW_INSTRUCTION_ACTION_TYPE,
+  WorkflowActionStage,
+  WorkflowRunEvent,
 } from "@repo/api/src/types/workflow";
 import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,7 +30,6 @@ const IDS = {
 const mocks = vi.hoisted(() => ({
   managed: null as { id: string } | null,
   connections: [] as Array<{ id: string; name: string; provider: string }>,
-  connectionWheres: [] as unknown[],
   updates: [] as unknown[],
   deletes: [] as unknown[],
   createConnection: vi.fn(),
@@ -35,19 +37,35 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => {
   const db = {
-    project: { findFirst: vi.fn(() => Promise.resolve({ id: "project" })) },
+    project: {
+      findMany: vi.fn((args: { where: { id: { in: string[] } } }) =>
+        Promise.resolve(
+          args.where.id.in.map((id) => ({ id, name: "Requests" }))
+        )
+      ),
+    },
+    projectConnection: {
+      findMany: vi.fn(() =>
+        Promise.resolve(
+          mocks.connections.map((row) => ({
+            id: `pc-${row.id}`,
+            projectId: IDS.project,
+            key: "jira",
+            name: row.name,
+            connectionId: row.id,
+            settings: {},
+            credentialsEncrypted: null,
+            connection: { provider: row.provider },
+          }))
+        )
+      ),
+    },
     user: {
       findFirst: vi.fn((args: { where: { id: string } }) =>
         Promise.resolve({ id: args.where.id })
       ),
     },
     integrationConnection: {
-      findMany: vi.fn((args: { where: { id: { in: string[] } } }) => {
-        mocks.connectionWheres.push(args.where);
-        return Promise.resolve(
-          mocks.connections.filter((row) => args.where.id.in.includes(row.id))
-        );
-      }),
       findFirst: vi.fn(() => Promise.resolve(mocks.managed)),
       update: vi.fn((args: unknown) => {
         mocks.updates.push(args);
@@ -78,7 +96,7 @@ vi.mock("@/lib/integrations/registry", async () => {
 });
 
 const httpTrigger = {
-  connectionId: null,
+  connectionKey: null,
   type: FAKE_HTTP_TRIGGER_TYPE,
   config: { types: ["feature"] },
 };
@@ -110,7 +128,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.managed = null;
   mocks.connections = [{ id: IDS.jira, name: "Jira", provider: "fake" }];
-  mocks.connectionWheres = [];
   mocks.updates = [];
   mocks.deletes = [];
   mocks.createConnection.mockResolvedValue({
@@ -128,6 +145,8 @@ describe("validateWorkflowInput with the built-in HTTP trigger", () => {
       value: {
         triggers: [
           {
+            projectId: IDS.project,
+            projectConnectionId: null,
             connectionId: null,
             type: FAKE_HTTP_TRIGGER_TYPE,
             config: { types: ["feature"] },
@@ -149,28 +168,16 @@ describe("validateWorkflowInput with the built-in HTTP trigger", () => {
     });
   });
 
-  it("only lets a workflow use its own endpoint among managed connections", async () => {
-    await validate([{ connectionId: IDS.jira, type: FAKE_TRIGGER_TYPE }]);
-    await validate(
-      [{ connectionId: IDS.jira, type: FAKE_TRIGGER_TYPE }],
-      IDS.workflow
-    );
-
-    expect(mocks.connectionWheres).toEqual([
-      {
-        organizationId: IDS.org,
-        id: { in: [IDS.jira] },
-        OR: [{ managedByWorkflowId: null }],
-      },
-      {
-        organizationId: IDS.org,
-        id: { in: [IDS.jira] },
-        OR: [
-          { managedByWorkflowId: null },
-          { managedByWorkflowId: IDS.workflow },
-        ],
-      },
+  it("resolves a keyed trigger to the project connection beside the built-in one", async () => {
+    const result = await validate([
+      httpTrigger,
+      { connectionKey: "jira", type: FAKE_TRIGGER_TYPE },
     ]);
+
+    expect(
+      result.ok &&
+        result.value.triggers.map((trigger) => trigger.projectConnectionId)
+    ).toEqual([null, `pc-${IDS.jira}`]);
   });
 });
 
@@ -183,6 +190,8 @@ describe("resolveBuiltInHttpChildren", () => {
     actions: [],
   };
   const builtIn = {
+    projectId: IDS.project,
+    projectConnectionId: null,
     connectionId: null,
     type: FAKE_HTTP_TRIGGER_TYPE,
     config: {},
@@ -221,7 +230,12 @@ describe("resolveBuiltInHttpChildren", () => {
 
   it("reuses the existing endpoint and leaves other triggers alone", async () => {
     mocks.managed = { id: IDS.endpoint };
-    const other = { ...builtIn, connectionId: IDS.jira, position: 1 };
+    const other = {
+      ...builtIn,
+      projectConnectionId: `pc-${IDS.jira}`,
+      connectionId: IDS.jira,
+      position: 1,
+    };
 
     const result = await resolveBuiltInHttpChildren({
       ...owner,
@@ -237,12 +251,12 @@ describe("resolveBuiltInHttpChildren", () => {
   it("points a built-in HTTPS call at the same endpoint", async () => {
     mocks.managed = { id: IDS.endpoint };
     const post = {
-      connectionId: null,
+      connectionKey: null,
       type: "webhook.post",
       config: { url: "https://hooks.example.com/runs" },
       enabled: true,
       position: 0,
-      stage: "post" as const,
+      stage: WorkflowActionStage.Post,
       events: [],
       continueOnError: false,
     };
@@ -250,12 +264,36 @@ describe("resolveBuiltInHttpChildren", () => {
     const result = await resolveBuiltInHttpChildren({
       ...owner,
       triggers: [],
-      actions: [post],
+      actions: [{ ...post, automaticConnection: false }],
     });
 
     expect(result.ok && result.value.actions).toEqual([
       { ...post, connectionId: IDS.endpoint },
     ]);
+  });
+
+  it("keeps an action with an automatic connection off the endpoint", async () => {
+    const instruction = {
+      connectionKey: null,
+      type: WORKFLOW_INSTRUCTION_ACTION_TYPE,
+      config: { instruction: "Move the issue to In Progress." },
+      enabled: true,
+      position: 0,
+      stage: WorkflowActionStage.Pre,
+      events: [WorkflowRunEvent.Triggered],
+      continueOnError: false,
+    };
+
+    const result = await resolveBuiltInHttpChildren({
+      ...owner,
+      triggers: [],
+      actions: [{ ...instruction, automaticConnection: true }],
+    });
+
+    expect(result.ok && result.value.actions).toEqual([
+      { ...instruction, connectionId: null },
+    ]);
+    expect(mocks.createConnection).not.toHaveBeenCalled();
   });
 
   it("reports a failed endpoint creation", async () => {

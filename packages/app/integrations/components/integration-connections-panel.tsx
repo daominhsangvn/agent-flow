@@ -83,8 +83,13 @@ export function IntegrationConnectionsPanel({
   const closeDialog = () => setDialog(null);
   // Built-in providers (the generic HTTPS webhook) are not integrations to
   // connect: workflows use them through their own HTTP trigger and call.
-  const connectableProviders = providers.data?.filter(
+  const listedProviders = providers.data?.filter(
     (provider) => !provider.builtIn
+  );
+  // The server already gives every organization a connection of these
+  // (Local Git): nothing to add.
+  const connectableProviders = listedProviders?.filter(
+    (provider) => !provider.providedByServer
   );
   const builtInKeys = new Set(
     (providers.data ?? [])
@@ -139,7 +144,7 @@ export function IntegrationConnectionsPanel({
           onRetry={() => {
             connections.refetch();
           }}
-          providers={connectableProviders}
+          providers={listedProviders}
         />
       </CardContent>
 
@@ -311,6 +316,9 @@ function ConnectionRow({
               <Badge variant={CONNECTION_STATUS_TONES[connection.status]}>
                 {CONNECTION_STATUS_LABELS[connection.status]}
               </Badge>
+              {connection.providedByServer ? (
+                <Badge variant="info">Default</Badge>
+              ) : null}
             </div>
             <ConnectionMeta
               connection={connection}
@@ -356,24 +364,28 @@ function ConnectionRow({
                 ) : null}
                 Test
               </Button>
-              <Button
-                aria-label={`Edit ${connection.name}`}
-                onClick={onEdit}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <PencilIcon className="size-4" />
-              </Button>
-              <Button
-                aria-label={`Delete ${connection.name}`}
-                onClick={onDelete}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <TrashIcon className="size-4 text-muted-foreground" />
-              </Button>
+              {connection.providedByServer ? null : (
+                <>
+                  <Button
+                    aria-label={`Edit ${connection.name}`}
+                    onClick={onEdit}
+                    size="icon"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <PencilIcon className="size-4" />
+                  </Button>
+                  <Button
+                    aria-label={`Delete ${connection.name}`}
+                    onClick={onDelete}
+                    size="icon"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <TrashIcon className="size-4 text-muted-foreground" />
+                  </Button>
+                </>
+              )}
             </>
           ) : null}
         </div>
@@ -392,21 +404,24 @@ function ConnectionMeta({
     parts.push(`as ${connection.account.displayName}`);
   }
   if (connection.usageCount > 0) {
-    parts.push(
-      `used by ${connection.usageCount} ${connection.usageCount === 1 ? "trigger or action" : "triggers and actions"}`
-    );
+    parts.push(describeUsage(connection.usageCount));
   }
 
   return (
     <div className="space-y-0.5 text-muted-foreground text-xs">
       <p>{parts.join(" · ")}</p>
-      <p>
-        {connection.lastDeliveryAt
-          ? `Last delivery ${formatRelativeTime(connection.lastDeliveryAt)}`
-          : "No deliveries yet"}
-      </p>
+      <p>{describeActivity(connection)}</p>
     </div>
   );
+}
+
+function describeActivity(connection: IntegrationConnection): string {
+  if (connection.providedByServer) {
+    return "Provided by the server for every organization; configured in the API's environment.";
+  }
+  return connection.lastDeliveryAt
+    ? `Last delivery ${formatRelativeTime(connection.lastDeliveryAt)}`
+    : "No deliveries yet";
 }
 
 function TestResultAlert({
@@ -442,4 +457,11 @@ function describeDeliveryMode(connection: IntegrationConnection): string {
   }
   const minutes = Math.round(connection.pollIntervalSeconds / 60);
   return minutes >= 1 ? `${label} every ${minutes} min` : label;
+}
+
+/** Workflow triggers, actions, project repositories and project connections. */
+function describeUsage(usageCount: number): string {
+  return usageCount === 1
+    ? "used by 1 workflow item or project"
+    : `used by ${usageCount} workflow items or projects`;
 }

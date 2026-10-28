@@ -7,7 +7,10 @@ import {
   type LoopStepConfig,
   LoopStepConfigSchema,
 } from "@agentflow-ai/loops-api/loop-step";
-import { modelProviderEnvSchema } from "@repo/api/src/types/compute-target-model-provider";
+import {
+  claudeCodeVersionSchema,
+  modelProviderEnvSchema,
+} from "@repo/api/src/types/compute-target-model-provider";
 import { z } from "zod";
 
 const nullableString = z.string().nullable().optional();
@@ -144,6 +147,12 @@ export type SymphonyLoopRequestBody = LoopRequestBody & {
    * the Claude Code process only; never persisted.
    */
   claudeEnv?: Record<string, string>;
+  /**
+   * Claude Code version set for this computer in AgentFlow (`latest` or an
+   * exact release). A headless runner installs and runs it; the desktop app
+   * ignores it.
+   */
+  claudeCodeVersion?: string;
   // cloudSessionToken removed from the type in PLN-740 T-4.4 — the field is
   // still stripped from rawBody in parseSymphonyLoopRequestBody (security) but
   // is no longer propagated downstream.
@@ -182,10 +191,12 @@ export function parseSymphonyLoopRequestBody(
   // Strip the raw extension fields so they cannot bypass validation via the
   // untyped `...loopBody` passthrough spread below.
   const claudeEnv = parseClaudeEnv(rawBody.claudeEnv);
+  const claudeCodeVersion = parseClaudeCodeVersion(rawBody.claudeCodeVersion);
   const step = parseLoopStep(rawBody.step);
   const {
     branchMaterialization: _rawBranchMaterialization,
     claudeEnv: _rawClaudeEnv,
+    claudeCodeVersion: _rawClaudeCodeVersion,
     step: _rawStep,
     cloudSessionToken: _rawCloudSessionToken,
     harness: rawHarness,
@@ -204,6 +215,7 @@ export function parseSymphonyLoopRequestBody(
     codeEvaluationContext,
     ...(branchMaterialization ? { branchMaterialization } : {}),
     ...(claudeEnv ? { claudeEnv } : {}),
+    ...(claudeCodeVersion ? { claudeCodeVersion } : {}),
     ...(step ? { step } : {}),
   };
 }
@@ -365,4 +377,21 @@ function formatZodIssues(error: z.ZodError): string {
       return `${path}: ${issue.message}`;
     })
     .join("; ");
+}
+
+/**
+ * `latest` or an exact release only: the value becomes an installer argument
+ * and a file name under the runner's Claude Code versions directory.
+ */
+function parseClaudeCodeVersion(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const result = claudeCodeVersionSchema.safeParse(value);
+  if (!result.success) {
+    throw new SymphonyLoopRequestValidationError(
+      `Invalid claudeCodeVersion: ${formatZodIssues(result.error)}`
+    );
+  }
+  return result.data;
 }

@@ -1,0 +1,29 @@
+name: React Calculator PRDs (Spec Kit)
+description: >-
+  A PRD posted to this workflow's HTTP endpoint goes through the Spec Kit
+  process of the project (specify, clarify, plan, tasks, approval, implement);
+  each repository the run changed gets a Local Git pull request.
+project: React Calculator (Spec Kit)
+triggers:
+  - connection: http            # the workflow's own URL ("Show URL and secret")
+    type: webhook.request
+    config:
+      types: [prd]              # only requests with "type": "prd" start a run
+agent:
+  runAs: admin@agentflow.local
+  runner: runner-1
+  prd:
+    instruction: PRD when the request type is prd.
+actions:
+  - on: execute.completed       # the implement step pushed its branches
+    type: local_git.create_pull_request   # one PR per pushed repository (code + specs)
+    config:
+      title: "{{source.key}}: {{source.title}}"
+      description: |-
+        {{source.key}}: {{source.title}}, delivered with the Spec Kit toolkit.
+
+        PRD: {{feature.url}}
+        Implementation plan: {{plan.url}}
+        Release notes: {{releaseNotes.url}}
+        AgentFlow run: {{run.url}}
+      draft: false

@@ -380,17 +380,17 @@ describe("a project process equal to the built-in flow", () => {
       {
         status: WorkflowRunStatus.Planning,
         cycle: 1,
-        events: [WorkflowRunEvent.Started],
+        events: [WorkflowRunEvent.Started, WorkflowRunEvent.PlanStarted],
       },
       {
         status: WorkflowRunStatus.Executing,
         cycle: 1,
-        events: [WorkflowRunEvent.PlanReady],
+        events: [WorkflowRunEvent.PlanReady, WorkflowRunEvent.ExecuteStarted],
       },
       {
         status: WorkflowRunStatus.Succeeded,
         cycle: 1,
-        events: [WorkflowRunEvent.Succeeded],
+        events: [WorkflowRunEvent.ExecuteCompleted, WorkflowRunEvent.Succeeded],
       },
     ]);
     expect(
@@ -496,11 +496,14 @@ describe("a process step that changes what its agents decide on their own", () =
         LoopCommand.Plan,
         { recommendations: ProcessPlanRecommendations.Suggest },
       ],
-      [LoopCommand.Execute, { review: ProcessExecuteReview.Fast }],
+      [
+        LoopCommand.Execute,
+        { review: ProcessExecuteReview.Fast, releaseNotes: true },
+      ],
     ]);
   });
 
-  it("sends no policy on the built-in flow or a process equal to it", async () => {
+  it("sends only the release notes on the built-in flow or a process equal to it", async () => {
     for (const variant of [Variant.Derived, Variant.Configured]) {
       await trace(
         {
@@ -513,8 +516,34 @@ describe("a process step that changes what its agents decide on their own", () =
 
       expect(launchedPolicies()).toEqual([
         [LoopCommand.Plan, undefined],
-        [LoopCommand.Execute, undefined],
+        [LoopCommand.Execute, { releaseNotes: true }],
       ]);
     }
+  });
+
+  it("sends no policy to an implement step that turns its release notes off", async () => {
+    resetHarness();
+    const builtIn = deriveProcessFromAgentConfig(AGENT_CONFIG);
+    fake.state.projectProcess = {
+      version: 6,
+      definition: {
+        ...builtIn,
+        steps: builtIn.steps.map((step) =>
+          step.type === ProcessStepType.AgentFlowExecute
+            ? { ...step, releaseNotes: false }
+            : step
+        ),
+      },
+    };
+    fake.setRun({ status: WorkflowRunStatus.Received });
+
+    await advanceRun(RUN_ID, NOW);
+    complete(LoopCommand.Plan);
+    await advanceRun(RUN_ID, NOW);
+
+    expect(launchedPolicies()).toEqual([
+      [LoopCommand.Plan, undefined],
+      [LoopCommand.Execute, undefined],
+    ]);
   });
 });

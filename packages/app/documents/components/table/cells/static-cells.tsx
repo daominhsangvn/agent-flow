@@ -77,7 +77,6 @@ export function ProjectCell({ item }: { item: DocumentRowItem }) {
   let project: {
     id: string;
     name: string;
-    teams?: { id: string; name: string }[];
   } | null = null;
 
   if (item.kind === "project") {
@@ -86,14 +85,11 @@ export function ProjectCell({ item }: { item: DocumentRowItem }) {
     project = {
       id: item.data.project.id,
       name: item.data.project.name,
-      teams: item.data.project.teams,
     };
   }
 
   const projectName = project?.name ?? null;
-  const teamId = project?.teams?.[0]?.id;
-  const projectHref =
-    teamId && project?.id ? `/teams/${teamId}/projects/${project.id}` : null;
+  const projectHref = project?.id ? `/projects/${project.id}` : null;
 
   if (projectName && projectHref) {
     return (

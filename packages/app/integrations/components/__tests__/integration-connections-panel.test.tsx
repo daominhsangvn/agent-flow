@@ -3,8 +3,15 @@ import {
   IntegrationConnectionStatus,
   IntegrationDeliveryMode,
   IntegrationProviderKey,
+  type IntegrationProviderSummary,
 } from "@repo/api/src/types/integration";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -13,19 +20,36 @@ import {
   jiraConnection,
   makeConnection,
   PROVIDERS,
+  serverLocalGitConnection,
+  serverLocalGitProvider,
   teamsConnection,
 } from "../../__tests__/integration-fixtures";
 import { REQUIRED_FIELD_MESSAGE } from "../../lib/integration-field-values";
 import { IntegrationConnectionsPanel } from "../integration-connections-panel";
 
 const JIRA_RE = /^Jira/;
+const LOCAL_GIT_RE = /^Local Git/;
+const TEAMS_RE = /^Microsoft Teams/;
 
 const DELETE_ACME_JIRA_RE = /Delete "Acme Jira"\?/;
-const SITE_URL_RE = /Site URL/;
-const BOT_EMAIL_RE = /Bot email/;
 const API_TOKEN_RE = /API token/;
-const NAME_RE = /^Name/;
-const ENTER_A_WHOLE_NUMBER_OF_RE = /Enter a whole number of seconds between 60/;
+const POLL_INTERVAL_RE = /Write a whole number of seconds between 60/;
+
+vi.mock("../connection-yaml-editor", async () => {
+  const stub = await import("./connection-yaml-editor.test-helpers");
+  return stub.connectionYamlEditorModule;
+});
+
+/** Rewrites the dialog's YAML (the editor is a textarea in jsdom). */
+async function editYaml(
+  dialog: HTMLElement,
+  edit: (text: string) => string
+): Promise<void> {
+  const box = (await within(dialog).findByRole("textbox", {
+    name: "Connection YAML",
+  })) as HTMLTextAreaElement;
+  fireEvent.change(box, { target: { value: edit(box.value) } });
+}
 
 type QueryState<T> = {
   data: T | undefined;
@@ -37,6 +61,7 @@ type QueryState<T> = {
 type MutationOptions<T> = { onSuccess?: (result: T) => void };
 
 const mocks = vi.hoisted(() => ({
+  providers: [] as IntegrationProviderSummary[],
   connections: {
     data: undefined as IntegrationConnection[] | undefined,
     isLoading: false,
@@ -49,9 +74,18 @@ const mocks = vi.hoisted(() => ({
   testMutate: vi.fn(),
 }));
 
+vi.mock("@repo/app/projects/hooks/use-project-connections", () => ({
+  useConnectionProjects: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+    refetch: vi.fn(),
+  }),
+}));
+
 vi.mock("../../hooks/use-integrations", () => ({
   useIntegrationProviders: () => ({
-    data: PROVIDERS,
+    data: mocks.providers,
     isLoading: false,
     error: null,
   }),
@@ -78,6 +112,7 @@ vi.mock("../../hooks/use-integrations", () => ({
       inboundUrl: "https://api.acme.dev/webhooks/integrations/key-1",
       inboundSecret: "s3cret",
       setupInstructions: "Create a webhook in Jira.",
+      inboundUrlWarning: null,
     },
     isLoading: false,
     error: null,
@@ -103,6 +138,7 @@ function setConnections(connections: IntegrationConnection[]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.providers = PROVIDERS;
   setConnections([]);
 });
 
@@ -170,7 +206,7 @@ describe("IntegrationConnectionsPanel list", () => {
     expect(within(first).getByText("Error")).toBeInTheDocument();
     expect(
       within(first).getByText(
-        "Jira · Webhook · as AgentFlow Bot · used by 2 triggers and actions"
+        "Jira · Webhook · as AgentFlow Bot · used by 2 workflow items or projects"
       )
     ).toBeInTheDocument();
     expect(
@@ -180,6 +216,48 @@ describe("IntegrationConnectionsPanel list", () => {
       within(second).getByText("Jira · Polling every 5 min")
     ).toBeInTheDocument();
     expect(within(second).getByText("No deliveries yet")).toBeInTheDocument();
+  });
+
+  it("lists the server's default connection without edit or delete, and never offers to add it", async () => {
+    const user = userEvent.setup();
+    mocks.providers = [...PROVIDERS, serverLocalGitProvider];
+    setConnections([jiraConnection, serverLocalGitConnection]);
+    render(<IntegrationConnectionsPanel isAdmin />);
+
+    const list = screen.getByRole("list", { name: "Integration connections" });
+    const [, localGit] = within(list).getAllByRole("listitem");
+    expect(within(localGit).getByText("Default")).toBeInTheDocument();
+    expect(
+      within(localGit).getByText("Local Git · Actions only · as agentflow")
+    ).toBeInTheDocument();
+    expect(
+      within(localGit).getByText(
+        "Provided by the server for every organization; configured in the API's environment."
+      )
+    ).toBeInTheDocument();
+    expect(
+      within(localGit).getByRole("button", { name: "Test" })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Edit Local Git" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Delete Local Git" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Edit Acme Jira" })
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getAllByRole("button", { name: "Add connection" })[0]
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("button", { name: JIRA_RE })
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole("button", { name: LOCAL_GIT_RE })
+    ).not.toBeInTheDocument();
   });
 
   it("hides admin actions from members but keeps the deliveries view", () => {
@@ -274,7 +352,7 @@ describe("IntegrationConnectionsPanel list", () => {
 });
 
 describe("IntegrationConnectionsPanel create and edit", () => {
-  it("creates a connection from the provider's descriptor fields", async () => {
+  it("creates a connection from the provider's settings written as YAML", async () => {
     const user = userEvent.setup();
     render(<IntegrationConnectionsPanel isAdmin />);
 
@@ -284,13 +362,10 @@ describe("IntegrationConnectionsPanel create and edit", () => {
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: JIRA_RE }));
 
-    await user.type(
-      within(dialog).getByLabelText(SITE_URL_RE),
-      "https://acme.atlassian.net"
-    );
-    await user.type(
-      within(dialog).getByLabelText(BOT_EMAIL_RE),
-      "bot@acme.dev"
+    await editYaml(dialog, (text) =>
+      text
+        .replace('siteUrl: ""', "siteUrl: https://acme.atlassian.net")
+        .replace('email: ""', "email: bot@acme.dev")
     );
     await user.type(within(dialog).getByLabelText(API_TOKEN_RE), "tok-123");
     await user.click(
@@ -323,19 +398,24 @@ describe("IntegrationConnectionsPanel create and edit", () => {
     );
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: JIRA_RE }));
-    await user.clear(within(dialog).getByLabelText(NAME_RE));
+    await editYaml(dialog, (text) => text.replace("name: Jira", "name: ''"));
     await user.click(
       within(dialog).getByRole("button", { name: "Create connection" })
     );
 
     expect(mocks.createMutate).not.toHaveBeenCalled();
-    expect(within(dialog).getByText("Name is required")).toBeInTheDocument();
+    const problems = within(dialog).getByTestId("connection-yaml-problems");
+    expect(problems).toHaveTextContent("Name the connection");
+    // Site URL and bot email in the YAML, the API token in its field.
     expect(
-      within(dialog).getAllByText(REQUIRED_FIELD_MESSAGE).length
-    ).toBeGreaterThanOrEqual(3);
+      within(problems).getAllByText(new RegExp(REQUIRED_FIELD_MESSAGE)).length
+    ).toBe(2);
+    expect(
+      within(dialog).getByText(REQUIRED_FIELD_MESSAGE)
+    ).toBeInTheDocument();
   });
 
-  it("offers only the provider's delivery modes plus actions-only, with a poll interval for polling", async () => {
+  it("checks the inbound mode against the provider and the poll interval range", async () => {
     const user = userEvent.setup();
     render(<IntegrationConnectionsPanel isAdmin />);
 
@@ -343,30 +423,40 @@ describe("IntegrationConnectionsPanel create and edit", () => {
       screen.getAllByRole("button", { name: "Add connection" })[0]
     );
     const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: JIRA_RE }));
-    await user.click(
-      within(dialog).getByRole("combobox", { name: "Inbound events" })
-    );
-    const options = await screen.findAllByRole("option");
-    expect(options.map((option) => option.textContent)).toEqual([
-      "Webhook",
-      "Polling",
-      "Actions only",
-    ]);
-    await user.click(screen.getByRole("option", { name: "Polling" }));
-
-    const interval = within(dialog).getByLabelText("Poll interval (seconds)");
-    await user.clear(interval);
-    await user.type(interval, "5");
+    await user.click(within(dialog).getByRole("button", { name: TEAMS_RE }));
+    // Teams has no inbound side: its YAML has no inbound mapping.
+    const teamsText = (
+      (await within(dialog).findByRole("textbox", {
+        name: "Connection YAML",
+      })) as HTMLTextAreaElement
+    ).value;
+    expect(teamsText).not.toContain("inbound:");
+    await editYaml(dialog, (text) => `${text}inbound:\n  mode: poll\n`);
     await user.click(
       within(dialog).getByRole("button", { name: "Create connection" })
     );
     expect(
-      within(dialog).getByText(ENTER_A_WHOLE_NUMBER_OF_RE)
-    ).toBeInTheDocument();
+      within(dialog).getByTestId("connection-yaml-problems")
+    ).toHaveTextContent(
+      "Microsoft Teams does not receive events by poll. Modes: none"
+    );
+
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    await user.click(within(dialog).getByRole("button", { name: JIRA_RE }));
+    await editYaml(dialog, (text) =>
+      text
+        .replace("mode: webhook", "mode: poll")
+        .replace("pollIntervalSeconds: 120", "pollIntervalSeconds: 5")
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "Create connection" })
+    );
+    expect(
+      within(dialog).getByTestId("connection-yaml-problems")
+    ).toHaveTextContent(POLL_INTERVAL_RE);
   });
 
-  it("does not resend the status when the enabled switch is untouched", async () => {
+  it("does not resend the status when enabled is untouched", async () => {
     const user = userEvent.setup();
     setConnections([
       makeConnection({ status: IntegrationConnectionStatus.Error }),
@@ -396,11 +486,10 @@ describe("IntegrationConnectionsPanel create and edit", () => {
     expect(
       within(dialog).getByText("•••• x9Kd - leave empty to keep")
     ).toBeInTheDocument();
-    const name = within(dialog).getByLabelText(NAME_RE);
-    await user.clear(name);
-    await user.type(name, "Jira prod");
-    await user.click(
-      within(dialog).getByRole("switch", { name: "Connection enabled" })
+    await editYaml(dialog, (text) =>
+      text
+        .replace("name: Acme Jira", "name: Jira prod")
+        .replace("enabled: true", "enabled: false")
     );
     await user.click(
       within(dialog).getByRole("button", { name: "Save changes" })

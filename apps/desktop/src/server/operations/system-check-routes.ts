@@ -7,6 +7,10 @@ import {
 } from "./binary-paths.js";
 import { registerHealthCheckRoutes } from "./health-check.js";
 import { registerHealthCheckRepairRoutes } from "./health-check-repair.js";
+import {
+  registerRunnerHealthCheckRoute,
+  type SystemCheckHostOptions,
+} from "./health-check-runner.js";
 
 /**
  * Registers the whole System Check surface — the health check, its Repair
@@ -28,21 +32,30 @@ export type SystemCheckRouteDeps = {
    * build stays unclassified and the version row asserts nothing (ISS-5369).
    */
   isPackagedBuild?: () => boolean;
+  /** What the host changes about the System Check (a headless runner). */
+  host?: SystemCheckHostOptions;
 };
 
 export function registerSystemCheckRoutes(
   dispatcher: OperationDispatcher,
   deps: SystemCheckRouteDeps
 ): void {
-  registerHealthCheckRoutes(
-    dispatcher,
-    deps.processManager,
-    deps.getSymphonyDir,
-    undefined,
-    deps.getBinaryPaths,
-    deps.getAppVersion,
-    deps.isPackagedBuild
-  );
+  if (deps.host?.headlessRunner) {
+    registerRunnerHealthCheckRoute(dispatcher, {
+      ...deps,
+      getAgentFlowModelProvider: deps.host.getAgentFlowModelProvider,
+    });
+  } else {
+    registerHealthCheckRoutes(
+      dispatcher,
+      deps.processManager,
+      deps.getSymphonyDir,
+      undefined,
+      deps.getBinaryPaths,
+      deps.getAppVersion,
+      deps.isPackagedBuild
+    );
+  }
   registerHealthCheckRepairRoutes(dispatcher, {
     processManager: deps.processManager,
     getSymphonyDir: deps.getSymphonyDir,

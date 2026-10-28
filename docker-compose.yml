@@ -2,7 +2,7 @@
 #
 #   docker compose up -d          # Postgres + RustFS (S3) + Mailpit + Local Git
 #   pnpm storage:init             # create the buckets (idempotent)
-#   pnpm local-git:init           # Local Git admin + token for its connection
+#   pnpm local-git:init           # Local Git admin + token (the API's default connection)
 #
 # Values below are development defaults. Override any of them in a `.env` file
 # next to this compose file (see .env.docker.example).
@@ -64,7 +64,8 @@ services:
   # (Gitea, MIT). Web UI to browse code, commits and branches, review and
   # merge pull requests, download archives; git over HTTP for agents.
   # http://localhost:3300 — `pnpm local-git:init` creates the admin account and
-  # the token of the "Local Git" connection (docs/local-git.md).
+  # writes its token to apps/api/.env.local, so the API gives every
+  # organization the "Local Git" connection (docs/local-git.md).
   local-git:
     image: gitea/gitea:1.24.7
     restart: unless-stopped

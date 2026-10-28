@@ -23,7 +23,7 @@ export const desktopIdentityService = {
           firstName: true,
           lastName: true,
           organization: {
-            select: { name: true, slug: true, sessionSyncPolicyEnabled: true },
+            select: { name: true, slug: true },
           },
         },
       })
@@ -49,17 +49,11 @@ export const desktopIdentityService = {
       ...(user.organization?.slug
         ? { organizationSlug: user.organization.slug }
         : {}),
-      // FEA-4169: server-owned org sync policy. Always emitted as an explicit
-      // boolean by this (new) server so the desktop can distinguish "policy off"
-      // from "old server that never sent the field". Fail-closed default is false
-      // (the column default); only an explicitly-enabled org sends true.
-      sessionSyncPolicyEnabled:
-        user.organization?.sessionSyncPolicyEnabled ?? false,
-      // ISS-4705: versioned capability marker. This (current) server understands
-      // the org-sync policy and always emits `sessionSyncPolicyEnabled` above, so
-      // it always advertises support. The desktop uses this to distinguish an OLD
-      // server (marker absent → skew degrade) from a buggy current server that
-      // somehow dropped only the policy field (marker present → fail closed).
+      // Session sync is always on: there is no org policy to switch it off.
+      // Still sent explicitly, with its ISS-4705 capability marker, because
+      // installed desktops gate their sync egress on it and fail closed when a
+      // capable server drops the field.
+      sessionSyncPolicyEnabled: true,
       sessionSyncPolicySupported: true,
     };
   },

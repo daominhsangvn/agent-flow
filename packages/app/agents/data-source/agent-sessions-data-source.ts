@@ -58,7 +58,6 @@ export type AgentSessionQueryFilters = {
   quality?: SessionQuality;
   search?: string;
   viewerScope?: AgentSessionViewerScope;
-  teamId?: string;
   projectId?: string;
   /**
    * ISS-5355: multi-select Project facet — sessions that LINKED a document in

@@ -27,6 +27,7 @@ import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { truncateUtf8 } from "@repo/observability/truncate-utf8";
 import { bulkIngestAgents } from "@/app/catalog/service";
+import { resolveComputeTargetClaudeRuntime } from "@/app/compute-targets/model-provider-service";
 import { getCommitterInfo } from "@/app/documents/document-service";
 import { githubService } from "@/app/integrations/github/service";
 import { isInvalidStatusTransitionError } from "@/app/loops/loop-errors";
@@ -397,16 +398,18 @@ async function resolveLoopLaunchContext(
   contextPack.replan = await readReplanFlag(loop, organizationId);
   contextPack.agentPolicy = readLoopAgentPolicy(loop.metadata);
 
-  // Resolve artifact slug for worktree/branch naming on desktop.
+  // Resolve artifact slug for worktree/branch naming on desktop, and the
+  // project's key (a personal runner runs only the loops of its project).
   let documentSlug: string | undefined;
   if (loop.documentId) {
     const artifact = await withDb((db) =>
       db.artifact.findUnique({
         where: documentWhere({ id: loop.documentId!, organizationId }),
-        select: { slug: true },
+        select: { slug: true, project: { select: { slug: true } } },
       })
     );
     documentSlug = artifact?.slug ?? undefined;
+    contextPack.projectKey = artifact?.project?.slug ?? undefined;
   }
 
   const localRepoPath =
@@ -1057,16 +1060,26 @@ function hasNonZeroTokenUsage(
   );
 }
 
+/**
+ * A loop's estimated cost: nothing on a subscription; Claude Code's own price
+ * (`usageReconciliation.authoritativeCostUsd`, every Claude session of the
+ * loop) when the runner sent it, since it knows each model's price; else the
+ * tokens priced here.
+ */
 function calculateLoopCost(
-  apiKeySource: string | undefined,
+  subscriptionBilled: boolean,
   tokensInput: number,
   tokensOutput: number,
   tokensByModel: TokensByModel | null,
   cacheCreation: number,
-  cacheRead: number
+  cacheRead: number,
+  authoritativeCostUsd: number | null = null
 ): number {
-  if (apiKeySource === "none") {
+  if (subscriptionBilled) {
     return 0;
+  }
+  if (authoritativeCostUsd !== null) {
+    return authoritativeCostUsd;
   }
   return calculateCost(
     tokensInput,
@@ -1119,7 +1132,10 @@ function buildErrorTokensByModel(
  * Prefers event.tokensByModel when present, falls back to the "default" entry
  * derived from tokenUsage. Returns spread-ready fields for updateStatus.
  */
-function buildErrorCostFields(event: LoopEventError): Record<string, unknown> {
+function buildErrorCostFields(
+  event: LoopEventError,
+  subscriptionBilled: boolean
+): Record<string, unknown> {
   const rawTokensByModel = buildErrorTokensByModel(event.tokenUsage);
   const effectiveTokensByModel =
     event.tokensByModel && Object.keys(event.tokensByModel).length > 0
@@ -1129,7 +1145,7 @@ function buildErrorCostFields(event: LoopEventError): Record<string, unknown> {
   const tokensInput = event.tokenUsage?.inputTokens ?? 0;
   const tokensOutput = event.tokenUsage?.outputTokens ?? 0;
   const estimatedCost = calculateLoopCost(
-    event.apiKeySource,
+    subscriptionBilled,
     tokensInput,
     tokensOutput,
     effectiveTokensByModel ?? null,
@@ -1221,12 +1237,17 @@ async function handleLoopCompleted(
   );
 
   const estimatedCost = calculateLoopCost(
-    event.apiKeySource,
+    await isSubscriptionBilledLoop(
+      loopId,
+      event.apiKeySource,
+      async () => loop?.computeTargetId
+    ),
     tokensInput,
     tokensOutput,
     effectiveTokensByModel,
     cacheCreation,
-    cacheRead
+    cacheRead,
+    event.usageReconciliation?.authoritativeCostUsd ?? null
   );
 
   // Guard: EXECUTE loops that explicitly reported 0/0 tokens did no work.
@@ -1473,11 +1494,25 @@ async function handleLoopError(
     }
 
     await recordCancellation(loopId, organizationId, event, runner, loop, {
-      ...buildErrorCostFields(event),
+      ...buildErrorCostFields(
+        event,
+        await isSubscriptionBilledLoop(
+          loopId,
+          event.apiKeySource,
+          async () => loop?.computeTargetId
+        )
+      ),
       metadata: buildApiKeySourceMetadata(event.apiKeySource, loop?.metadata),
     });
     return [canonicalEvent];
   }
+
+  const subscriptionBilled = await isSubscriptionBilledLoop(
+    loopId,
+    event.apiKeySource,
+    async () =>
+      (await loopsService.findById(loopId, organizationId))?.computeTargetId
+  );
 
   if (event.code === LoopErrorCode.TimedOut) {
     const prSession = extractPrSessionInfo(event as Record<string, unknown>);
@@ -1490,7 +1525,7 @@ async function handleLoopError(
       {
         completedAt: new Date(),
         error: { code: event.code, message: event.message },
-        ...buildErrorCostFields(event),
+        ...buildErrorCostFields(event, subscriptionBilled),
         ...prSession,
         metadata: buildApiKeySourceMetadata(event.apiKeySource),
       }
@@ -1543,7 +1578,7 @@ async function handleLoopError(
       message: event.message,
       ...(event.result === undefined ? {} : { result: event.result }),
     },
-    ...buildErrorCostFields(event),
+    ...buildErrorCostFields(event, subscriptionBilled),
     ...prSession,
     metadata: buildApiKeySourceMetadata(event.apiKeySource),
   });
@@ -1741,5 +1776,39 @@ async function readReplanFlag(
       }
     );
     return false;
+  }
+}
+
+/**
+ * Whether a loop's tokens were covered by a Claude subscription, so it is
+ * priced at nothing. Claude Code reports `apiKeySource: "none"` whenever no API
+ * key authenticated it: a subscription login, but also a compute target's
+ * model provider that authenticates with headers (`ANTHROPIC_CUSTOM_HEADERS`),
+ * which is per-token API spend. So "none" means a subscription only on a
+ * target whose loops carry no model provider. The target is looked up only for
+ * "none", the one case it decides; a failed lookup must not fail the loop's
+ * settlement, so it falls back to reading "none" as a subscription.
+ */
+async function isSubscriptionBilledLoop(
+  loopId: string,
+  apiKeySource: string | undefined,
+  findComputeTargetId: () => Promise<string | null | undefined>
+): Promise<boolean> {
+  if (apiKeySource !== "none") {
+    return false;
+  }
+  try {
+    const computeTargetId = await findComputeTargetId();
+    if (!computeTargetId) {
+      return true;
+    }
+    const runtime = await resolveComputeTargetClaudeRuntime(computeTargetId);
+    return runtime.claudeEnv === null;
+  } catch (error) {
+    log.warn("Could not resolve the loop's model provider for pricing", {
+      loopId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return true;
   }
 }

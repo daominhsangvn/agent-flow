@@ -80,18 +80,6 @@ vi.mock("@repo/app/loops/hooks/use-loops", () => ({
   }),
 }));
 
-// PLN-237: NewPlanModal resolves the project's primary repo via
-// `useTeamRepositoriesUnion`, which uses `useQueries` and would require a
-// QueryClientProvider. Stub it for these structural tests; multi-repo
-// behaviour has its own dedicated test file.
-vi.mock("@repo/app/teams/hooks/use-team-repositories-union", () => ({
-  useTeamRepositoriesUnion: () => ({
-    repositories: [],
-    isLoading: false,
-    error: null,
-  }),
-}));
-
 // PLN-529: NewPlanModal now composes `useResolvedJobRepos` and renders
 // `JobRepositoriesSection` (which uses `useQueries` for default branches).
 // Stub both for structural tests; per-tier resolver behaviour is covered by

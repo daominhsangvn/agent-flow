@@ -1,5 +1,6 @@
 import {
   PROCESS_VERSIONS_LIST_MAX,
+  ProcessStepType,
   type ProjectProcess,
   type ProjectProcessState,
   type ProjectProcessVersion,
@@ -12,6 +13,10 @@ import {
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import { Prisma, withDb } from "@repo/database";
 import { getPrismaErrorCode } from "@/lib/db-utils";
+import {
+  checkConnectionGrants,
+  loadProjectConnectionCatalog,
+} from "@/lib/integrations/connection-grants";
 import {
   findRepositoryCheckout,
   listProjectRepositoryCheckouts,
@@ -155,6 +160,14 @@ export const projectProcessService = {
     if (toolkitError) {
       return failure(Status.BadRequest, toolkitError);
     }
+    const grantError = await checkProcessConnectionGrants(
+      organizationId,
+      projectId,
+      process
+    );
+    if (grantError) {
+      return failure(Status.BadRequest, grantError);
+    }
     for (let attempt = 1; attempt <= SAVE_ATTEMPTS; attempt++) {
       try {
         const row = await insertNextVersion(
@@ -287,4 +300,43 @@ function failure(
   message: string
 ): Result<never, ProjectProcessServiceError> {
   return Result.err({ status, message });
+}
+
+/**
+ * The `connections:` grants of the process's agent steps name the project's
+ * connections, with operations their providers offer to agents.
+ */
+async function checkProcessConnectionGrants(
+  organizationId: string,
+  projectId: string,
+  process: ProjectProcess | null
+): Promise<string | null> {
+  const steps = (process?.steps ?? []).filter(
+    (step) => step.type === ProcessStepType.Agent && step.connections
+  );
+  if (steps.length === 0) {
+    return null;
+  }
+  const catalog = await loadProjectConnectionCatalog(organizationId, [
+    projectId,
+  ]);
+  const sourceProviders = [
+    ...new Set(catalog.list(projectId).map((entry) => entry.provider)),
+  ];
+  for (const step of steps) {
+    if (step.type !== ProcessStepType.Agent) {
+      continue;
+    }
+    const error = checkConnectionGrants({
+      label: `Step ${step.id}`,
+      grants: step.connections,
+      catalog,
+      projectIds: [projectId],
+      sourceProviders,
+    });
+    if (error) {
+      return error;
+    }
+  }
+  return null;
 }

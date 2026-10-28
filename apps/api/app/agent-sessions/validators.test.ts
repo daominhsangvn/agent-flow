@@ -7,6 +7,9 @@ import {
   baseAgentSessionQuerySchema,
 } from "./validators";
 
+// The `team` viewer scope was removed; the enum now rejects it.
+const REMOVED_TEAM_VIEWER_SCOPE = "team";
+
 describe("agentSessionUsageQuerySchema — comparison opt-in (ISS-5809)", () => {
   it("accepts the prior-period comparison on the usage read", () => {
     const parsed = agentSessionUsageQuerySchema.parse({
@@ -137,5 +140,25 @@ describe("baseAgentSessionQuerySchema", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it("rejects the removed team scope on every session schema", () => {
+    for (const schema of [
+      baseAgentSessionQuerySchema,
+      agentSessionListQuerySchema,
+      agentSessionUsageQuerySchema,
+    ]) {
+      expect(
+        schema.safeParse({ viewerScope: REMOVED_TEAM_VIEWER_SCOPE }).success
+      ).toBe(false);
+    }
+  });
+
+  it("rejects the removed teamId filter as an unknown key", () => {
+    const result = baseAgentSessionQuerySchema.safeParse({
+      teamId: "019f0fcb-8336-7c4d-9f64-528fb9520c32",
+    });
+
+    expect(result.success).toBe(false);
   });
 });

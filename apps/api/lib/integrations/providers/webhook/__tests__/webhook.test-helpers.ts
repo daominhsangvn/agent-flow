@@ -133,6 +133,7 @@ export function makeRunSnapshot(
     step: null,
     reply: null,
     documents: [],
+    releaseNotes: null,
     stepReplies: {},
     summaryMarkdown: "✅ **REQ-7** is done.",
     startedAt: "2026-10-04T10:00:00.000Z",

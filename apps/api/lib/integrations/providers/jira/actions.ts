@@ -1,4 +1,4 @@
-import type { JsonValue } from "@repo/api/src/types/common";
+import { SourceOperation } from "@repo/api/src/types/connection-grants";
 import {
   type IntegrationFieldDescriptor,
   IntegrationFieldKind,
@@ -17,14 +17,14 @@ import {
   defineAction,
   HttpMethod,
 } from "../../types";
-import { markdownToAdf } from "./adf";
+import { jiraCommentBody } from "./attachments";
 import {
   type JiraError,
   jiraIssuePath,
   jiraRequest,
   jiraRequestWithoutBody,
 } from "./client";
-import { JiraActionType, JiraCommentTarget, JiraDeployment } from "./constants";
+import { JiraActionType, JiraCommentTarget } from "./constants";
 import {
   type JiraConnectionConfig,
   type JiraSecrets,
@@ -34,7 +34,7 @@ import {
 } from "./schemas";
 
 /**
- * Actions of the Jira provider, usable as pre actions (run.triggered, before
+ * Actions of the Jira provider, usable as pre actions (workflow.triggered, before
  * the agent team: no plan or pull request yet) and as post actions. Both act
  * on the run's source issue and are skipped when the run did not come from
  * this Jira site. Failures map to ActionResult (retryable for timeouts, 429
@@ -99,7 +99,7 @@ const TRANSITION_FIELDS: IntegrationFieldDescriptor[] = [
   },
 ];
 
-type JiraActionContext<TConfig> = ActionContext<
+export type JiraActionContext<TConfig> = ActionContext<
   TConfig,
   JiraConnectionConfig,
   JiraSecrets
@@ -116,6 +116,7 @@ export const jiraAddCommentAction = defineAction<
     "Adds a comment to the Jira issue the run was started from, e.g. the plan link or the pull request.",
   configSchema: jiraAddCommentConfigSchema,
   configFields: ADD_COMMENT_FIELDS,
+  sourceOperation: SourceOperation.Comment,
   defaultEvents: [
     WorkflowRunEvent.Started,
     WorkflowRunEvent.NeedsInput,
@@ -136,6 +137,7 @@ export const jiraTransitionIssueAction = defineAction<
     'Moves the Jira issue the run was started from through a workflow transition, e.g. to "In Review" when the pull request is open.',
   configSchema: jiraTransitionIssueConfigSchema,
   configFields: TRANSITION_FIELDS,
+  sourceOperation: SourceOperation.Transition,
   defaultEvents: [WorkflowRunEvent.Succeeded],
   execute: executeTransitionIssue,
 });
@@ -159,7 +161,13 @@ async function executeAddComment(
     {
       method: HttpMethod.Post,
       path: jiraIssuePath(issue.value, "comment"),
-      body: { body: commentBody(ctx.connection.config, text) },
+      body: {
+        body: jiraCommentBody(
+          ctx.connection.config,
+          text,
+          ctx.attachments ?? []
+        ),
+      },
     },
     jiraCreatedCommentSchema
   );
@@ -211,7 +219,7 @@ async function executeTransitionIssue(
 }
 
 /** The issue id (stable across project moves) or key of the run's source, or why the action does not apply. */
-function resolveSourceIssue(
+export function resolveSourceIssue(
   ctx: JiraActionContext<unknown>
 ): Result<string, string> {
   const source = ctx.run.source;
@@ -224,13 +232,6 @@ function resolveSourceIssue(
     );
   }
   return Result.ok(source.externalId || source.key);
-}
-
-function commentBody(config: JiraConnectionConfig, text: string): JsonValue {
-  if (config.deployment === JiraDeployment.Cloud) {
-    return markdownToAdf(text);
-  }
-  return text;
 }
 
 /** Transition name first, then the name of the status it leads to; case-insensitive. */
@@ -269,11 +270,11 @@ function normalizeName(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase();
 }
 
-function skipped(reason: string): ActionResult {
+export function skipped(reason: string): ActionResult {
   return { status: WorkflowActionRunStatus.Skipped, reason };
 }
 
-function failed(
+export function failed(
   ctx: JiraActionContext<unknown>,
   error: JiraError,
   attempted: string

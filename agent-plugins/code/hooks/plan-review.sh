@@ -11,7 +11,8 @@ INPUT=$(cat)
 
 # Debug logging — keeps at most 15 log files in $AGENTFLOW_STATE_DIR/plan-review-logs/
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
-CWD="${CWD:-$PWD}"
+# Logs go to the project root, not wherever the session last `cd`-ed to.
+CWD="${CLAUDE_PROJECT_DIR:-${CWD:-$PWD}}"
 LOG_DIR="$CWD/$AGENTFLOW_STATE_DIR/plan-review-logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/$(date +%Y%m%d-%H%M%S).log"

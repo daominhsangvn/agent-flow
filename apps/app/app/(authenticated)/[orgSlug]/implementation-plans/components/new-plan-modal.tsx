@@ -228,10 +228,9 @@ export function NewPlanModal({
     }
   );
 
-  const { data: projects = [], isLoading: loadingProjects } = useProjects(
-    undefined,
-    { enabled: open }
-  );
+  const { data: projects = [], isLoading: loadingProjects } = useProjects({
+    enabled: open,
+  });
 
   const selectedPrd = prds.find((p) => p.id === fields.selectedSourceId);
   const selectedSource: PlanSource | undefined = useMemo(

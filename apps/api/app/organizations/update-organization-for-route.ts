@@ -244,10 +244,9 @@ function isSlugConflictError(error: unknown): boolean {
 }
 
 /**
- * When the update body carries any privacy-sensitive org toggle — the
- * transcript-content search gate (FEA-3930) or the session-sync policy
- * (FEA-4169) — require org admin before any persistence path runs. Returns a
- * denial response (404 unknown org, 403 non-admin) to short-circuit, or null
+ * When the update body carries the privacy-sensitive transcript-content search
+ * gate (FEA-3930), require org admin before any persistence path runs. Returns
+ * a denial response (404 unknown org, 403 non-admin) to short-circuit, or null
  * when no privacy field is present or the caller is authorized.
  */
 async function enforcePrivacyGateAdmin({
@@ -259,10 +258,7 @@ async function enforcePrivacyGateAdmin({
   clerkUserId: string;
   id: string;
 }) {
-  const touchesPrivacyField =
-    body.searchIncludeTranscripts !== undefined ||
-    body.sessionSyncPolicyEnabled !== undefined;
-  if (!touchesPrivacyField) {
+  if (body.searchIncludeTranscripts === undefined) {
     return null;
   }
   const organization = await organizationsService.findById(id);

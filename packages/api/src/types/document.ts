@@ -228,7 +228,6 @@ export type DocumentWithProject = Document & {
   project?: {
     id: string;
     name: string;
-    teams?: { id: string; name: string }[];
   } | null;
   /** The latest generation status for this document. Omitted when no generation status is available. */
   generationStatus?: GenerationStatus;

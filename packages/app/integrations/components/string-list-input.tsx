@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge } from "@repo/design-system/components/ui/badge";
-import { Input } from "@repo/design-system/components/ui/input";
+import { cn } from "@repo/design-system/lib/utils";
 import { XIcon } from "lucide-react";
 import { type KeyboardEvent, useState } from "react";
 import { splitStringListEntry } from "../lib/integration-field-values";
@@ -20,7 +20,8 @@ export type StringListInputProps = {
  * Tags input for `string_list` fields: Enter or a comma adds the typed text
  * (comma-separated text adds several items at once), blurring the input keeps
  * what was typed, and each chip has its own remove button. Duplicates and
- * blank items are ignored.
+ * blank items are ignored. Chips and input share one box, like the other
+ * inputs of a form.
  */
 export function StringListInput({
   id,
@@ -53,10 +54,22 @@ export function StringListInput({
     }
   };
 
+  // One box holds the chips and the input, so committing the typed text on
+  // blur (e.g. when the form's submit button is pressed) does not move what
+  // is below: a chip appearing above the input used to push the button away
+  // between mousedown and mouseup, and the click never submitted.
   return (
-    <div className="space-y-2">
+    <div
+      aria-invalid={invalid || undefined}
+      className={cn(
+        "flex min-h-9 w-full flex-wrap items-center gap-1.5 rounded-md border border-input-border bg-input px-2 py-1 shadow-xs transition-[color,box-shadow]",
+        "focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+        "aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40",
+        disabled && "cursor-not-allowed opacity-50"
+      )}
+    >
       {value.length > 0 ? (
-        <ul aria-label="Added values" className="flex flex-wrap gap-1.5">
+        <ul aria-label="Added values" className="contents">
           {value.map((item) => (
             <li key={item}>
               <Badge className="gap-1 pr-1" variant="neutral">
@@ -77,15 +90,20 @@ export function StringListInput({
           ))}
         </ul>
       ) : null}
-      <Input
+      <input
         aria-describedby={describedBy}
         aria-invalid={invalid || undefined}
+        className="h-7 min-w-[8rem] flex-1 bg-transparent px-1 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed md:text-sm"
         disabled={disabled}
         id={id}
         onBlur={commitDraft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder={placeholder ?? "Type a value and press Enter"}
+        placeholder={
+          value.length > 0
+            ? ""
+            : (placeholder ?? "Type a value and press Enter")
+        }
         value={draft}
       />
     </div>

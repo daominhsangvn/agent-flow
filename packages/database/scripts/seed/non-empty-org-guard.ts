@@ -95,9 +95,7 @@ export async function detectOrgConflicts(
     existingLinearIntegration,
     existingSlackIntegration,
     projectCount,
-    teamCount,
     projects,
-    teams,
     artifactCount,
     artifacts,
     loopCount,
@@ -122,12 +120,7 @@ export async function detectOrgConflicts(
       select: { id: true },
     }),
     prisma.project.count({ where: { organizationId } }),
-    prisma.team.count({ where: { organizationId } }),
     prisma.project.findMany({
-      where: { organizationId },
-      select: { id: true, slug: true },
-    }),
-    prisma.team.findMany({
       where: { organizationId },
       select: { id: true, slug: true },
     }),
@@ -194,13 +187,6 @@ export async function detectOrgConflicts(
     label: "Project",
     count: projectCount,
     isSeedOwned: areSeedOwnedProjects(projects, projectCount, organizationId),
-    seedOwnedRows,
-    conflicts,
-  });
-  recordCountedRows({
-    label: "Team",
-    count: teamCount,
-    isSeedOwned: areSeedOwnedTeams(teams, teamCount, organizationId),
     seedOwnedRows,
     conflicts,
   });
@@ -304,19 +290,6 @@ function recordCountedRows({
     return;
   }
   conflicts.push(description);
-}
-
-function areSeedOwnedTeams(
-  rows: readonly SeedOwnedRow[],
-  count: number,
-  organizationId: string
-): boolean {
-  return (
-    rows.length === count &&
-    rows.length === 1 &&
-    rows[0]?.id === deterministicUuid(`team:${organizationId}:default`) &&
-    rows[0]?.slug === "default"
-  );
 }
 
 function areSeedOwnedProjects(

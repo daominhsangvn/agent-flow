@@ -488,15 +488,12 @@ function ProjectsSection({
             <TableHead>Name</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Priority</TableHead>
-            <TableHead>Team</TableHead>
             <TableHead>Updated</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {projects.map((project) => {
-            const href = project.teamId
-              ? `/${orgSlug}/teams/${project.teamId}/projects/${project.id}`
-              : null;
+            const href = `/${orgSlug}/projects/${project.id}`;
 
             return (
               <TableRow key={project.id}>
@@ -510,9 +507,6 @@ function ProjectsSection({
                   {project.priority && (
                     <IssuePriorityBadge priority={project.priority} />
                   )}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {project.teamName ?? "-"}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {formatDate(project.updatedAt)}

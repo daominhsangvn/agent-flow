@@ -29,6 +29,13 @@ describe("agentPolicyEnv", () => {
     });
   });
 
+  test("tells a workflow EXECUTE to write release notes, and nothing when they are off", () => {
+    assert.deepEqual(agentPolicyEnv({ releaseNotes: true }), {
+      [AgentPolicyEnvVar.ReleaseNotes]: "1",
+    });
+    assert.deepEqual(agentPolicyEnv({ releaseNotes: false }), {});
+  });
+
   test("ignores a policy it cannot read", () => {
     const unreadable = { review: "sometimes" } as unknown as LoopAgentPolicy;
     assert.deepEqual(agentPolicyEnv(unreadable), {});

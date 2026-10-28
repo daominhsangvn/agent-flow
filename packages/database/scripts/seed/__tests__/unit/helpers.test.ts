@@ -52,7 +52,7 @@ describe("deterministicUuid (TS-U.1)", () => {
   });
 
   it("produces different UUIDs for keys that differ only by prefix", () => {
-    const a = deterministicUuid("team:org1:default");
+    const a = deterministicUuid("artifact:org1:default");
     const b = deterministicUuid("project:org1:default");
     expect(a).not.toBe(b);
   });
@@ -80,13 +80,13 @@ describe("upsertRow (TS-U.2)", () => {
     const counts = createUpsertCounts();
 
     await upsertRow({
-      model: "Team",
+      model: "Project",
       id: "new-id",
       upsert: vi.fn().mockResolvedValue({ id: "new-id" }),
       counts,
     });
 
-    expect(counts.Team).toEqual({ upserted: 1 });
+    expect(counts.Project).toEqual({ upserted: 1 });
   });
 
   it("accumulates upserted count across multiple calls to the same model", async () => {
@@ -131,7 +131,7 @@ describe("upsertRow (TS-U.2)", () => {
     const counts = createUpsertCounts();
 
     await upsertRow({
-      model: "Team",
+      model: "Artifact",
       id: "t1",
       upsert: vi.fn().mockResolvedValue({ id: "t1" }),
       counts,
@@ -143,7 +143,7 @@ describe("upsertRow (TS-U.2)", () => {
       counts,
     });
 
-    expect(counts.Team).toEqual({ upserted: 1 });
+    expect(counts.Artifact).toEqual({ upserted: 1 });
     expect(counts.Project).toEqual({ upserted: 1 });
   });
 });

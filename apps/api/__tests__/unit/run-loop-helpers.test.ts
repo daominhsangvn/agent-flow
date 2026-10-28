@@ -2,8 +2,7 @@
  * Unit tests for resolveLoopContext in run-loop-helpers.ts.
  *
  * Covers the targetRepo and targetBranch fallback chains:
- *   targetRepo:   body.repo → artifact → source → resolver (override / single-team
- *                 inheritance / legacy fallback)
+ *   targetRepo:   body.repo → artifact → source → resolver (project repositories / legacy fallback)
  *   targetBranch: body.repo → artifact → source → "main" (Q-002 of PLN-237 — the
  *                 GitHub default branch is the canonical choice and is supplied
  *                 by the caller; project-stored branches are ignored)
@@ -42,18 +41,12 @@ vi.mock("@/app/loops/service", () => ({
   },
 }));
 
-// Projects without project repositories: the team-pool paths under test.
+// Projects without project repositories.
 vi.mock("@/app/projects/project-repository-checkouts", async (original) => ({
   ...(await original<
     typeof import("@/app/projects/project-repository-checkouts")
   >()),
   listProjectRepositoryCheckouts: vi.fn(() => Promise.resolve([])),
-}));
-vi.mock("@/app/teams/service", () => ({
-  teamsService: {
-    getRepositoriesByProject: vi.fn().mockResolvedValue([]),
-    countTeamsForProject: vi.fn().mockResolvedValue(0),
-  },
 }));
 
 // --- Imports (after mocks) ---

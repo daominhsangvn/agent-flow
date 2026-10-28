@@ -29,6 +29,8 @@ For database commands, see `packages/database/CLAUDE.md`.
 - **relay** (:3020) — WebSocket relay
 - **storybook** (:6006) — Component library
 - **studio** (:3005) — Prisma Studio
+- **prototypes** (:3030) — Mock-data UI prototype sandbox
+- **desktop** — Electron desktop app (localhost gateway, agent monitor) and the source of the headless runner (`src/headless/`)
 
 ### Packages (`/packages`, imported as `@repo/<name>`)
 api (shared types) · database (Prisma, PostgreSQL) · storage (S3-compatible object storage) · auth (Better Auth facade: server `auth()`, middleware, client hooks) · design-system (Shadcn/Tailwind) · analytics (PostHog/GA) · email (Resend) · observability (logging) · security (Nosecone)
@@ -58,10 +60,10 @@ No AWS or Vercel services. Object storage goes through `@repo/storage` (S3 proto
 `packages/api/src/types/` only for types used by BOTH apps. Never define same type in multiple files.
 
 ### Engineer Feature (SECURITY CRITICAL)
-Spawns local CLI processes (Claude, git, codex) via the `agentflow-electron` gateway binary, NOT in `apps/app` or `apps/api`. The browser fetch interceptor (`apps/app/lib/engineer/engineer-fetch-interceptor.ts`) routes `/api/gateway/*` requests to either localhost (LocalElectron mode) or the `/api/gateway-relay/*` forwarder (CloudRelay mode). **Localhost-only enforcement**: proxy guard (`apps/app/proxy.ts`) rejects non-localhost `/api/gateway/*` requests with 403. The gateway binary enforces its own `isAuthorizedGatewayRequest` auth on top. `EngineerGuard` is UX-only. **Do NOT remove the proxy guard** (arbitrary command execution risk). **Do NOT reimplement gateway operations in `apps/app` or `apps/api`** — they require local filesystem access and live exclusively in the `agentflow-electron` repo under `apps/desktop/src/server/operations/`.
+Spawns local CLI processes (Claude, git, codex) through the desktop gateway (`apps/desktop/src/server/`, shared by the Electron app and the headless runner), NOT in `apps/app` or `apps/api`. The browser fetch interceptor (`apps/app/lib/engineer/engineer-fetch-interceptor.ts`) installs the shared gateway fetch shim; the web routing adapter (`apps/app/lib/engineer/web-surface-routing-adapter.ts`) sends `/api/gateway/*` requests to either localhost (LocalElectron mode) or the same-origin `/api/gateway-relay/*` forwarder (CloudRelay mode). **Localhost-only enforcement**: the proxy (`apps/app/proxy.ts`) calls `gatewayGuard` (`apps/app/lib/engineer/gateway-guard.ts`), which rejects non-localhost `/api/gateway/*` requests with 403 and requires an authenticated user with a registered compute target for `/api/gateway-relay/*`. The gateway enforces its own `isAuthorizedGatewayRequest` auth on top (`apps/desktop/src/server/router.ts`). **Do NOT remove the proxy guard** (arbitrary command execution risk). **Do NOT reimplement gateway operations in `apps/app` or `apps/api`** — they require local filesystem access and live exclusively in `apps/desktop/src/server/operations/`.
 
 ### System Health Check
-Runs on app launch via `SystemCheckBootstrap` in the authenticated layout (`apps/app/app/(authenticated)/layout.tsx`), not just on the engineer page. Eligibility gated by `useSystemCheckEligibility` — only fires when a compute target is active (cloud relay online or local Electron detected). In cloud relay mode, the fetch interceptor rewrites `/api/gateway/health-check` to `/api/gateway-relay/health-check` and routes to the remote compute target. The health check route resolves the user's login-shell PATH via `getShellPath()` to find tools like `python3`, `git`, `claude`, `gh`.
+A pre-loop gate, not a launch-time check: `PreLoopSystemCheckProvider` (`apps/app/lib/system-check/pre-loop-system-check-provider.tsx`, mounted in the authenticated layout `apps/app/app/(authenticated)/layout.tsx`) checks the selected or requested compute target's health before Generate/Execute dispatches a loop; callers use `usePreLoopSystemCheckGate()`. The request is `/api/gateway/health-check`, routed like any gateway request (localhost, or `/api/gateway-relay/*` to a remote compute target, which also stores the result as the target's health-check snapshot via `PUT /compute-targets/{id}/health-check`). The gateway's health check (`apps/desktop/src/server/operations/health-check*.ts`) resolves tools such as `python3`, `git`, `claude`, `gh` through the login-shell helpers in `apps/desktop/src/server/shell-path.ts`.
 
 ## Self-Improving CLAUDE.md
 Discover undocumented patterns during PRs → add to relevant CLAUDE.md in same PR.
@@ -131,3 +133,14 @@ AgentFlow: human-governed, AI-centric software delivery platform. AI produces ar
 - **[insight]**: @repo/* imports are internal monorepo dependencies, not cross-repo needs.
 - **[insight]**: `@repo/observability/log` exports `console` directly, no `server-only` — safe in client components.
 - **[pattern]**: Shared mappings for both server packages and frontend → `packages/api/src/types/` (server packages can't import from `apps/app/lib/`).
+
+## Harness: AgentFlow delivery
+
+**Goal:** deliver multi-file changes with opus planning and sonnet/haiku execution to cut token cost.
+
+**Trigger:** for features, bug fixes, refactors or PRDs touching several files, use the `af-delivery` skill (also for re-runs and fixing its review findings). Answer questions and make one-line or docs-only edits directly.
+
+**Change log:**
+| Date | Change | Scope | Reason |
+| --- | --- | --- | --- |
+| 2026-10-26 | Built with revfactory/harness v2.1.0 (92d9f1b) | all | - |

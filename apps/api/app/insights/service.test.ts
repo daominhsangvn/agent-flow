@@ -29,7 +29,6 @@ import {
   expectAllOrgScoped,
   findRawSql,
   flattenRawSql,
-  hasEmptyInPredicate,
   identityRow,
   makeFakeDb,
   makeInsightsUserGrant,
@@ -45,20 +44,8 @@ import {
 } from "./service";
 
 const USER = "user-1";
-const TEAM = "team-1";
 const ORG_CTX = { organizationId: ORG, userId: USER, scope: InsightsScope.Org };
 const ME_CTX = { organizationId: ORG, userId: USER, scope: InsightsScope.Me };
-const TEAM_CTX = {
-  organizationId: ORG,
-  userId: USER,
-  scope: InsightsScope.Team,
-  teamId: TEAM,
-};
-const TEAM_CTX_WITHOUT_ID = {
-  organizationId: ORG,
-  userId: USER,
-  scope: InsightsScope.Team,
-};
 const NOW = new Date("2026-06-09T12:00:00.000Z");
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -1013,22 +1000,6 @@ describe("insightsService.getUtilization", () => {
     expect(raw.values).toContain(USER);
   });
 
-  it("scopes the raw event-volume query to team membership under team scope", async () => {
-    const { db, rawQueries } = makeFakeDb({ counts: () => 0 });
-    vi.mocked(withDb).mockImplementation((cb) =>
-      Promise.resolve(cb(db as never))
-    );
-
-    await insightsService.getUtilization(TEAM_CTX, InsightsPeriod.Quarter, NOW);
-
-    expect(rawQueries.length).toBeGreaterThan(0);
-    const raw = findRawSql(rawQueries, "agent_session_events");
-    expect(raw.text).toContain("a.organization_id");
-    expect(raw.text).toContain("team_members");
-    expect(raw.values).toContain(ORG);
-    expect(raw.values).toContain(TEAM);
-  });
-
   it("buckets the raw event-volume query in the caller's timezone (FEA-2880)", async () => {
     const { db, rawQueries } = makeFakeDb({ counts: () => 0 });
     vi.mocked(withDb).mockImplementation((cb) =>
@@ -1078,27 +1049,6 @@ describe("insightsService.getUtilization", () => {
     // UTC enumeration would have run 2026-06-02…2026-06-09; the local walk stops
     // at the local end day (2026-06-08), so 2026-06-09 must be absent.
     expect(points.some((p) => p.date === "2026-06-09")).toBe(false);
-  });
-
-  it("fails the raw event-volume query closed when team scope lacks a teamId", async () => {
-    const { db, rawQueries } = makeFakeDb({ counts: () => 0 });
-    vi.mocked(withDb).mockImplementation((cb) =>
-      Promise.resolve(cb(db as never))
-    );
-
-    await insightsService.getUtilization(
-      TEAM_CTX_WITHOUT_ID,
-      InsightsPeriod.Quarter,
-      NOW
-    );
-
-    expect(rawQueries.length).toBeGreaterThan(0);
-    const raw = findRawSql(rawQueries, "agent_session_events");
-    // The scope predicate collapses to a `false` literal — no team/org rows leak
-    // and no team id is bound.
-    expect(raw.text).toContain("false");
-    expect(raw.text).not.toContain("team_members");
-    expect(raw.values).not.toContain(TEAM);
   });
 });
 
@@ -1645,50 +1595,6 @@ describe("me scope", () => {
       "chart:reviewQueue:donut": InsightsTileAvailabilityState.Unavailable,
       "chart:reviewerLoad": InsightsTileAvailabilityState.Unavailable,
     });
-  });
-});
-
-describe("team scope", () => {
-  it("filters delivery artifacts and utilization sessions by team membership", async () => {
-    const { db, wheres } = makeFakeDb({ counts: () => 0 });
-    vi.mocked(withDb).mockImplementation((cb) =>
-      Promise.resolve(cb(db as never))
-    );
-
-    await insightsService.getDelivery(TEAM_CTX, InsightsPeriod.Quarter, NOW);
-    await insightsService.getUtilization(TEAM_CTX, InsightsPeriod.Quarter, NOW);
-
-    const teamIds: string[] = [];
-    for (const where of wheres) {
-      collectKey(where, "teamId", teamIds);
-    }
-    expect(teamIds.length).toBeGreaterThan(0);
-    expect(teamIds.every((teamId) => teamId === TEAM)).toBe(true);
-  });
-
-  it("fails closed if team scope reaches the service without teamId", async () => {
-    const { db, wheres } = makeFakeDb({ counts: () => 0 });
-    vi.mocked(withDb).mockImplementation((cb) =>
-      Promise.resolve(cb(db as never))
-    );
-
-    await insightsService.getDelivery(
-      TEAM_CTX_WITHOUT_ID,
-      InsightsPeriod.Quarter,
-      NOW
-    );
-    await insightsService.getUtilization(
-      TEAM_CTX_WITHOUT_ID,
-      InsightsPeriod.Quarter,
-      NOW
-    );
-
-    expect(wheres.some(hasEmptyInPredicate)).toBe(true);
-    const teamIds: string[] = [];
-    for (const where of wheres) {
-      collectKey(where, "teamId", teamIds);
-    }
-    expect(teamIds).toHaveLength(0);
   });
 });
 

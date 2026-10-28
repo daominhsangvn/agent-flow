@@ -9,11 +9,16 @@ import {
 import {
   ADO_API_VERSION,
   type AdoContext,
-  type AdoError,
   AdoErrorKind,
   adoRequest,
-  projectSegment,
 } from "./client";
+import { adoPullRequests } from "./pull-requests";
+import {
+  operationError,
+  operationOk,
+  pullRequestsPath,
+  repositoryErrorMessage,
+} from "./repository-operations";
 import {
   type AdoConnectionConfig,
   type AdoGitRepository,
@@ -38,8 +43,6 @@ const GUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Any non-empty user name works with a PAT. */
 const GIT_USERNAME = "agentflow";
-const CODE_SCOPE_HINT =
-  "Grant the personal access token the Code (Read & write) scope.";
 
 export const adoRepositories: IntegrationRepositoriesDefinition<
   AdoConnectionConfig,
@@ -102,6 +105,8 @@ export const adoRepositories: IntegrationRepositoriesDefinition<
       expiresAt: null,
     });
   },
+
+  pullRequests: adoPullRequests,
 
   async createPullRequest(ctx, request) {
     const existing = await findActivePullRequest(ctx, request);
@@ -213,14 +218,6 @@ async function findActivePullRequest(
   return operationOk(result.value.value[0]?.pullRequestId ?? null);
 }
 
-/** The project from the namespace "organization/project". */
-function pullRequestsPath(repository: RepositoryInfo): string {
-  const project = repository.namespace.slice(
-    repository.namespace.indexOf("/") + 1
-  );
-  return `${projectSegment(project)}/_apis/git/repositories/${repository.externalId}/pullrequests`;
-}
-
 function toCreatedPullRequest(
   repository: RepositoryInfo,
   pullRequestId: number,
@@ -239,26 +236,4 @@ function stripHeads(ref: string | null | undefined): string | null {
     return null;
   }
   return ref.startsWith(REFS_HEADS) ? ref.slice(REFS_HEADS.length) : ref;
-}
-
-function repositoryErrorMessage(error: AdoError): string {
-  if (
-    error.kind === AdoErrorKind.Unauthorized ||
-    error.kind === AdoErrorKind.Forbidden
-  ) {
-    return `${error.message}. ${CODE_SCOPE_HINT}`;
-  }
-  return error.message;
-}
-
-function operationError<T>(error: AdoError): RepositoryOperationResult<T> {
-  return {
-    ok: false,
-    error: repositoryErrorMessage(error),
-    retryable: error.retryable,
-  };
-}
-
-function operationOk<T>(value: T): RepositoryOperationResult<T> {
-  return { ok: true, value };
 }

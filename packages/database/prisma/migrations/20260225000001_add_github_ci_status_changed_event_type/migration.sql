@@ -1,2 +1,0 @@
--- AlterEnum: add GITHUB_CI_STATUS_CHANGED variant to WorkstreamEventType
-ALTER TYPE "WorkstreamEventType" ADD VALUE 'GITHUB_CI_STATUS_CHANGED' AFTER 'GITHUB_ACTION_COMPLETED';

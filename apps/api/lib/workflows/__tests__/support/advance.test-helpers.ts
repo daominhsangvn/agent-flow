@@ -38,6 +38,7 @@ export function runLoopState(
     error: null,
     uploadedArtifacts: null,
     revivalCount: 0,
+    sessionId: null,
     createdAt: NOW,
     startedAt: NOW,
     completedAt: null,

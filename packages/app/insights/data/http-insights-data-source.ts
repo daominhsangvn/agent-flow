@@ -36,31 +36,25 @@ export function createHttpInsightsReads(
   api: InsightsHttpClient
 ): InsightsReads {
   return {
-    getDelivery: (period, scope, teamId) =>
+    getDelivery: (period, scope) =>
       api.get<DeliveryInsightsResponse>(
-        insightsPath("delivery", period, scope, teamId)
+        insightsPath("delivery", period, scope)
       ),
-    getUtilization: (period, scope, teamId) =>
+    getUtilization: (period, scope) =>
       api.get<UtilizationInsightsResponse>(
-        insightsPath("utilization", period, scope, teamId)
+        insightsPath("utilization", period, scope)
       ),
-    getAgents: (period, scope, teamId) =>
-      api.get<AgentsInsightsResponse>(
-        insightsPath("agents", period, scope, teamId)
-      ),
+    getAgents: (period, scope) =>
+      api.get<AgentsInsightsResponse>(insightsPath("agents", period, scope)),
   };
 }
 
 export function insightsPath(
   section: string,
   period: InsightsPeriod,
-  scope: InsightsScope,
-  teamId?: string
+  scope: InsightsScope
 ): string {
   const params = new URLSearchParams({ period, scope });
-  if (teamId) {
-    params.set("teamId", teamId);
-  }
   // FEA-2745: send the browser's IANA timezone so the cloud backend labels the
   // daily trend / by-day bars in the viewer's local calendar — matching the
   // desktop shell, which buckets in local time. Absent/unresolved → the server

@@ -9,7 +9,6 @@ const PROJECT_ID = "0199a5f0-0000-7000-8000-0000000000p1";
 const mocks = vi.hoisted(() => ({
   projectId: null as string | null,
   checkouts: [] as Array<{ fullName: string }>,
-  teamRepos: [] as Array<{ repository: { fullName: string } }>,
   authorizeAdditionalRepos: vi.fn(),
 }));
 
@@ -28,26 +27,14 @@ vi.mock("@/app/projects/project-repository-checkouts", async (original) => ({
 vi.mock("@/app/loops/authorize-additional-repos", () => ({
   authorizeAdditionalRepos: mocks.authorizeAdditionalRepos,
 }));
-vi.mock("@repo/database", () => ({
-  withDb: (fn: (db: unknown) => unknown) =>
-    fn({
-      artifact: {
-        findFirst: () => Promise.resolve({ projectId: mocks.projectId }),
-      },
-      teamRepository: { findMany: () => Promise.resolve(mocks.teamRepos) },
-    }),
-}));
-
 const base = {
   organizationId: ORG_ID,
   documentId: DOCUMENT_ID,
-  checkTeamPool: true,
 };
 
 beforeEach(() => {
   mocks.projectId = PROJECT_ID;
   mocks.checkouts = [{ fullName: "acme/api" }, { fullName: "acme/web" }];
-  mocks.teamRepos = [];
   mocks.authorizeAdditionalRepos.mockReset();
 });
 
@@ -72,9 +59,8 @@ describe("authorizeLoopRepositories", () => {
     ).rejects.toBeInstanceOf(RepoNotInProjectPoolError);
   });
 
-  it("keeps the GitHub App rules for a project without project repositories", async () => {
+  it("without project repositories only checks org installation access", async () => {
     mocks.checkouts = [];
-    mocks.teamRepos = [{ repository: { fullName: "acme/api" } }];
     const additionalRepos = [{ fullName: "acme/web", branch: "main" }];
 
     await expect(
@@ -83,17 +69,25 @@ describe("authorizeLoopRepositories", () => {
         primary: { fullName: "acme/api" },
         additionalRepos,
       })
-    ).rejects.toBeInstanceOf(RepoNotInProjectPoolError);
+    ).resolves.toBeUndefined();
     expect(mocks.authorizeAdditionalRepos).toHaveBeenCalledWith(
-      additionalRepos,
+      [{ fullName: "acme/api", branch: "" }, ...additionalRepos],
       ORG_ID
     );
+  });
+
+  it("checks only the primary against the org installation when there are no additional repos", async () => {
+    mocks.checkouts = [];
 
     await authorizeLoopRepositories({
       ...base,
-      primary: undefined,
-      additionalRepos,
-      checkTeamPool: false,
+      primary: { fullName: "acme/api" },
+      additionalRepos: undefined,
     });
+
+    expect(mocks.authorizeAdditionalRepos).toHaveBeenCalledWith(
+      [{ fullName: "acme/api", branch: "" }],
+      ORG_ID
+    );
   });
 });

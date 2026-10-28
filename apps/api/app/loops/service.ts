@@ -904,7 +904,6 @@ export const loopsService = {
       documentId: input.documentId,
       primary: input.repo,
       additionalRepos: input.additionalRepos,
-      checkTeamPool: true,
     });
 
     const isManual = input.command === LoopCommand.Manual;
@@ -1739,7 +1738,6 @@ export const loopsService = {
             documentId: parent.artifactId,
             primary: undefined,
             additionalRepos: parsedAdditionalRepos,
-            checkTeamPool: false,
           });
         }
 

@@ -18,6 +18,7 @@ import type {
 import { isOriginAllowed } from "./gateway-cors-policy.js";
 import { OperationDispatcher } from "./operation-dispatcher.js";
 import type { BinaryPathKey, BinaryPaths } from "./operations/binary-paths.js";
+import { registerCapabilitiesRefreshRoutes } from "./operations/capabilities-refresh.js";
 import {
   ClaudeProvider,
   CodexProvider,
@@ -36,6 +37,11 @@ import { registerGitLocalChangesRoutes } from "./operations/git-local-changes.js
 import { registerGitPrRoutes } from "./operations/git-pr.js";
 import { registerGitRepoPathRoutes } from "./operations/git-repo-path.js";
 import { registerGitWorktreeRoutes } from "./operations/git-worktree.js";
+import type { SystemCheckHostOptions } from "./operations/health-check-runner.js";
+import {
+  integrationSessionOpenerFor,
+  orchestratorSessionOpenerFor,
+} from "./operations/integration-session-client.js";
 import { registerLearningsRoutes } from "./operations/learnings.js";
 import { configureMcpDetectionCwdResolver } from "./operations/mcp-detection.js";
 import {
@@ -43,6 +49,7 @@ import {
   registerMemberPackInstallRoutes,
 } from "./operations/member-pack-install.js";
 import { registerMetadataRoutes } from "./operations/metadata-routes.js";
+import { registerOrchestratorTurnRoutes } from "./operations/orchestrator-turn.js";
 import { registerReposConfigRoutes } from "./operations/repos-config.js";
 import { registerRunViewerChatRoutes } from "./operations/run-viewer-chat.js";
 import { registerRunViewerExtractRoutes } from "./operations/run-viewer-extract.js";
@@ -68,6 +75,8 @@ import { registerSystemCheckRoutes } from "./operations/system-check-routes.js";
 import { registerTerminalChatRoutes } from "./operations/terminal-chat.js";
 import { registerTicketChatRoutes } from "./operations/ticket-chat.js";
 import { registerUpdateAndRestartRoutes } from "./operations/update-and-restart.js";
+import { registerWorkflowDecisionRoutes } from "./operations/workflow-decision.js";
+import { registerWorkflowInstructionRoutes } from "./operations/workflow-instruction.js";
 import {
   createClaudeCodeShellEnvProvider,
   getDefaultClaudeCodeOtelReceiverStatus,
@@ -123,6 +132,8 @@ export type GatewayRouterOptions = {
   isUpdateAndRestartEnabled?: () => boolean;
   /** `app.isPackaged`, forwarded to the Gateway Version check (ISS-5369). */
   isPackagedBuild?: () => boolean;
+  /** What the host changes about the System Check (a headless runner). */
+  systemCheckHost?: SystemCheckHostOptions;
   /**
    * Starts a vetted catalog-pack install (FEA-4082). When absent — an older
    * build wired before member self-service installs existed — the pack-install
@@ -295,6 +306,7 @@ export class GatewayRouter {
       applyBinaryPathPatch: this.options.applyBinaryPathPatch,
       getAppVersion: () => this.options.version,
       isPackagedBuild: this.options.isPackagedBuild,
+      host: this.options.systemCheckHost,
     });
     registerLearningsRoutes(
       this.operationDispatcher,
@@ -416,6 +428,29 @@ export class GatewayRouter {
       getSymphonyDir,
       getClaudeCodeShellEnv
     );
+    registerWorkflowInstructionRoutes(this.operationDispatcher, {
+      processManager: this.processManager,
+      getAllowedDirectories: this.options.getAllowedDirectories,
+      getClaudeShellEnv: getClaudeCodeShellEnv,
+      openIntegrationSession: integrationSessionOpenerFor(this.options),
+    });
+    registerWorkflowDecisionRoutes(this.operationDispatcher, {
+      processManager: this.processManager,
+      getAllowedDirectories: this.options.getAllowedDirectories,
+      getClaudeShellEnv: getClaudeCodeShellEnv,
+    });
+    registerOrchestratorTurnRoutes(this.operationDispatcher, {
+      processManager: this.processManager,
+      getAllowedDirectories: this.options.getAllowedDirectories,
+      getClaudeShellEnv: getClaudeCodeShellEnv,
+      openOrchestratorSession: orchestratorSessionOpenerFor(this.options),
+    });
+    registerCapabilitiesRefreshRoutes(this.operationDispatcher, {
+      getAllowedDirectories: this.options.getAllowedDirectories,
+      getApiOrigin: this.options.getApiOrigin,
+      getApiKey: this.options.getApiKey,
+      getComputeTargetId: this.options.getComputeTargetId,
+    });
     const providerRegistry = new ProviderRegistry();
     providerRegistry.register(
       new ClaudeProvider(this.processManager, getClaudeCodeShellEnv)

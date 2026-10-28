@@ -99,8 +99,6 @@ function branchViewData(
     repoFullName: "acme/repo",
     reviewDecision: null,
     reviews: [],
-    teamId: null,
-    teamName: null,
     ...overrides,
   };
 }
@@ -345,7 +343,6 @@ describe("getBranchViewLoadState", () => {
           featureSlug: "feature/unsafe",
           producedByPlanSlug: "PLN-741",
           projectId: "project-1",
-          teamId: "team-1",
         },
       })
     );
@@ -353,7 +350,6 @@ describe("getBranchViewLoadState", () => {
     expect(state.details).toEqual({
       producedByPlanSlug: "PLN-741",
       projectId: "project-1",
-      teamId: "team-1",
     });
   });
 });

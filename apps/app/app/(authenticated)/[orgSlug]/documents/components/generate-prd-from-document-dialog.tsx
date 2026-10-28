@@ -82,7 +82,7 @@ export function GeneratePrdFromDocumentDialog({
     isLoading: isLoadingProjects,
     isError: isProjectsError,
     error: projectsError,
-  } = useProjects(undefined, { enabled: open });
+  } = useProjects({ enabled: open });
   const generate = useGeneratePrdFromDocument();
   const { multiTargetState, selectTarget, clearTargetSelection } = generate;
 

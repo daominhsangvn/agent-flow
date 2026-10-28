@@ -3,9 +3,9 @@ import {
   ProcessStepType,
   type ProjectProcessInput,
 } from "@repo/api/src/types/project-process";
+import { YamlProblemSeverity } from "@repo/app/shared/lib/yaml-problems";
 import { describe, expect, it } from "vitest";
 import {
-  ProcessYamlSeverity,
   parseProcessYaml,
   processToYaml,
   processYamlProblems,
@@ -105,7 +105,7 @@ describe("parseProcessYaml", () => {
     expect(parsed.ok).toBe(false);
     expect(!parsed.ok && parsed.problem).toMatchObject({
       line: 4,
-      severity: ProcessYamlSeverity.Error,
+      severity: YamlProblemSeverity.Error,
       message: "All mapping items must start at the same column",
     });
   });
@@ -129,7 +129,7 @@ describe("processYamlProblems", () => {
     expect(rest).toEqual([]);
     expect(problem).toMatchObject({
       line: 6,
-      severity: ProcessYamlSeverity.Error,
+      severity: YamlProblemSeverity.Error,
     });
     expect(text.slice(problem?.from, problem?.to)).toBe("maybe");
   });
@@ -154,13 +154,13 @@ describe("processYamlProblems", () => {
       problems.map((problem) => [problem.severity, problem.message])
     ).toEqual([
       // document.path is missing
-      [ProcessYamlSeverity.Error, expect.any(String)],
+      [YamlProblemSeverity.Error, expect.any(String)],
       [
-        ProcessYamlSeverity.Warning,
+        YamlProblemSeverity.Warning,
         'Unknown key "instrcution" in step 1 - did you mean "instruction"?',
       ],
       [
-        ProcessYamlSeverity.Warning,
+        YamlProblemSeverity.Warning,
         'Unknown key "file" in the document of step 1',
       ],
     ]);
@@ -175,7 +175,24 @@ describe("processYamlProblems", () => {
       processYamlProblems(process("maybe", "quick")).map(
         (problem) => problem.severity
       )
-    ).toEqual([ProcessYamlSeverity.Error, ProcessYamlSeverity.Error]);
+    ).toEqual([YamlProblemSeverity.Error, YamlProblemSeverity.Error]);
+  });
+
+  it("knows an agent step's grant and keeps it in the draft", () => {
+    const text =
+      "steps:\n  - type: agent\n    id: triage\n    name: Triage\n    instruction: Triage the ticket.\n    connections:\n      source: [comment]\n      teams-release:\n        allow: [microsoft_teams.post_message]\n        approval: required\n";
+
+    expect(processYamlProblems(text)).toEqual([]);
+    const parsed = parseProcessYaml(text);
+    expect(parsed.ok && parsed.draft.steps[0]).toMatchObject({
+      connections: {
+        source: ["comment"],
+        "teams-release": {
+          allow: ["microsoft_teams.post_message"],
+          approval: "required",
+        },
+      },
+    });
   });
 
   it("has no problems for a valid process", () => {

@@ -3,6 +3,16 @@
 Generated: 2026-02-09
 Repository: agentflow-ai (Next.js monorepo on next-forge template)
 
+> **Hosted-edition snapshot.** This report describes the hosted product as of
+> 2026-02-09 and is not updated. The self-hosted edition in this repository
+> differs: Better Auth in `apps/api` behind `@repo/auth` instead of Clerk (no
+> auth webhooks), PostgreSQL via `DATABASE_URL` instead of Neon, RustFS through
+> `@repo/storage` instead of AWS S3, no Vercel or AWS services, loops only on
+> desktop compute targets and headless runners, and Jira / Azure DevOps /
+> Teams / Confluence / Bitbucket / Local Git through integration connections
+> and workflows. See [docs/self-hosting.md](docs/self-hosting.md) ("What changed
+> from the hosted product") and [docs/workflows.md](docs/workflows.md).
+
 ---
 
 ## Project Summaries
@@ -18,7 +28,7 @@ Repository: agentflow-ai (Next.js monorepo on next-forge template)
 | **apps/studio** | Prisma Studio for database browsing | Dev Tooling | Prisma Studio |
 | **packages/database** | Prisma ORM client, schema, migrations (PostgreSQL) | Shared Library | Prisma 7, PostgreSQL 16, Neon (prod) |
 | **packages/api** | Shared API type definitions between frontend and backend | Shared Types | TypeScript |
-| **packages/auth** | Authentication wrapper (Clerk) | Shared Library | Clerk |
+| **packages/auth** | Authentication facade (Clerk in the hosted edition; Better Auth here) | Shared Library | Better Auth |
 | **packages/ai** | AI integration - PRD generation agent with Anthropic models | Shared Library | AI SDK, Anthropic (@ai-sdk/anthropic), Claude Opus 4.5 / Sonnet 4.5 |
 | **packages/github** | GitHub App integration - workflow dispatch, webhook verification, repo management | Shared Library | Octokit, GitHub App Auth |
 | **packages/linear** | Linear integration - OAuth, issue sync, task extraction with LLM | Shared Library | Linear SDK, AI |

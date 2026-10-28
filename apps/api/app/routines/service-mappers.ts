@@ -108,7 +108,6 @@ function buildRoutineWriteData(
   return {
     organizationId,
     sourceId: input.sourceId ?? null,
-    teamId: input.teamId ?? null,
     name: input.name,
     description: input.description,
     instructions: input.instructions,
@@ -150,7 +149,6 @@ function buildRoutineUpdateData(
 ): Prisma.RoutineUncheckedUpdateManyInput {
   const data: Prisma.RoutineUncheckedUpdateManyInput = {};
   const assignKeys: (keyof UpdateRoutineInput)[] = [
-    "teamId",
     "name",
     "description",
     "instructions",

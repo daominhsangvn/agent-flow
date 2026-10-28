@@ -126,7 +126,6 @@ function installDb(options: {
         updated_at: new Date("2026-01-01"),
         slug: null,
         entity_subtype: null,
-        team_id: null,
         anchor_entity_id: null,
       }))
     );

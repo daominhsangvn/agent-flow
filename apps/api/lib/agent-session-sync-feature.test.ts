@@ -1,7 +1,7 @@
 import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
 import { DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY } from "@repo/api/src/types/agent-session";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isAgentSessionSyncSupportedForUser } from "./agent-session-sync-feature";
+import { isAgentMonitoringEnabledForUser } from "./agent-session-sync-feature";
 
 vi.mock("@repo/analytics/feature-flags", () => ({
   isFeatureFlagEnabledForDistinctId: vi.fn(),
@@ -15,7 +15,7 @@ vi.mock("@repo/observability/log", () => ({
 
 const isEnabled = vi.mocked(isFeatureFlagEnabledForDistinctId);
 
-describe("isAgentSessionSyncSupportedForUser", () => {
+describe("isAgentMonitoringEnabledForUser", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -28,7 +28,7 @@ describe("isAgentSessionSyncSupportedForUser", () => {
     );
 
     await expect(
-      isAgentSessionSyncSupportedForUser({
+      isAgentMonitoringEnabledForUser({
         clerkUserId: "clerk-user-1",
         userId: "user-1",
       })
@@ -44,7 +44,7 @@ describe("isAgentSessionSyncSupportedForUser", () => {
     isEnabled.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 
     await expect(
-      isAgentSessionSyncSupportedForUser({
+      isAgentMonitoringEnabledForUser({
         clerkUserId: "clerk-user-1",
         userId: "user-1",
       })
@@ -66,7 +66,7 @@ describe("isAgentSessionSyncSupportedForUser", () => {
     isEnabled.mockResolvedValue(null);
 
     await expect(
-      isAgentSessionSyncSupportedForUser({
+      isAgentMonitoringEnabledForUser({
         clerkUserId: "clerk-user-1",
         userId: "user-1",
       })
@@ -77,7 +77,7 @@ describe("isAgentSessionSyncSupportedForUser", () => {
     isEnabled.mockRejectedValue(new Error("PostHog unavailable"));
 
     await expect(
-      isAgentSessionSyncSupportedForUser({
+      isAgentMonitoringEnabledForUser({
         clerkUserId: "clerk-user-1",
         userId: "user-1",
       })

@@ -40,3 +40,7 @@ export function scrubProviderError(
     scrubSecretValues(message, collectSecretValues(secrets)) || "Unknown error"
   );
 }
+
+/** An agent's runner never asked for its integration tools (an older runner). */
+export const RUNNER_WITHOUT_TOOLS =
+  "The runner did not open the agent's integration tools, so the agent could not act: update the runner (rebuild its image) and retry.";

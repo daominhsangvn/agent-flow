@@ -41,8 +41,8 @@ async function sendRequest(
   if (!hasHeader(headers, "accept")) {
     headers.accept = "application/json";
   }
-  let body: string | undefined;
-  if (typeof request.body === "string") {
+  let body: string | FormData | undefined;
+  if (typeof request.body === "string" || request.body instanceof FormData) {
     body = request.body;
   } else if (request.body !== undefined) {
     body = JSON.stringify(request.body);

@@ -1551,19 +1551,9 @@
       "get": {
         "operationId": "listProjects",
         "summary": "List projects",
-        "description": "Returns all projects belonging to the authenticated organization. Projects are the top-level containers for workstreams, documents, and repositories. By default, ARCHIVED projects are excluded. Use `status` to override — pass `status=ARCHIVED` to see archived projects, or `status=IN_PROGRESS,NOT_STARTED` (comma-delimited) to see multiple statuses. Use `excludeStatus` to exclude specific statuses. Optionally filter by `teamId` to see only projects associated with a particular team.",
+        "description": "Returns all projects belonging to the authenticated organization. Projects are the top-level containers for workstreams, documents, and repositories. By default, ARCHIVED projects are excluded. Use `status` to override — pass `status=ARCHIVED` to see archived projects, or `status=IN_PROGRESS,NOT_STARTED` (comma-delimited) to see multiple statuses. Use `excludeStatus` to exclude specific statuses.",
         "tags": ["Projects"],
         "parameters": [
-          {
-            "name": "teamId",
-            "in": "query",
-            "description": "Filter to projects associated with this team UUID.",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          },
           {
             "name": "status",
             "in": "query",
@@ -1586,7 +1576,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of projects to return (1–100). Only applied when `teamId` is provided.",
+            "description": "Maximum number of projects to return (1–100).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -1641,7 +1631,7 @@
       "post": {
         "operationId": "createProject",
         "summary": "Create a project",
-        "description": "Creates a new project in the authenticated organization. Only `name` is required; `priority`, `status`, `assigneeId`, `slug`, `targetDate`, and `teamIds` are optional. The response includes full project details (completion percentage, teams, custom fields). Requires the `write` scope.",
+        "description": "Creates a new project in the authenticated organization. Only `name` is required; `priority`, `status`, `assigneeId`, `slug`, and `targetDate` are optional. The response includes full project details (completion percentage, custom fields). Requires the `write` scope.",
         "tags": ["Projects"],
         "requestBody": {
           "required": true,
@@ -1682,22 +1672,13 @@
                     "format": "date-time",
                     "nullable": true,
                     "description": "Optional target completion date (ISO-8601)."
-                  },
-                  "teamIds": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "format": "uuid"
-                    },
-                    "description": "Teams to associate with the project."
                   }
                 }
               },
               "example": {
                 "name": "Platform Redesign",
                 "priority": "HIGH",
-                "status": "IN_PROGRESS",
-                "teamIds": ["7c9e6679-7425-40de-944b-e07fc1f90ae7"]
+                "status": "IN_PROGRESS"
               }
             }
           }
@@ -1781,7 +1762,7 @@
       "get": {
         "operationId": "getProject",
         "summary": "Get a project",
-        "description": "Retrieves full details for a single project by UUID or slug. The response includes the project metadata, settings, and any associated teams. Use this to look up a project's current status, assignee, target date, and repository defaults before creating workstreams or documents.",
+        "description": "Retrieves full details for a single project by UUID or slug. The response includes the project metadata, and settings. Use this to look up a project's current status, assignee, target date, and repository defaults before creating workstreams or documents.",
         "tags": ["Projects"],
         "parameters": [
           {
@@ -1892,13 +1873,6 @@
                     "type": "string",
                     "format": "date-time",
                     "nullable": true
-                  },
-                  "teamIds": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "format": "uuid"
-                    }
                   },
                   "settings": {
                     "type": "object",
@@ -3894,14 +3868,11 @@
       "get": {
         "operationId": "listAgentSessions",
         "summary": "List agent sessions",
-        "description": "Returns the organization's agent sessions (captured harness runs) with pagination and rich filtering. Use `viewerScope` to scope the read: `self` pins to the caller's sessions, `team` (which **requires** `teamId`) scopes to a team, and `organization` returns all sessions the caller may see. The default `quality=all` view returns every session; pass `quality=substantive` to hide idle (0 turns, 0 tokens, and 0 tool uses) sessions, or `quality=idle` to return only those idle sessions. Requires the `read` scope.",
+        "description": "Returns the organization's agent sessions (captured harness runs) with pagination and rich filtering. Use `viewerScope` to scope the read: `self` pins to the caller's sessions and `organization` returns all sessions the caller may see. The default `quality=all` view returns every session; pass `quality=substantive` to hide idle (0 turns, 0 tokens, and 0 tool uses) sessions, or `quality=idle` to return only those idle sessions. Requires the `read` scope.",
         "tags": ["Agent Sessions"],
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentSessionViewerScope"
-          },
-          {
-            "$ref": "#/components/parameters/AgentSessionTeamId"
           },
           {
             "$ref": "#/components/parameters/AgentSessionProjectId"
@@ -4087,7 +4058,7 @@
             }
           },
           "400": {
-            "description": "Invalid query parameters (e.g. `viewerScope=team` with no `teamId`, or `teamId` alongside a non-`team` `viewerScope`).",
+            "description": "Invalid query parameters (e.g. an unknown query parameter).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4107,7 +4078,7 @@
             }
           },
           "403": {
-            "description": "The API key lacks the `read` scope, or the requested team scope is not authorized.",
+            "description": "The API key lacks the `read` scope.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4202,9 +4173,6 @@
             "$ref": "#/components/parameters/AgentSessionViewerScope"
           },
           {
-            "$ref": "#/components/parameters/AgentSessionTeamId"
-          },
-          {
             "$ref": "#/components/parameters/AgentSessionProjectId"
           },
           {
@@ -4294,7 +4262,7 @@
             }
           },
           "400": {
-            "description": "Invalid query parameters (e.g. `viewerScope=team` with no `teamId`, or `teamId` alongside a non-`team` `viewerScope`).",
+            "description": "Invalid query parameters (e.g. an unknown query parameter).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4314,7 +4282,7 @@
             }
           },
           "403": {
-            "description": "The API key lacks the `read` scope, or the requested team scope is not authorized.",
+            "description": "The API key lacks the `read` scope.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4335,9 +4303,6 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentSessionViewerScope"
-          },
-          {
-            "$ref": "#/components/parameters/AgentSessionTeamId"
           },
           {
             "$ref": "#/components/parameters/AgentSessionProjectId"
@@ -4419,7 +4384,7 @@
             }
           },
           "400": {
-            "description": "Invalid query parameters (e.g. `viewerScope=team` with no `teamId`, or `teamId` alongside a non-`team` `viewerScope`).",
+            "description": "Invalid query parameters (e.g. an unknown query parameter).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4439,7 +4404,7 @@
             }
           },
           "403": {
-            "description": "The API key lacks the `read` scope, or the requested team scope is not authorized.",
+            "description": "The API key lacks the `read` scope.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4551,20 +4516,10 @@
         "name": "viewerScope",
         "in": "query",
         "required": false,
-        "description": "Read scope. `team` requires `teamId`. The ORGANIZATION is the real data boundary here, not the team: `self` is the only value enforced server-side as a narrowing (the read is pinned to the authenticated user), and the team-membership check runs only when you ASK for team scope. A caller who is 403'd requesting team X can omit `viewerScope` and still receive team X's sessions under the default organization scope. Treat `team` as a view, not a permission.",
+        "description": "Read scope. The ORGANIZATION is the real data boundary here: `self` is the only value enforced server-side as a narrowing (the read is pinned to the authenticated user); `organization` returns all sessions in the organization.",
         "schema": {
           "type": "string",
-          "enum": ["self", "organization", "team"]
-        }
-      },
-      "AgentSessionTeamId": {
-        "name": "teamId",
-        "in": "query",
-        "required": false,
-        "description": "Team UUID. Required when `viewerScope=team`. Sending `teamId` with NO `viewerScope` is accepted as a legacy alias and normalizes to `viewerScope=team`; sending it alongside any other `viewerScope` is rejected.",
-        "schema": {
-          "type": "string",
-          "format": "uuid"
+          "enum": ["self", "organization"]
         }
       },
       "AgentSessionProjectId": {
@@ -6092,16 +6047,6 @@
             ],
             "nullable": true
           },
-          "teamName": {
-            "type": "string",
-            "nullable": true,
-            "description": "Name of the team the project belongs to."
-          },
-          "teamId": {
-            "type": "string",
-            "nullable": true,
-            "description": "ID of the team the project belongs to."
-          },
           "assignee": {
             "allOf": [
               {
@@ -6217,10 +6162,6 @@
           "entitySubtype": {
             "type": "string",
             "description": "A document hit's `type` (used to pick the route prefix), or — for a comment hit — the TYPE of the artifact it is anchored on."
-          },
-          "teamId": {
-            "type": "string",
-            "description": "A project hit's owning team, for the team-scoped project route."
           },
           "anchorEntityId": {
             "type": "string",
@@ -6439,7 +6380,7 @@
           },
           "viewerScope": {
             "type": "string",
-            "enum": ["organization", "self", "team"],
+            "enum": ["organization", "self"],
             "description": "The scope the results were read at."
           },
           "idleCount": {
@@ -6961,7 +6902,7 @@
           "lastAgentSessionSyncAt",
           "owner"
         ],
-        "description": "Sync freshness for one of the organization's compute targets. This list is NOT drawn from the session population the rest of the summary describes: it is every non-sentinel compute target in the organization, narrowed only by `userId` and `teamId` when those are set, and never tested against the date window, `quality`, or any other active filter. A target that contributed no session to these totals still appears, and a target's presence here is not evidence it is represented above. The list is also capped at the 20 most recently synced targets, ranked by the last sync ATTEMPT rather than by when data last landed, so on a larger fleet treat it as a freshness affordance and not a complete inventory.",
+        "description": "Sync freshness for one of the organization's compute targets. This list is NOT drawn from the session population the rest of the summary describes: it is every non-sentinel compute target in the organization, narrowed only by `userId` when it is set, and never tested against the date window, `quality`, or any other active filter. A target that contributed no session to these totals still appears, and a target's presence here is not evidence it is represented above. The list is also capped at the 20 most recently synced targets, ranked by the last sync ATTEMPT rather than by when data last landed, so on a larger fleet treat it as a freshness affordance and not a complete inventory.",
         "properties": {
           "computeTargetId": {
             "type": "string"
@@ -7053,7 +6994,7 @@
         "properties": {
           "viewerScope": {
             "type": "string",
-            "enum": ["organization", "self", "team"],
+            "enum": ["organization", "self"],
             "description": "The scope the aggregate was read at."
           },
           "totalSessions": {
@@ -7172,7 +7113,7 @@
         "properties": {
           "viewerScope": {
             "type": "string",
-            "enum": ["organization", "self", "team"],
+            "enum": ["organization", "self"],
             "description": "The scope the breakdowns were read at."
           },
           "byTool": {

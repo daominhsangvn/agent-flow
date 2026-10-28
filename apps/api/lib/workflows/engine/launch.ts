@@ -25,6 +25,7 @@ import { loopsService } from "@/app/loops/service";
 import {
   chooseProjectRunner,
   ProjectRunnerChoiceKind,
+  type ProjectRunnerScope,
 } from "@/app/projects/project-runner-selection";
 import {
   CommandSigningRequirementStatus,
@@ -47,6 +48,7 @@ import {
 } from "@/lib/loops/loop-dispatch-utils";
 import { buildLoopPrompt } from "@/lib/loops/prompts";
 import { runError } from "./errors";
+import { isPersonalRunnerTarget } from "./personal-runner-queue";
 import { type EngineLoopCommand, recordRunLoop } from "./run-loops";
 import { recordRunRepositories } from "./run-repository";
 
@@ -241,22 +243,27 @@ async function resolveTarget(
 /**
  * The computer a run's first loop starts on: one of the project's runners
  * when it has some (the workflow's computer when it is one of them), else the
- * workflow's computer.
+ * workflow's computer. The project is the document's, or the given one
+ * before the run has documents.
  */
-export async function resolveProjectComputeTarget(input: {
-  organizationId: string;
-  userId: string;
-  documentId: string;
-  computeTargetId: string;
-}): Promise<Result<string, WorkflowRunError>> {
+export async function resolveProjectComputeTarget(
+  input: {
+    organizationId: string;
+    userId: string;
+    computeTargetId: string;
+  } & ProjectRunnerScope
+): Promise<Result<string, WorkflowRunError>> {
   // A project with runners runs on them; the workflow's computer is kept
-  // when it is one of them.
-  const runner = await chooseProjectRunner({
-    organizationId: input.organizationId,
-    userId: input.userId,
-    documentId: input.documentId,
-    preferredComputeTargetId: input.computeTargetId,
-  });
+  // when it is one of them, or when it is a personal runner.
+  const personal = await isPersonalRunnerTarget(input);
+  const runner = personal
+    ? ({ kind: ProjectRunnerChoiceKind.None } as const)
+    : await chooseProjectRunner({
+        organizationId: input.organizationId,
+        userId: input.userId,
+        preferredComputeTargetId: input.computeTargetId,
+        ...projectRunnerScope(input),
+      });
   if (runner.kind === ProjectRunnerChoiceKind.Resolved) {
     return Result.ok(runner.computeTargetId);
   }
@@ -469,4 +476,11 @@ function loopRepositories(
       baseBranch: repo.branch,
     })),
   ];
+}
+
+/** Only the scope's own key: the project's id, or its document's. */
+function projectRunnerScope(scope: ProjectRunnerScope): ProjectRunnerScope {
+  return scope.projectId === undefined
+    ? { documentId: scope.documentId }
+    : { projectId: scope.projectId };
 }

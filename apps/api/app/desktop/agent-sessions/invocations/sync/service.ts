@@ -5,7 +5,6 @@ import type {
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import { agentComponentInvocationsService } from "@/app/agent-sessions/service/component-invocations";
 import { computeTargetsService } from "@/app/compute-targets/service";
-import { isOrgSessionSyncPolicyEnabled } from "@/lib/org-session-sync-policy";
 
 type DesktopAgentComponentInvocationsSyncInput = {
   clerkUserId: string | null;
@@ -13,17 +12,11 @@ type DesktopAgentComponentInvocationsSyncInput = {
   organizationId: string;
   part: AgentComponentInvocationSyncPart;
   userId: string;
-  /** Injectable for tests; defaults to the server-owned org-policy lookup. */
-  isOrgPolicyEnabled?: (organizationId: string) => Promise<boolean>;
 };
 
 /**
- * Verifies target ownership and the org session-sync policy, then ingests one
- * independently acknowledged part. Component-invocation parts are session-derived
- * ingest data, so FEA-4169's server-owned org policy must gate this boundary too:
- * a policy-off org (or an older/compromised Desktop that ignores the local gate)
- * cannot persist invocation definitions here. Fail-closed and independent of any
- * client-sent field.
+ * Verifies target ownership, then ingests one independently acknowledged part.
+ * Session data is always ingested: there is no org policy to switch it off.
  */
 export const desktopAgentComponentInvocationsSyncService = {
   async sync(
@@ -36,12 +29,6 @@ export const desktopAgentComponentInvocationsSyncService = {
       input.clerkUserId
     );
     if (!target) {
-      return Result.err(Status.Forbidden);
-    }
-
-    const isOrgPolicyEnabled =
-      input.isOrgPolicyEnabled ?? isOrgSessionSyncPolicyEnabled;
-    if (!(await isOrgPolicyEnabled(input.organizationId))) {
       return Result.err(Status.Forbidden);
     }
 

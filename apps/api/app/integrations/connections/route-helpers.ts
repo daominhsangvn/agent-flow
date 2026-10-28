@@ -9,9 +9,9 @@ import type { ConnectionServiceError } from "@/lib/integrations/connection-servi
 import { parseJsonObject } from "@/lib/json-schema";
 
 /**
- * Shared by the /integrations/connections routes: connection changes, the
- * connection test (Teams posts a test card) and the inbound secret are
- * admin-only; reads are open to every org member.
+ * Shared by the /integrations/connections routes. Everything about
+ * connections is admin-only: reads, changes, the connection test (Teams
+ * posts a test card) and the inbound secret.
  */
 
 /** Upper bound for connection create/update bodies (secrets are ≤ 8 KiB each). */
@@ -26,8 +26,9 @@ export function denyUnlessOrgAdmin(
 }
 
 /**
- * Who reads a connection DTO. Members who are not org admins get url-kind
- * config fields as their origin only (they may embed a token).
+ * Who reads connection config embedded elsewhere (workflow triggers and
+ * actions). Members who are not org admins get url-kind config fields as
+ * their origin only (they may embed a token).
  */
 export async function resolveConfigViewer(
   auth: Pick<AuthContext, "clerkOrgId" | "clerkUserId">

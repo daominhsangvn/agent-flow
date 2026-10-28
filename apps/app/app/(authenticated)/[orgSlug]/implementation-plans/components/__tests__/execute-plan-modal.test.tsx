@@ -66,7 +66,7 @@ function setupScenario({ resolvedAdditional = [] }: ModalScenario = {}) {
     primary: {
       id: "repo-primary",
       fullName: "org/primary-repo",
-      source: RepoSource.ProjectOverride,
+      source: RepoSource.ProjectDefault,
       inPool: true,
     },
     additional: resolvedAdditional.map((r) => ({

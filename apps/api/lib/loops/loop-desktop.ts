@@ -19,9 +19,38 @@ import type {
   LoopCommand,
 } from "@repo/api/src/types/loop";
 import type { LoopBody } from "@repo/api/src/types/loop-body";
+import {
+  ORCHESTRATOR_TURN_CANCEL_GATEWAY_PATH,
+  ORCHESTRATOR_TURN_CANCEL_OPERATION_ID,
+  ORCHESTRATOR_TURN_GATEWAY_PATH,
+  ORCHESTRATOR_TURN_OPERATION_ID,
+  type OrchestratorTurnRequest,
+} from "@repo/api/src/types/orchestrator";
+import {
+  RUNNER_CAPABILITIES_REFRESH_GATEWAY_PATH,
+  RUNNER_CAPABILITIES_REFRESH_OPERATION_ID,
+  RUNNER_CAPABILITIES_REFRESH_TIMEOUT_MS,
+  type RunnerCapabilitiesRefreshRequest,
+  runnerCapabilitiesRefreshKey,
+} from "@repo/api/src/types/runner-capabilities";
+import {
+  WORKFLOW_DECISION_GATEWAY_PATH,
+  WORKFLOW_DECISION_OPERATION_ID,
+  WORKFLOW_DECISION_TIMEOUT_MS,
+  type WorkflowDecisionRequest,
+} from "@repo/api/src/types/workflow-decision";
+import {
+  WORKFLOW_INSTRUCTION_GATEWAY_PATH,
+  WORKFLOW_INSTRUCTION_OPERATION_ID,
+  WORKFLOW_INSTRUCTION_TIMEOUT_MS,
+  type WorkflowInstructionRequest,
+} from "@repo/api/src/types/workflow-instruction";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
-import { resolveComputeTargetClaudeEnv } from "@/app/compute-targets/model-provider-service";
+import {
+  type ComputeTargetClaudeRuntime,
+  resolveComputeTargetClaudeRuntime,
+} from "@/app/compute-targets/model-provider-service";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { hasDesktopCommandSigningEnforcement } from "@/lib/command-signing-enforcement";
@@ -455,6 +484,20 @@ export class DispatchError extends Error {
   }
 }
 
+/** The computer needs browser-signed commands (or may need them), so an unsigned one is refused. */
+export class CommandSigningRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CommandSigningRefusedError";
+  }
+}
+
+export function isCommandSigningRefusedError(
+  error: unknown
+): error is CommandSigningRefusedError {
+  return error instanceof CommandSigningRefusedError;
+}
+
 export function isDispatchError(error: unknown): error is DispatchError {
   return error instanceof DispatchError;
 }
@@ -621,9 +664,9 @@ export async function launchLoopOnDesktop(
         operationId: "symphony_loop",
         method: "POST" as const,
         path: rewriteDesktopApiPath("/api/gateway/symphony/loop", namespace),
-        body: withClaudeEnv(
+        body: withClaudeRuntime(
           buildDesktopLoopExecutionBody(opts),
-          await resolveComputeTargetClaudeEnv(computeTargetId)
+          await resolveComputeTargetClaudeRuntime(computeTargetId)
         ),
       };
 
@@ -786,36 +829,36 @@ export async function stopDesktopLoop(
 }
 
 /**
- * Adds the compute target's model provider environment (`claudeEnv`, a
- * desktop extension field of the loop request) to an unsigned loop body.
- * Signed launches carry the browser-signed body unchanged.
+ * Adds the compute target's Claude Code settings to an unsigned loop body:
+ * the model provider environment (`claudeEnv`) and the version a headless
+ * runner installs and runs (`claudeCodeVersion`), both desktop extension
+ * fields of the loop request. Signed launches carry the browser-signed body
+ * unchanged.
  */
-function withClaudeEnv(
+function withClaudeRuntime(
   body: JsonValue,
-  claudeEnv: Record<string, string> | null
+  { claudeEnv, claudeCodeVersion }: ComputeTargetClaudeRuntime
 ): JsonValue {
-  if (
-    !claudeEnv ||
-    typeof body !== "object" ||
-    body === null ||
-    Array.isArray(body)
-  ) {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return body;
   }
-  return { ...body, claudeEnv };
+  return { ...body, ...(claudeEnv ? { claudeEnv } : {}), claudeCodeVersion };
 }
 
 /**
- * The project's agent instructions, a STEP loop's step, the re-plan flag and
- * a process step's agent policy, when present.
+ * The project's key and agent instructions, a STEP loop's step, the re-plan
+ * flag and a process step's agent policy, when present.
  */
 function projectLoopFields(
   contextPack: Pick<
     ContextPack,
-    "projectInstructions" | "step" | "replan" | "agentPolicy"
+    "projectInstructions" | "projectKey" | "step" | "replan" | "agentPolicy"
   >
 ) {
   return {
+    ...(contextPack.projectKey === undefined
+      ? {}
+      : { projectKey: contextPack.projectKey }),
     ...(contextPack.replan ? { replan: true } : {}),
     ...(contextPack.agentPolicy
       ? { agentPolicy: contextPack.agentPolicy }
@@ -826,3 +869,316 @@ function projectLoopFields(
     ...(contextPack.step === undefined ? {} : { step: contextPack.step }),
   };
 }
+
+/** The computer's own limit on an instruction command, past the agent's. */
+const INSTRUCTION_COMMAND_TIMEOUT_MS = WORKFLOW_INSTRUCTION_TIMEOUT_MS + 60_000;
+
+/**
+ * Asks a computer to run a workflow instruction's agent in the run's
+ * workspace (docs/workflows.md "Actions"). The command is unsigned, like the
+ * workflow's own loops: the API acts for the workflow, not for a person at a
+ * browser, so a computer that requires signed commands cannot take it. The
+ * agent's answer arrives later as the command's `result` event.
+ *
+ * @returns The desktop command ID
+ * @throws DispatchError when the command could not be delivered
+ */
+export async function dispatchWorkflowInstruction(input: {
+  computeTargetId: string;
+  request: WorkflowInstructionRequest;
+}): Promise<string> {
+  const { computeTargetId, request } = input;
+  const signing = await resolveLaunchCommandSigningRequirement(computeTargetId);
+  if (signing.status === CommandSigningRequirementStatus.Unknown) {
+    throw new Error(COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_ERROR);
+  }
+  if (signing.status === CommandSigningRequirementStatus.Required) {
+    throw new Error(
+      "The computer only accepts commands signed in a browser, so it cannot run workflow instructions."
+    );
+  }
+  const commandInput: CreateDesktopCommandInput = {
+    operationId: WORKFLOW_INSTRUCTION_OPERATION_ID,
+    method: "POST",
+    path: rewriteDesktopApiPath(
+      WORKFLOW_INSTRUCTION_GATEWAY_PATH,
+      CURRENT_DESKTOP_API_NAMESPACE
+    ),
+    body: withClaudeRuntime(
+      request as JsonValue,
+      await resolveComputeTargetClaudeRuntime(computeTargetId)
+    ),
+    timeoutMs: INSTRUCTION_COMMAND_TIMEOUT_MS,
+    streaming: true,
+  };
+  const created = await desktopCommandStore.createCommand(
+    computeTargetId,
+    commandInput
+  );
+  const commandId = created.command.commandId;
+  try {
+    await dispatchOperationWithReplay(
+      computeTargetId,
+      toRelayOperation(commandId, commandInput),
+      { label: "Workflow instruction", loopId: request.actionRunId, commandId }
+    );
+  } catch (err) {
+    throw new DispatchError(
+      err instanceof Error ? err.message : String(err),
+      commandId,
+      err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined
+    );
+  }
+  log.info("[loop-desktop] Workflow instruction command dispatched", {
+    actionRunId: request.actionRunId,
+    commandId,
+    computeTargetId,
+  });
+  return commandId;
+}
+
+/** The computer's own limit on a decision command, past the decision's. */
+const DECISION_COMMAND_TIMEOUT_MS = WORKFLOW_DECISION_TIMEOUT_MS + 60_000;
+
+/**
+ * Asks a computer to answer a workflow decision with its model, without tools
+ * (docs/workflows.md "PRD or Issue"). Unsigned like an instruction: the API
+ * acts for the workflow, so a computer that requires signed commands cannot
+ * take it. The answer arrives later as the command's `result` event.
+ *
+ * @returns The desktop command ID
+ * @throws DispatchError when the command could not be delivered
+ */
+export async function dispatchWorkflowDecision(input: {
+  computeTargetId: string;
+  request: WorkflowDecisionRequest;
+}): Promise<string> {
+  const { computeTargetId, request } = input;
+  const signing = await resolveLaunchCommandSigningRequirement(computeTargetId);
+  if (signing.status === CommandSigningRequirementStatus.Unknown) {
+    throw new Error(COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_ERROR);
+  }
+  if (signing.status === CommandSigningRequirementStatus.Required) {
+    throw new Error(
+      "The computer only accepts commands signed in a browser, so it cannot answer workflow decisions."
+    );
+  }
+  const commandInput: CreateDesktopCommandInput = {
+    operationId: WORKFLOW_DECISION_OPERATION_ID,
+    method: "POST",
+    path: rewriteDesktopApiPath(
+      WORKFLOW_DECISION_GATEWAY_PATH,
+      CURRENT_DESKTOP_API_NAMESPACE
+    ),
+    body: withClaudeRuntime(
+      request as JsonValue,
+      await resolveComputeTargetClaudeRuntime(computeTargetId)
+    ),
+    timeoutMs: DECISION_COMMAND_TIMEOUT_MS,
+    streaming: true,
+  };
+  const created = await desktopCommandStore.createCommand(
+    computeTargetId,
+    commandInput
+  );
+  const commandId = created.command.commandId;
+  try {
+    await dispatchOperationWithReplay(
+      computeTargetId,
+      toRelayOperation(commandId, commandInput),
+      { label: "Workflow decision", loopId: request.decisionId, commandId }
+    );
+  } catch (err) {
+    throw new DispatchError(
+      err instanceof Error ? err.message : String(err),
+      commandId,
+      err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined
+    );
+  }
+  log.info("[loop-desktop] Workflow decision command dispatched", {
+    decisionId: request.decisionId,
+    commandId,
+    computeTargetId,
+  });
+  return commandId;
+}
+
+/** The computer's own limit on a turn command, past the turn's. */
+const ORCHESTRATOR_TURN_COMMAND_GRACE_MS = 60_000;
+
+/**
+ * Asks the orchestrator's runner to run one turn of a conversation
+ * (docs/orchestrator.md). Unsigned like an instruction: the API acts for the
+ * project's orchestrator, so a computer that requires signed commands cannot
+ * take it. The turn's note arrives later as the command's `result` event.
+ *
+ * @returns The desktop command ID
+ * @throws DispatchError when the command could not be delivered
+ */
+export async function dispatchOrchestratorTurn(input: {
+  computeTargetId: string;
+  request: OrchestratorTurnRequest;
+}): Promise<string> {
+  const { computeTargetId, request } = input;
+  const signing = await resolveLaunchCommandSigningRequirement(computeTargetId);
+  if (signing.status === CommandSigningRequirementStatus.Unknown) {
+    throw new Error(COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_ERROR);
+  }
+  if (signing.status === CommandSigningRequirementStatus.Required) {
+    throw new Error(
+      "The computer only accepts commands signed in a browser, so it cannot run the orchestrator."
+    );
+  }
+  const commandInput: CreateDesktopCommandInput = {
+    operationId: ORCHESTRATOR_TURN_OPERATION_ID,
+    method: "POST",
+    path: rewriteDesktopApiPath(
+      ORCHESTRATOR_TURN_GATEWAY_PATH,
+      CURRENT_DESKTOP_API_NAMESPACE
+    ),
+    body: withClaudeRuntime(
+      request as JsonValue,
+      await resolveComputeTargetClaudeRuntime(computeTargetId)
+    ),
+    timeoutMs: request.timeoutMs + ORCHESTRATOR_TURN_COMMAND_GRACE_MS,
+    streaming: true,
+  };
+  const created = await desktopCommandStore.createCommand(
+    computeTargetId,
+    commandInput
+  );
+  const commandId = created.command.commandId;
+  try {
+    await dispatchOperationWithReplay(
+      computeTargetId,
+      toRelayOperation(commandId, commandInput),
+      { label: "Orchestrator turn", loopId: request.turnId, commandId }
+    );
+  } catch (err) {
+    throw new DispatchError(
+      err instanceof Error ? err.message : String(err),
+      commandId,
+      err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined
+    );
+  }
+  log.info("[loop-desktop] Orchestrator turn command dispatched", {
+    turnId: request.turnId,
+    commandId,
+    computeTargetId,
+  });
+  return commandId;
+}
+
+const ORCHESTRATOR_TURN_CANCEL_TIMEOUT_MS = 30_000;
+
+/**
+ * Asks the orchestrator's runner to stop a running turn for a newer message
+ * (concurrency `supersede`, docs/orchestrator.md). The turn's own command
+ * then answers that it was stopped.
+ *
+ * @throws DispatchError when the command could not be delivered
+ */
+export async function dispatchOrchestratorTurnCancel(input: {
+  computeTargetId: string;
+  turnId: string;
+}): Promise<string> {
+  const commandInput: CreateDesktopCommandInput = {
+    operationId: ORCHESTRATOR_TURN_CANCEL_OPERATION_ID,
+    method: "POST",
+    path: rewriteDesktopApiPath(
+      ORCHESTRATOR_TURN_CANCEL_GATEWAY_PATH,
+      CURRENT_DESKTOP_API_NAMESPACE
+    ),
+    body: { turnId: input.turnId },
+    timeoutMs: ORCHESTRATOR_TURN_CANCEL_TIMEOUT_MS,
+  };
+  const created = await desktopCommandStore.createCommand(
+    input.computeTargetId,
+    commandInput
+  );
+  const commandId = created.command.commandId;
+  try {
+    await dispatchOperationWithReplay(
+      input.computeTargetId,
+      toRelayOperation(commandId, commandInput),
+      { label: "Orchestrator turn cancel", loopId: input.turnId, commandId }
+    );
+  } catch (err) {
+    throw new DispatchError(
+      err instanceof Error ? err.message : String(err),
+      commandId,
+      err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined
+    );
+  }
+  return commandId;
+}
+
+/**
+ * Asks an auto runner to read AGENTFLOW.md from a project's toolkit repository
+ * and upload it. Unsigned like an instruction. The answer arrives as the
+ * command's `result` event.
+ *
+ * @returns The desktop command ID
+ * @throws DispatchError when the command could not be delivered
+ */
+export async function dispatchCapabilitiesRefresh(input: {
+  computeTargetId: string;
+  request: RunnerCapabilitiesRefreshRequest;
+}): Promise<string> {
+  const { computeTargetId, request } = input;
+  const signing = await resolveLaunchCommandSigningRequirement(computeTargetId);
+  if (signing.status === CommandSigningRequirementStatus.Unknown) {
+    throw new CommandSigningRefusedError(
+      COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_ERROR
+    );
+  }
+  if (signing.status === CommandSigningRequirementStatus.Required) {
+    throw new CommandSigningRefusedError(
+      "The computer only accepts commands signed in a browser, so it cannot read its toolkit."
+    );
+  }
+  const commandInput: CreateDesktopCommandInput = {
+    operationId: RUNNER_CAPABILITIES_REFRESH_OPERATION_ID,
+    method: "POST",
+    path: rewriteDesktopApiPath(
+      RUNNER_CAPABILITIES_REFRESH_GATEWAY_PATH,
+      CURRENT_DESKTOP_API_NAMESPACE
+    ),
+    body: request as JsonValue,
+    timeoutMs:
+      RUNNER_CAPABILITIES_REFRESH_TIMEOUT_MS +
+      CAPABILITIES_REFRESH_COMMAND_GRACE_MS,
+    streaming: true,
+    idempotencyKey: runnerCapabilitiesRefreshKey(request.refreshId),
+  };
+  const created = await desktopCommandStore.createCommand(
+    computeTargetId,
+    commandInput
+  );
+  const commandId = created.command.commandId;
+  try {
+    await dispatchOperationWithReplay(
+      computeTargetId,
+      toRelayOperation(commandId, commandInput),
+      {
+        label: "Capabilities refresh",
+        loopId: request.refreshId,
+        commandId,
+      }
+    );
+  } catch (err) {
+    throw new DispatchError(
+      err instanceof Error ? err.message : String(err),
+      commandId,
+      err instanceof RelayDispatchNotDeliveredError ? err.reason : undefined
+    );
+  }
+  log.info("[loop-desktop] Capabilities refresh command dispatched", {
+    refreshId: request.refreshId,
+    commandId,
+    computeTargetId,
+  });
+  return commandId;
+}
+
+const CAPABILITIES_REFRESH_COMMAND_GRACE_MS = 60_000;

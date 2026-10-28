@@ -39,13 +39,6 @@ describe("agentSessionsService", () => {
               firstName: "Ada",
               lastName: "Lovelace",
               avatarUrl: null,
-              teamMemberships: [
-                {
-                  team: {
-                    name: "Platform",
-                  },
-                },
-              ],
             },
             artifact: {
               project: {
@@ -72,7 +65,6 @@ describe("agentSessionsService", () => {
         {
           date: "2026-05-20",
           user: "Ada Lovelace",
-          team: "Platform",
           project: "Agent Platform",
           harnessType: "claude",
           model: "claude-sonnet-4",
@@ -98,7 +90,6 @@ describe("agentSessionsService", () => {
         firstName: "Ada",
         lastName: "Lovelace",
         avatarUrl: null,
-        teamMemberships: [{ team: { name: "Platform" } }],
       },
       artifact: { project: { name: "Agent Platform" } },
       tokenUsageByModel: [],

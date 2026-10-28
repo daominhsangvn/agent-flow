@@ -1,3 +1,4 @@
+import { SourceOperation } from "@repo/api/src/types/connection-grants";
 import {
   IntegrationFieldKind,
   IntegrationProviderKey,
@@ -44,7 +45,7 @@ import {
 
 /**
  * Actions on the work item that started the run, usable as pre actions
- * (run.triggered, before the agent team: no plan or pull request yet) and as
+ * (workflow.triggered, before the agent team: no plan or pull request yet) and as
  * post actions. Both skip runs whose source is not an Azure DevOps work item
  * of this connection's organization, and never throw: every failure maps to
  * an ActionResult.
@@ -68,7 +69,7 @@ export const updateStateConfigSchema = z.object({
 });
 export type UpdateStateConfig = z.infer<typeof updateStateConfigSchema>;
 
-type AdoActionContext<TConfig> = ActionContext<
+export type AdoActionContext<TConfig> = ActionContext<
   TConfig,
   AdoConnectionConfig,
   AdoSecrets
@@ -84,6 +85,7 @@ export const addCommentAction = defineAction<
   description:
     "Adds a markdown comment, written by the bot account, to the Azure DevOps work item that started the run.",
   configSchema: addCommentConfigSchema,
+  sourceOperation: SourceOperation.Comment,
   configFields: [
     {
       key: "message",
@@ -114,6 +116,7 @@ export const updateStateAction = defineAction<
   description:
     "Moves the Azure DevOps work item that started the run to a state, e.g. Resolved or In Review.",
   configSchema: updateStateConfigSchema,
+  sourceOperation: SourceOperation.Transition,
   configFields: [
     {
       key: "state",
@@ -207,7 +210,7 @@ async function executeUpdateState(
   };
 }
 
-function resolveTarget(
+export function resolveTarget(
   run: WorkflowRunSnapshot,
   organizationUrl: string
 ): Result<ActionTarget, ActionResult> {
@@ -269,11 +272,11 @@ async function resolveProject(
   });
 }
 
-function skipped(reason: string): ActionResult {
+export function skipped(reason: string): ActionResult {
   return { status: WorkflowActionRunStatus.Skipped, reason };
 }
 
-function failed(error: AdoError, context: string): ActionResult {
+export function failed(error: AdoError, context: string): ActionResult {
   return {
     status: WorkflowActionRunStatus.Failed,
     error: `${context}: ${error.message}`,
@@ -281,7 +284,7 @@ function failed(error: AdoError, context: string): ActionResult {
   };
 }
 
-function workItemRevisionRef(
+export function workItemRevisionRef(
   workItemId: number,
   rev: number | null | undefined
 ): string {

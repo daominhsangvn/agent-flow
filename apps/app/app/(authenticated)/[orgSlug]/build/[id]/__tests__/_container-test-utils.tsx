@@ -124,8 +124,6 @@ export function makeBranchViewData(
     repoFullName: "acme/repo",
     reviewDecision: null,
     reviews: [],
-    teamId: null,
-    teamName: null,
     ...overrides,
   };
 }

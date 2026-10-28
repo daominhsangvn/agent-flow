@@ -59,6 +59,7 @@ export type RecordedSpawn = {
   args: string[];
   cwd?: string;
   input?: string;
+  env?: Record<string, string>;
 };
 
 export type RecordedExec = {
@@ -112,6 +113,7 @@ export class FakeProcessManager {
     args?: string[];
     cwd?: string;
     input?: string;
+    env?: Record<string, string>;
     onLine?: (line: string) => void;
     onError?: (error: Error) => void;
     onExit?: (exitCode: number | null, signal: NodeJS.Signals | null) => void;
@@ -121,6 +123,7 @@ export class FakeProcessManager {
       args: options.args ?? [],
       cwd: options.cwd,
       input: options.input,
+      env: options.env,
     });
     if (this.streamingScripts.length === 0) {
       return Promise.reject(

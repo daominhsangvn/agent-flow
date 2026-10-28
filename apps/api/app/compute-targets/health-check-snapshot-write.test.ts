@@ -26,7 +26,6 @@ const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   isDesktopManagedPopEnforcementEnabled: vi.fn(),
   loadActiveDesktopManagedGatewayIds: vi.fn(),
-  isAgentSessionSyncSupportedForUser: vi.fn(),
   deleteTranscriptObjects: vi.fn(),
 }));
 
@@ -58,10 +57,6 @@ vi.mock("@/lib/compute-target-signing-eligibility", () => ({
     Unknown: "unknown",
   },
   loadActiveDesktopManagedGatewayIds: mocks.loadActiveDesktopManagedGatewayIds,
-}));
-
-vi.mock("@/lib/agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: mocks.isAgentSessionSyncSupportedForUser,
 }));
 
 import { computeTargetsService } from "./service";
@@ -103,7 +98,6 @@ describe("upsertHealthCheckSnapshot schema version (ISS-5811)", () => {
     vi.clearAllMocks();
     mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
     mocks.loadActiveDesktopManagedGatewayIds.mockResolvedValue(new Set());
-    mocks.isAgentSessionSyncSupportedForUser.mockResolvedValue(false);
   });
 
   it("stamps the current schema version on both upsert branches", async () => {
@@ -172,7 +166,6 @@ describe("health-check snapshot persist round trip (ISS-5868)", () => {
     vi.clearAllMocks();
     mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
     mocks.loadActiveDesktopManagedGatewayIds.mockResolvedValue(new Set());
-    mocks.isAgentSessionSyncSupportedForUser.mockResolvedValue(false);
   });
 
   /** Exactly what a gateway PUTs, before any validation. */
@@ -328,7 +321,6 @@ describe("persisted allRequiredPassed agrees with the gateway (ISS-5868)", () =>
     vi.clearAllMocks();
     mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
     mocks.loadActiveDesktopManagedGatewayIds.mockResolvedValue(new Set());
-    mocks.isAgentSessionSyncSupportedForUser.mockResolvedValue(false);
   });
 
   /** Required, not passed, and NOT determinable — never a proven failure. */
@@ -431,7 +423,6 @@ describe("stored result agrees with the stored column under version skew (ISS-58
     vi.clearAllMocks();
     mocks.isDesktopManagedPopEnforcementEnabled.mockResolvedValue(false);
     mocks.loadActiveDesktopManagedGatewayIds.mockResolvedValue(new Set());
-    mocks.isAgentSessionSyncSupportedForUser.mockResolvedValue(false);
   });
 
   /**

@@ -82,8 +82,6 @@ const branchViewLoadErrorDetailsSchema = z.object({
   producedByPlanTitle: z.unknown().optional(),
   projectId: z.unknown().optional(),
   projectName: z.unknown().optional(),
-  teamId: z.unknown().optional(),
-  teamName: z.unknown().optional(),
 });
 const nonEmptyStringSchema = z.string().min(1);
 /** Classify Branch View load failures into app-owned UI states. */
@@ -536,16 +534,6 @@ function parseBranchViewLoadDetails(
       "projectName",
       nonEmptyStringSchema,
       parsed.data.projectName
-    ),
-    ...parseOptionalDetail(
-      "teamId",
-      safeRouteSegmentSchema,
-      parsed.data.teamId
-    ),
-    ...parseOptionalDetail(
-      "teamName",
-      nonEmptyStringSchema,
-      parsed.data.teamName
     ),
   };
 }

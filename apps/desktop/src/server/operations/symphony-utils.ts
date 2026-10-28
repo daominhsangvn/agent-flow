@@ -26,6 +26,11 @@ import {
   type ClaudeCodeShellEnvProvider,
   getClaudeCodeShellEnv,
 } from "../otel/claude-code-env.js";
+import {
+  bashCommand,
+  killProcessTree,
+  toShellPath,
+} from "../platform-shell.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
 import { getShellEnv } from "../shell-path.js";
 import { pluginDirArgs } from "./bundled-plugins.js";
@@ -206,7 +211,7 @@ export async function runLoopsSetupScript(
   loopLog(loopId, `Running loops-setup.sh in ${worktreeDir}`);
   try {
     const env = await getShellEnv();
-    await execFileAsync("bash", [scriptPath], {
+    await execFileAsync(bashCommand(), [toShellPath(scriptPath)], {
       cwd: worktreeDir,
       timeout: 600_000, // 10 minutes — enough for dependency installs
       env,
@@ -906,6 +911,7 @@ async function runBootstrapProcess(
       {
         cwd: worktreeDir,
         detached: true,
+        windowsHide: true,
         env,
         stdio: ["ignore", "pipe", "pipe"],
       }
@@ -914,7 +920,7 @@ async function runBootstrapProcess(
     const timer = setTimeout(() => {
       if (child.pid) {
         try {
-          process.kill(-child.pid, "SIGKILL");
+          killProcessTree(child.pid, "SIGKILL");
         } catch (groupErr) {
           try {
             child.kill("SIGKILL");

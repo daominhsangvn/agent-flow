@@ -47,8 +47,23 @@ export function buildLoopGitEnv(
   input: LoopGitAccessInput
 ): Record<string, string> {
   const apiBaseUrl = input.apiBaseUrl.replace(TRAILING_SLASHES_RE, "");
+  return buildGitCredentialEnv({
+    credentialUrl: `${apiBaseUrl}/loops/${encodeURIComponent(input.loopId)}/git-credential`,
+    token: input.token,
+  });
+}
+
+/**
+ * Environment that lets git authenticate through any credential endpoint of
+ * the API: the helper posts git's credential description to `credentialUrl`
+ * with `token` as the bearer.
+ */
+export function buildGitCredentialEnv(input: {
+  credentialUrl: string;
+  token: string;
+}): Record<string, string> {
   return {
-    [LOOP_GIT_CREDENTIAL_URL_ENV]: `${apiBaseUrl}/loops/${encodeURIComponent(input.loopId)}/git-credential`,
+    [LOOP_GIT_CREDENTIAL_URL_ENV]: input.credentialUrl,
     [LOOP_GIT_CREDENTIAL_TOKEN_ENV]: input.token,
     // Never wait for a password on a terminal nobody is watching.
     GIT_TERMINAL_PROMPT: "0",
@@ -56,7 +71,7 @@ export function buildLoopGitEnv(
     GIT_ALLOW_PROTOCOL: "https:http",
     GIT_CONFIG_COUNT: "3",
     // An empty helper clears the ones configured on the machine (a keychain
-    // or credential manager), so only the loop's credential is used.
+    // or credential manager), so only the API's credential is used.
     GIT_CONFIG_KEY_0: "credential.helper",
     GIT_CONFIG_VALUE_0: "",
     GIT_CONFIG_KEY_1: "credential.helper",

@@ -11,27 +11,30 @@ import {
 } from "@repo/design-system/components/ui/card";
 import { Link } from "@repo/navigation/link";
 import { Check, Circle, Loader2Icon, SparklesIcon, X } from "lucide-react";
-import { useAgentOnboarding } from "@/hooks/queries/use-agent-onboarding";
+import {
+  AgentRunnerStatus,
+  useAgentOnboarding,
+} from "@/hooks/queries/use-agent-onboarding";
 import { useOrgSlug } from "@/hooks/use-org-slug";
-import { getGitHubConnectUrl } from "@/lib/integration-connect-urls";
+import { SettingsTab } from "../[orgSlug]/settings/settings-tabs";
 import { useOnboardingChecklist } from "./use-onboarding-checklist";
 
 export function AgentOnboardingCard() {
   const orgSlug = useOrgSlug();
   const onboarding = useAgentOnboarding();
   const checklist = useOnboardingChecklist();
-  const githubConnectUrl = getGitHubConnectUrl("install");
 
   if (!onboarding.shouldShow) {
     return null;
   }
 
   // ISS-5490: stand down while the setup checklist is up. The two cards look
-  // alike (dismiss X, circle/check rows), both ask for GitHub, and both ask for
-  // Desktop — off DIFFERENT signals, so a user with Desktop installed but closed
-  // saw a tick and an empty circle for the same fact, a few hundred pixels
-  // apart. The `web-onboarding-flow` prototype resolves this by not rendering
-  // this card at all next to the checklist; this matches that.
+  // alike (dismiss X, circle/check rows) and both ask for a runner — off
+  // DIFFERENT signals: the checklist ticks once any runner joins the org, this
+  // card only while one the viewer can use is online, so a stopped runner
+  // would get a tick and an empty circle a few hundred pixels apart. The
+  // `web-onboarding-flow` prototype resolves this by not rendering this card
+  // at all next to the checklist; this matches that.
   if (checklist.visible) {
     return null;
   }
@@ -45,8 +48,8 @@ export function AgentOnboardingCard() {
         </div>
         <CardDescription>
           Scan your repositories to generate domain-expert agents tailored to
-          your codebase. Agents run locally on your machine — your source code
-          stays private.
+          your codebase. Agents run on your runner — your source code stays on
+          your infrastructure.
         </CardDescription>
         <CardAction>
           <Button
@@ -64,17 +67,9 @@ export function AgentOnboardingCard() {
         <div className="space-y-1">
           <PrereqItem completed label="Account created" />
           <PrereqItem
-            completed={onboarding.hasGitHub}
-            href={onboarding.hasGitHub ? undefined : githubConnectUrl}
-            label={onboarding.hasGitHub ? "GitHub connected" : "Connect GitHub"}
-          />
-          <PrereqItem
-            completed={onboarding.hasElectron}
-            label={
-              onboarding.hasElectron
-                ? "Desktop app connected"
-                : "Install Desktop App"
-            }
+            completed={onboarding.runner === AgentRunnerStatus.Online}
+            href={`/${orgSlug}/settings?tab=${SettingsTab.Integrations}`}
+            label={RUNNER_PREREQ_LABELS[onboarding.runner]}
           />
         </div>
 
@@ -148,3 +143,10 @@ function PrereqItem({ label, completed, href }: PrereqItemProps) {
 
   return content;
 }
+
+/** The runner row, by where the user stands; Settings → Integrations lists runners and how to install one. */
+const RUNNER_PREREQ_LABELS: Record<AgentRunnerStatus, string> = {
+  [AgentRunnerStatus.Online]: "Runner online",
+  [AgentRunnerStatus.Offline]: "Start your runner",
+  [AgentRunnerStatus.None]: "Download and install a runner",
+};

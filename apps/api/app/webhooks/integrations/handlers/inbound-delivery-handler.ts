@@ -8,6 +8,7 @@ import {
   createProviderContext,
   type LoadedConnection,
 } from "@/lib/integrations/connection-service";
+import { createProviderHttp } from "@/lib/integrations/http";
 import type {
   InboundRequest,
   InboundVerification,
@@ -70,18 +71,18 @@ export function inboundIgnoredReason(
   return null;
 }
 
-/** The provider's verification with the connection's inbound secret. Never throws. */
-export function verifyInboundRequest(
+/** The provider's verification with the connection's inbound secret. Never rejects. */
+export async function verifyInboundRequest(
   connection: InboundConnection,
   request: InboundRequest
-): InboundVerification {
+): Promise<InboundVerification> {
   const verify = connection.provider.inbound?.verify;
   if (!verify) {
     return { ok: false, reason: InboundRejection.NoVerifier };
   }
   const { runtime } = connection;
   try {
-    return verify(request, {
+    return await verify(request, {
       connection: {
         id: runtime.id,
         provider: runtime.provider,
@@ -90,6 +91,8 @@ export function verifyInboundRequest(
         account: runtime.account,
       },
       inboundSecret: connection.inboundSecret,
+      http: createProviderHttp(),
+      now: () => new Date(),
     });
   } catch (error) {
     log.warn("[handleInboundDelivery] Verification threw", {

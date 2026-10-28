@@ -388,20 +388,6 @@ export const agentSessionExportSelect = {
   user: {
     select: {
       ...basicUserSelect.select,
-      teamMemberships: {
-        orderBy: {
-          team: {
-            name: "asc",
-          },
-        },
-        select: {
-          team: {
-            select: {
-              name: true,
-            },
-          },
-        },
-      },
     },
   },
   artifact: {
@@ -497,7 +483,7 @@ export type AgentSessionScope = {
   // `viewerScope=self` (the dashboard "Me" scope) is enforced server-side —
   // `buildWhere` pins `userId` to this value rather than trusting a client-sent
   // `userId`/`userIds` filter. Optional so internal callers that never request
-  // self scope (and the org/team paths) can omit it.
+  // self scope (and the org path) can omit it.
   viewerId?: string;
   // ISS-4556 / ISS-4559: the resolved `sessions-displayed-status-parity` flag for
   // this viewer, threaded from the route so `buildStatusFacetPredicate` can stay

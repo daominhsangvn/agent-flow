@@ -4,6 +4,7 @@ import {
   updateProjectProcessInputSchema,
 } from "@repo/api/src/types/project-process";
 import { NextResponse } from "next/server";
+import { computeTargetCapabilitiesRefreshService } from "@/app/compute-targets/capabilities-refresh-service";
 import { projectProcessService } from "@/app/projects/project-process-service";
 import { denyUnlessOrgAdmin } from "@/lib/auth/deny-unless-org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -68,6 +69,10 @@ export const PUT = withAnyAuth<ProjectProcessState, "/projects/[id]/process">(
       if (parseError || !body) {
         return parseError;
       }
+      const before = await projectProcessService.findCurrent(
+        auth.user.organizationId,
+        projectId
+      );
       const result = await projectProcessService.save(
         auth.user.organizationId,
         auth.user.id,
@@ -79,6 +84,12 @@ export const PUT = withAnyAuth<ProjectProcessState, "/projects/[id]/process">(
           status: result.error.status,
         });
       }
+      computeTargetCapabilitiesRefreshService.refreshAfterProcessSave(
+        auth.user.organizationId,
+        projectId,
+        before,
+        result.value
+      );
       return successResponse(result.value);
     } catch (error) {
       return errorResponse("Failed to save the project's process", error);

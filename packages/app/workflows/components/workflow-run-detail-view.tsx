@@ -9,10 +9,13 @@ import {
   type WorkflowActionRun,
   WorkflowActionRunStatus,
   WorkflowActionStage,
+  type WorkflowInstructionRunDetail,
   type WorkflowRunDetail,
   type WorkflowRunDocumentRef,
   type WorkflowRunError,
   type WorkflowRunLoopRef,
+  type WorkflowRunSourceClassification,
+  WorkflowRunSourceClassificationOrigin,
 } from "@repo/api/src/types/workflow";
 // Cross-slice: run documents route through the documents slice, loops render
 // with the loops slice badge, and providers/errors come from integrations.
@@ -30,6 +33,10 @@ import {
   formatDateTime,
   formatRelativeTime,
 } from "@repo/app/shared/lib/date-utils";
+import {
+  formatCostPrecise,
+  formatTokenCount,
+} from "@repo/app/shared/lib/format-utils";
 import {
   Alert,
   AlertDescription,
@@ -59,7 +66,6 @@ import {
   AlertCircleIcon,
   BanIcon,
   ExternalLinkIcon,
-  GitPullRequestIcon,
   HistoryIcon,
   Loader2Icon,
   RotateCcwIcon,
@@ -76,10 +82,15 @@ import { getActionLabel } from "../lib/workflow-catalog";
 import { describeWorkflowRunError } from "../lib/workflow-error-messages";
 import {
   WORKFLOW_ACTION_STAGE_LABELS,
+  WORKFLOW_INSTRUCTION_OPERATION_STATUS_LABELS,
   WORKFLOW_RUN_EVENT_LABELS,
 } from "../lib/workflow-labels";
 import { WorkflowRunProcessCard } from "./workflow-run-process-card";
+import { WorkflowRunPullRequests } from "./workflow-run-pull-requests";
+import { WorkflowRunRetryAction } from "./workflow-run-retry-action";
+import { WorkflowRunSessionsCard } from "./workflow-run-sessions-card";
 import { WorkflowRunTimeline } from "./workflow-run-timeline";
+import { WorkflowRunToolCallsCard } from "./workflow-run-tool-calls-card";
 import {
   WorkflowActionRunStatusBadge,
   WorkflowRunStatusBadge,
@@ -92,10 +103,11 @@ export type WorkflowRunDetailViewProps = {
 };
 
 /**
- * One workflow run: its progress (received, pre actions, importing, planning,
- * implementing), the source item, the imported Issue and plan, the loops the
- * agent team ran, the pull request, and every pre and post action run with
- * its delivery status. Polls while the run is still moving.
+ * One workflow run: its progress (received, importing, triggered actions,
+ * planning, implementing), the source item, the imported Issue and plan, the
+ * loops the agent team ran and their sessions, the pull request, and every pre
+ * and post action run with its delivery status. Polls while the run is still
+ * moving.
  */
 export function WorkflowRunDetailView({
   runId,
@@ -189,6 +201,9 @@ function RunDetailContent({
             Cancel run
           </Button>
         ) : null}
+        {isAdmin && run.retryStep ? (
+          <WorkflowRunRetryAction runId={run.id} step={run.retryStep} />
+        ) : null}
       </div>
 
       <WorkflowRunTimeline run={run} />
@@ -205,11 +220,22 @@ function RunDetailContent({
         run={run}
       />
       <RunLoopsCard loops={run.loops} stepNames={stepNames(run)} />
+      <WorkflowRunSessionsCard
+        commandLabel={getLoopCommandLabel}
+        sessions={run.sessions}
+        stepName={(stepId) => stepNames(run).get(stepId) ?? stepId}
+      />
       <ActionRunsCard
         actionRuns={run.actionRuns}
         getLabel={(type) => getActionLabel(providers.data, type)}
         isAdmin={isAdmin}
         runId={run.id}
+      />
+      <WorkflowRunToolCallsCard
+        isAdmin={isAdmin}
+        runId={run.id}
+        stepName={(stepId) => stepNames(run).get(stepId) ?? stepId}
+        toolCalls={run.toolCalls}
       />
 
       <ConfirmationDialog
@@ -279,6 +305,11 @@ function RunLinksCard({
               href={featureRoute ? buildOrgPath(featureRoute) : null}
               pendingText="Not imported yet"
             />
+            {run.sourceClassification ? (
+              <SourceClassificationNote
+                classification={run.sourceClassification}
+              />
+            ) : null}
           </dd>
           <dt className="text-muted-foreground">Implementation plan</dt>
           <dd>
@@ -305,22 +336,14 @@ function RunLinksCard({
               </Fragment>
             );
           })}
-          <dt className="text-muted-foreground">Pull request</dt>
-          <dd>
-            {run.prUrl ? (
-              <a
-                className="inline-flex items-center gap-1 text-[var(--link)] hover:underline"
-                href={run.prUrl}
-                rel="noreferrer noopener"
-                target="_blank"
-              >
-                <GitPullRequestIcon className="size-3.5" />
-                {run.prUrl}
-              </a>
-            ) : (
-              <span className="text-muted-foreground">None yet</span>
-            )}
-            {run.branchName ? (
+          <dt className="text-muted-foreground">Pull requests</dt>
+          <dd data-testid="run-pull-requests">
+            <WorkflowRunPullRequests
+              emptyText="None yet"
+              pullRequests={run.pullRequests}
+              variant="detailed"
+            />
+            {run.pullRequests.length === 0 && run.branchName ? (
               <span className="ml-2 font-mono text-muted-foreground text-xs">
                 {run.branchName}
               </span>
@@ -492,7 +515,7 @@ function ActionRunsCard({
       <CardContent>
         {orderedRuns.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            No pre or post action has run for this run yet.
+            No action has run for this run yet.
           </p>
         ) : (
           <div className="overflow-x-auto rounded-md border">
@@ -605,6 +628,53 @@ function ActionRunRow({
 function ActionRunResult({
   actionRun,
 }: Readonly<{ actionRun: WorkflowActionRun }>) {
+  return (
+    <>
+      <ActionRunOutcome actionRun={actionRun} />
+      {actionRun.instruction ? (
+        <InstructionDetail detail={actionRun.instruction} />
+      ) : null}
+    </>
+  );
+}
+
+/** What an instruction's agent did: its note, each tool call, its usage. */
+function InstructionDetail({
+  detail,
+}: Readonly<{ detail: WorkflowInstructionRunDetail }>) {
+  const operations = detail.operations.map((operation, position) => ({
+    ...operation,
+    position,
+  }));
+  return (
+    <div className="mt-1 space-y-1 text-muted-foreground">
+      {detail.note ? <p className="break-words">{detail.note}</p> : null}
+      {operations.length > 0 ? (
+        <ul className="space-y-0.5">
+          {operations.map((operation) => (
+            <li className="break-words" key={operation.position}>
+              <span className="font-mono">{operation.type}</span>{" "}
+              {operation.connection ? (
+                <>
+                  on <span className="font-mono">
+                    {operation.connection}
+                  </span>{" "}
+                </>
+              ) : null}
+              {WORKFLOW_INSTRUCTION_OPERATION_STATUS_LABELS[operation.status]}
+              {operation.error ? `: ${operation.error}` : ""}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <p className="tabular-nums">{describeInstructionUsage(detail)}</p>
+    </div>
+  );
+}
+
+function ActionRunOutcome({
+  actionRun,
+}: Readonly<{ actionRun: WorkflowActionRun }>) {
   if (actionRun.lastError) {
     return (
       <span className="break-words text-destructive">
@@ -682,6 +752,18 @@ function getLoopCommandLabel(command: string): string {
   return parsed.success ? loopCommandLabels[parsed.data] : command;
 }
 
+/** Tokens and cost of an instruction's agent; an unknown cost says so. */
+function describeInstructionUsage(
+  detail: WorkflowInstructionRunDetail
+): string {
+  const tokens = `${formatTokenCount(detail.inputTokens)} in · ${formatTokenCount(detail.outputTokens)} out`;
+  const cost =
+    detail.costUsd === null
+      ? "cost unknown"
+      : formatCostPrecise(detail.costUsd);
+  return `${tokens} · ${cost}`;
+}
+
 function isHttpUrl(value: string): boolean {
   return httpUrlSchema.safeParse(value).success;
 }
@@ -692,3 +774,21 @@ const RETRYABLE_ACTION_RUN_STATUSES: readonly WorkflowActionRunStatus[] = [
   WorkflowActionRunStatus.Failed,
   WorkflowActionRunStatus.Skipped,
 ];
+
+/** Why the workflow's PRD instruction made the item a PRD or an Issue. */
+function SourceClassificationNote({
+  classification,
+}: Readonly<{ classification: WorkflowRunSourceClassification }>) {
+  const lead =
+    classification.origin === WorkflowRunSourceClassificationOrigin.Fallback
+      ? "The PRD instruction could not decide, so this is an Issue:"
+      : "PRD instruction:";
+  return (
+    <p
+      className="mt-1 text-muted-foreground text-xs"
+      data-testid="run-source-classification"
+    >
+      {lead} {classification.reason}
+    </p>
+  );
+}

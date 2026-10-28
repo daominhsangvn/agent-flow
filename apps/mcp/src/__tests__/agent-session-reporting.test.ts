@@ -20,15 +20,13 @@ describe("buildAgentSessionReportingQuery", () => {
     });
   });
 
-  it("maps teamId for team-scoped queries", () => {
+  it("maps viewerScope for scoped queries", () => {
     expect(
       buildAgentSessionReportingQuery({
-        viewerScope: "team",
-        teamId: "11111111-1111-1111-1111-111111111111",
+        viewerScope: "organization",
       })
     ).toEqual({
-      viewerScope: "team",
-      teamId: "11111111-1111-1111-1111-111111111111",
+      viewerScope: "organization",
       quality: "substantive",
     });
   });

@@ -8,6 +8,11 @@ export const WorkflowAgentMode = {
   Plan: "plan",
   /** Generate the plan, approve it automatically and implement it (opens a PR). */
   PlanAndExecute: "plan_and_execute",
+  /**
+   * Start no run: hand each request to the project's orchestrator
+   * (docs/orchestrator.md), which chooses the runners' commands.
+   */
+  Orchestrated: "orchestrated",
 } as const;
 export type WorkflowAgentMode =
   (typeof WorkflowAgentMode)[keyof typeof WorkflowAgentMode];

@@ -30,10 +30,7 @@ export function hasUnsupportedCloudFilter(
   request: SharedBranchesQuery
 ): boolean {
   return Boolean(
-    request.userId ||
-      request.teamId ||
-      request.projectId ||
-      request.contributorUserId
+    request.userId || request.projectId || request.contributorUserId
   );
 }
 

@@ -52,35 +52,12 @@ describe("the shared analytics page header", () => {
     ).toBeInTheDocument();
   });
 
-  it("offers exactly the scopes these two reads can honor, in canonical order", () => {
-    // Derived, not re-listed: the order is the app's order by construction, so
-    // the two screens cannot present it differently from each other.
-    expect(SESSION_ANALYTICS_SCOPES).toEqual(
-      INSIGHTS_SCOPE_OPTIONS.filter((scope) => scope !== InsightsScope.Team)
-    );
-    // Me before Organization, matching every other Insights scope control.
-    expect(SESSION_ANALYTICS_SCOPES[0]).toBe(InsightsScope.Me);
-  });
-
-  it("excludes Team, which neither route can honor", () => {
-    // A styled control that silently ignores the choice is worse than not
-    // offering it: neither route takes a team id.
-    expect(SESSION_ANALYTICS_SCOPES).not.toContain(InsightsScope.Team);
-  });
-
-  it("fails loudly if a scope is added upstream without a decision here", () => {
-    // The drift this component is most exposed to. If `INSIGHTS_SCOPE_OPTIONS`
-    // grows, the new scope lands in these dropdowns automatically — which is
-    // only correct if the routes can actually honor it. This pins the current
-    // answer so the addition has to be looked at.
-    expect(INSIGHTS_SCOPE_OPTIONS).toEqual([
+  it("offers every Insights scope, Me before Organization", () => {
+    expect(SESSION_ANALYTICS_SCOPES).toEqual([
       InsightsScope.Me,
       InsightsScope.Org,
-      InsightsScope.Team,
     ]);
-    expect(SESSION_ANALYTICS_SCOPES).toHaveLength(
-      INSIGHTS_SCOPE_OPTIONS.length - 1
-    );
+    expect(SESSION_ANALYTICS_SCOPES).toEqual(INSIGHTS_SCOPE_OPTIONS);
   });
 
   it("defaults to the organization view over the 30-day window", () => {

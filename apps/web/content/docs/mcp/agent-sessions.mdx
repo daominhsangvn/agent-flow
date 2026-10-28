@@ -7,7 +7,7 @@ description: 'Read agent-session usage and analytics programmatically'
 
 Agent-session reporting tools expose the same usage and analytics data that powers the AgentFlow dashboard, so AI clients can pull cost, token, and activity metrics programmatically.
 
-These tools are **read-only** and operate across the sessions you are authorized to see. `list-agent-sessions` enumerates individual session rows, while `get-agent-session-usage` and `get-agent-session-analytics` return aggregated reporting data. The API enforces viewer scoping (self / team / organization) server-side, so you only ever receive data your account is permitted to view.
+These tools are **read-only** and operate across the sessions you are authorized to see. `list-agent-sessions` enumerates individual session rows, while `get-agent-session-usage` and `get-agent-session-analytics` return aggregated reporting data. The API enforces viewer scoping (self / organization) server-side, so you only ever receive data your account is permitted to view.
 
 <Callout>
   Agent-session tools also require monitoring access. If monitoring is disabled for your account or organization, the API returns 403 even when the MCP token has read scope.
@@ -24,13 +24,8 @@ startDate?: string     // ISO 8601 — analytics: sessions STARTED on/after; usa
 endDate?: string       // ISO 8601 — analytics: sessions STARTED on/before; usage: sessions ACTIVE on/before (e.g. 2026-07-31)
 harness?: string       // Single agent harness (e.g. "claude-code", "codex")
 quality?: string       // "substantive" | "idle" | "all" — defaults to "substantive" (excludes idle 0-turn/0-token/0-tool sessions)
-viewerScope?: string   // "self" | "organization" | "team"
-teamId?: string        // UUID — required when viewerScope is "team", must be omitted otherwise
+viewerScope?: string   // "self" | "organization"
 ```
-
-<Callout>
-  `teamId` is coupled to `viewerScope`: it is **required** when `viewerScope` is `"team"` (aggregating over that team), and **must be omitted** for any other scope. Passing `viewerScope: "team"` without a `teamId`, or a `teamId` with a non-team scope, returns a server validation error.
-</Callout>
 
 ---
 
@@ -51,8 +46,7 @@ list-agent-sessions(
   status?: string,       // "active" | "waiting" | "inactive" | "error" | "stale" | "unknown" — "inactive" covers finished (non-failed) runs
   userId?: string,       // UUID — filter to a single user's sessions
   quality?: string,      // "substantive" | "idle" | "all" — defaults to "substantive" (hides idle 0-turn/0-token/0-tool sessions)
-  viewerScope?: string,  // "self" | "organization" | "team"
-  teamId?: string,       // UUID — required when viewerScope is "team", omit otherwise
+  viewerScope?: string,  // "self" | "organization"
   limit?: number,        // Maximum sessions to return
   offset?: number        // Starting offset for pagination (default 0)
 )
@@ -78,7 +72,6 @@ get-agent-session-usage(
   harness?: string,
   quality?: string,      // "substantive" | "idle" | "all" — defaults to "substantive" (excludes idle 0-turn/0-token/0-tool sessions)
   viewerScope?: string,
-  teamId?: string        // UUID — required when viewerScope is "team", omit otherwise
 )
 ```
 
@@ -96,7 +89,6 @@ get-agent-session-analytics(
   harness?: string,
   quality?: string,      // "substantive" | "idle" | "all" — defaults to "substantive" (excludes idle 0-turn/0-token/0-tool sessions)
   viewerScope?: string,
-  teamId?: string        // UUID — required when viewerScope is "team", omit otherwise
 )
 ```
 
@@ -236,11 +228,8 @@ get-agent-session-usage(
 # Tool/agent-type analytics for a single harness
 get-agent-session-analytics(harness: "claude-code")
 
-# Usage for a single team (viewerScope "team" requires teamId)
-get-agent-session-usage(
-  viewerScope: "team",
-  teamId: "00000000-0000-0000-0000-000000000000"
-)
+# Usage for your own sessions only
+get-agent-session-usage(viewerScope: "self")
 
 # Pull one run's transcript files (pass the row `id`, not the SES-* slug)
 list-agent-sessions(limit: 1)

@@ -23,8 +23,16 @@ import { BranchParticipationKind } from "@repo/api/src/types/branch";
 import {
   ArtifactRefRelation,
   ArtifactRefTargetKind,
+  PR_INT_MAX,
 } from "@repo/api/src/types/session-artifact-link";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { DIFF_STATS_TOOL_NAMES } from "@repo/lib/harness/claude/diff-stats-tool-handlers";
+import {
+  accumulateSidecarDiffStatsEntry,
+  createSidecarDiffStatsPass,
+  type SidecarDiffStatsPass,
+} from "../main/collectors/claude/sidecar-diff-stats.js";
+import { UNKNOWN_COST_BASIS } from "../main/cost/token-usage.js";
 
 /** Most recent tool events kept per session (the cloud stores metadata only). */
 export const SESSION_EVENTS_MAX = 300;
@@ -37,10 +45,23 @@ const SKILL_TOOL = "Skill";
 const SLASH_COMMAND_TOOL = "SlashCommand";
 const DEFAULT_SUBAGENT_TYPE = "general-purpose";
 const COMPONENT_KEY_SEPARATOR = "\u0000";
-const UNKNOWN_COST_BASIS = "unknown";
 /** The loop commits its work on the branch (the finalizer pushes it). */
 const WORK_BRANCH_METHOD = "git_commit";
 const COMMAND_NAME_RE = /<command-name>\s*(\/[^<\s]+)\s*<\/command-name>/g;
+/**
+ * Directories beside the code that a loop never commits (the finalizer resets
+ * them, execute-push-finalization.ts): AgentFlow's work files (plan, log,
+ * release notes) and Claude's own. Editing them is not a code change.
+ */
+const UNCOMMITTED_DIRS: ReadonlySet<string> = new Set([
+  ".agentflow-ai",
+  ".claude",
+]);
+/**
+ * `task_type` of a background task that is not a subagent: a shell command run
+ * in the background reports `task_started` too (its description is the command).
+ */
+const BACKGROUND_SHELL_TASK_TYPE = "local_bash";
 
 export const StreamAgentStatus = {
   Running: "running",
@@ -100,17 +121,23 @@ export type LoopSessionStream = {
   /** tool_use id -> component map key, to count failed invocations. */
   componentByToolUse: Map<string, string>;
   /**
-   * Totals per model from the `result` events of the Claude sessions that
-   * ended (subagents included). Assistant events carry the input side only,
-   * so ended sessions count these instead.
+   * The latest `result` of each Claude session per model (subagents
+   * included), keyed by Claude session id. A session writes a `result` each
+   * time its main agent stops (while background subagents still run, and
+   * again once they report back), every one CUMULATIVE for the session, so
+   * the latest replaces the earlier ones. Assistant events carry the input
+   * side only, so sessions with a result count these instead.
    */
-  resultUsage: Map<string, TokenTotals> | null;
+  resultUsage: Map<string, Map<string, ResultModelUsage>>;
   /** Assistant message ids since the last `result`: the session in flight. */
   openMessageIds: Set<string>;
-  costUsd: number | null;
-  /** A `result` without a known cost was seen; the loop cost is unknown. */
-  costUnknown: boolean;
   resultIsError: boolean | null;
+  /**
+   * The lines the agents (the main one and its subagents) changed with Edit,
+   * Write and MultiEdit, by the desktop's transcript formula. Edits of
+   * UNCOMMITTED_DIRS are left out.
+   */
+  diffStats: SidecarDiffStatsPass;
 };
 
 export function createLoopSessionStream(): LoopSessionStream {
@@ -129,11 +156,10 @@ export function createLoopSessionStream(): LoopSessionStream {
     subagents: new Map(),
     components: new Map(),
     componentByToolUse: new Map(),
-    resultUsage: null,
+    resultUsage: new Map(),
     openMessageIds: new Set(),
-    costUsd: null,
-    costUnknown: false,
     resultIsError: null,
+    diffStats: createSidecarDiffStatsPass(new Set()),
   };
 }
 
@@ -152,6 +178,7 @@ type StreamLine = {
     content?: unknown;
   };
   task_id?: unknown;
+  task_type?: unknown;
   description?: unknown;
   subagent_type?: unknown;
   status?: unknown;
@@ -189,11 +216,13 @@ export function foldStreamLine(
   }
   if (line.type === "assistant") {
     foldAssistantLine(stream, line, at);
+    foldDiffStats(stream, line);
     return;
   }
   if (line.type === "user") {
     foldToolResults(stream, line);
     foldPromptCommands(stream, line, at);
+    foldDiffStats(stream, line);
     return;
   }
   if (line.type === "result") {
@@ -202,7 +231,9 @@ export function foldStreamLine(
 }
 
 /**
- * The final totals. The CLI prices models it does not know at a guessed rate
+ * The Claude session's totals so far, replacing its earlier `result` (see
+ * `resultUsage`); a `result` without `session_id` belongs to the latest
+ * `init`. The CLI prices models it does not know at a guessed rate
  * (`costBasis: "unknown"`, e.g. an Anthropic-compatible provider such as
  * DeepSeek); such a cost is left out rather than reported as real.
  */
@@ -213,28 +244,23 @@ function foldResultLine(stream: LoopSessionStream, line: StreamLine): void {
     return;
   }
   stream.openMessageIds.clear();
-  const totals = stream.resultUsage ?? new Map<string, TokenTotals>();
+  const models = new Map<string, ResultModelUsage>();
   for (const [model, usage] of entries) {
-    const total = totals.get(model) ?? emptyTotals(model);
-    total.inputTokens += maxOf(0, usage.inputTokens);
-    total.outputTokens += maxOf(0, usage.outputTokens);
-    total.cacheReadTokens += maxOf(0, usage.cacheReadInputTokens);
-    total.cacheWriteTokens += maxOf(0, usage.cacheCreationInputTokens);
-    totals.set(model, total);
+    models.set(model, {
+      model,
+      inputTokens: maxOf(0, usage.inputTokens),
+      outputTokens: maxOf(0, usage.outputTokens),
+      cacheReadTokens: maxOf(0, usage.cacheReadInputTokens),
+      cacheWriteTokens: maxOf(0, usage.cacheCreationInputTokens),
+      costUsd:
+        usage.costBasis === UNKNOWN_COST_BASIS ? null : asNumber(usage.costUSD),
+    });
   }
-  stream.resultUsage = totals;
-  const costs = entries.map(([, usage]) =>
-    usage.costBasis === UNKNOWN_COST_BASIS ? null : asNumber(usage.costUSD)
-  );
-  if (costs.some((cost) => cost === null)) {
-    stream.costUnknown = true;
-  }
-  stream.costUsd = stream.costUnknown
-    ? null
-    : costs.reduce<number>(
-        (sum, cost) => sum + (cost ?? 0),
-        stream.costUsd ?? 0
-      );
+  const harnessSessionId =
+    asString(line.session_id) ??
+    stream.harnessSessionIds.at(-1) ??
+    `result-${stream.resultUsage.size}`;
+  stream.resultUsage.set(harnessSessionId, models);
 }
 
 /** Status of the loop as an agent session. */
@@ -262,6 +288,11 @@ export type LoopSessionContext = {
   baseBranch: string | null;
   /** The branch the loop works on, read from its worktree. */
   workBranch: string | null;
+  /**
+   * The work branch's diff against its base, for a loop that committed to it
+   * (headless-branch-diff.ts); null or omitted otherwise.
+   */
+  branchDiffStats?: SyncedAgentSession["branchDiffStats"];
   runnerName: string;
   command: string;
 };
@@ -279,6 +310,7 @@ export function buildSyncedSession(
   const updatedAt = latest(context.updatedAt, stream.lastEventAt);
   const usage = tokenUsageByModel(stream);
   const totals = sumUsage(usage);
+  const costUsd = sessionCostUsd(stream);
   const runtimeMs = runtimeOf(context.startedAt, context.endedAt ?? updatedAt);
   return {
     externalSessionId: sessionId,
@@ -308,6 +340,10 @@ export function buildSyncedSession(
       baseBranch: context.baseBranch,
     },
     turns: stream.usageByMessage.size,
+    ...transcriptDiffStats(stream),
+    ...(context.branchDiffStats
+      ? { branchDiffStats: context.branchDiffStats }
+      : {}),
     branch: context.workBranch ?? context.baseBranch,
     // A loop runs unattended: no human turn steers it.
     steeringEpisodes: 0,
@@ -327,7 +363,7 @@ export function buildSyncedSession(
       outputTokens: totals.outputTokens,
       cacheReadTokens: totals.cacheReadTokens,
       cacheWriteTokens: totals.cacheWriteTokens,
-      ...(stream.costUsd === null ? {} : { estimatedCostUsd: stream.costUsd }),
+      ...(costUsd === null ? {} : { estimatedCostUsd: costUsd }),
       runtimeMs,
     },
     components: componentUsage(stream),
@@ -353,7 +389,7 @@ function foldSystemLine(
     return;
   }
   const taskId = asString(line.task_id);
-  if (!taskId) {
+  if (!taskId || line.task_type === BACKGROUND_SHELL_TASK_TYPE) {
     return;
   }
   if (line.subtype === "task_started") {
@@ -597,30 +633,44 @@ function finishedAgentStatus(failed: boolean): StreamAgentStatus {
   return failed ? StreamAgentStatus.Failed : StreamAgentStatus.Completed;
 }
 
+/**
+ * Tokens per model: the latest `result` of every Claude session (see
+ * `resultUsage`), plus the assistant events of the session still in flight.
+ * A model's cost sums its results; it is left out when one of them did not
+ * know the price, and the session in flight adds tokens only (its cost
+ * arrives with its `result`).
+ */
 function tokenUsageByModel(
   stream: LoopSessionStream
 ): SyncedAgentSessionTokenUsage[] {
-  const byModel = new Map<string, SyncedAgentSessionTokenUsage>();
-  for (const usage of stream.resultUsage?.values() ?? []) {
-    byModel.set(usage.model, { ...usage });
+  const byModel = new Map<string, TokenTotals>();
+  const costByModel = new Map<string, number | null>();
+  for (const models of stream.resultUsage.values()) {
+    for (const usage of models.values()) {
+      addTokens(byModel, usage);
+      const cost = costByModel.has(usage.model)
+        ? (costByModel.get(usage.model) ?? null)
+        : 0;
+      costByModel.set(usage.model, addKnownCost(cost, usage.costUsd));
+    }
   }
   // The Claude session in flight has no result yet: its assistant events
   // stand in (every message, when no session has ended).
-  const open = stream.resultUsage
-    ? [...stream.openMessageIds].map((id) => stream.usageByMessage.get(id))
-    : [...stream.usageByMessage.values()];
+  const open =
+    stream.resultUsage.size > 0
+      ? [...stream.openMessageIds].map((id) => stream.usageByMessage.get(id))
+      : [...stream.usageByMessage.values()];
   for (const usage of open) {
-    if (!usage) {
-      continue;
+    if (usage) {
+      addTokens(byModel, usage);
     }
-    const total = byModel.get(usage.model) ?? emptyTotals(usage.model);
-    total.inputTokens += usage.inputTokens;
-    total.outputTokens += usage.outputTokens;
-    total.cacheReadTokens += usage.cacheReadTokens;
-    total.cacheWriteTokens += usage.cacheWriteTokens;
-    byModel.set(usage.model, total);
   }
-  return [...byModel.values()];
+  return [...byModel.values()].map((usage) => {
+    const cost = costByModel.get(usage.model);
+    return cost === undefined || cost === null
+      ? usage
+      : { ...usage, estimatedCostUsd: cost };
+  });
 }
 
 function sumUsage(usage: SyncedAgentSessionTokenUsage[]): TokenTotals {
@@ -748,5 +798,84 @@ function branchRefs(
         observedAt: context.startedAt,
       },
     ],
+  };
+}
+
+/** The session's cost: its results summed; null if none, or one was unpriced. */
+function sessionCostUsd(stream: LoopSessionStream): number | null {
+  let total: number | null = null;
+  for (const models of stream.resultUsage.values()) {
+    for (const usage of models.values()) {
+      if (usage.costUsd === null) {
+        return null;
+      }
+      total = (total ?? 0) + usage.costUsd;
+    }
+  }
+  return total;
+}
+
+function addTokens(
+  byModel: Map<string, TokenTotals>,
+  usage: TokenTotals
+): void {
+  const total = byModel.get(usage.model) ?? emptyTotals(usage.model);
+  total.inputTokens += usage.inputTokens;
+  total.outputTokens += usage.outputTokens;
+  total.cacheReadTokens += usage.cacheReadTokens;
+  total.cacheWriteTokens += usage.cacheWriteTokens;
+  byModel.set(usage.model, total);
+}
+
+function addKnownCost(
+  total: number | null,
+  cost: number | null
+): number | null {
+  return total === null || cost === null ? null : total + cost;
+}
+
+/** One model of a `result`; its cost is null when the CLI did not know it. */
+type ResultModelUsage = TokenTotals & { costUsd: number | null };
+
+/**
+ * Folds the edits of one line (tool uses, and Read results for a later Write
+ * to diff against) into the session's diff stats.
+ */
+function foldDiffStats(stream: LoopSessionStream, line: StreamLine): void {
+  const blocks = contentBlocks(line.message?.content);
+  if (blocks.length === 0) {
+    return;
+  }
+  accumulateSidecarDiffStatsEntry(stream.diffStats, {
+    message: { content: blocks.filter((block) => !isUncommittedEdit(block)) },
+  });
+}
+
+function isUncommittedEdit(block: ContentBlock): boolean {
+  if (
+    block.type !== "tool_use" ||
+    !DIFF_STATS_TOOL_NAMES.has(asString(block.name) ?? "")
+  ) {
+    return false;
+  }
+  const segments = asString(block.input?.file_path)?.split("/") ?? [];
+  return segments.some((segment) => UNCOMMITTED_DIRS.has(segment));
+}
+
+/**
+ * The session's own edits. None when it edited no file: like the desktop, a
+ * session without edits leaves the lines unknown rather than zero.
+ */
+function transcriptDiffStats(
+  stream: LoopSessionStream
+): Pick<SyncedAgentSession, "linesAdded" | "linesRemoved" | "filesChanged"> {
+  const { acc } = stream.diffStats;
+  if (acc.diffFiles.size === 0) {
+    return {};
+  }
+  return {
+    linesAdded: Math.min(acc.totalAdded, PR_INT_MAX),
+    linesRemoved: Math.min(acc.totalRemoved, PR_INT_MAX),
+    filesChanged: Math.min(acc.diffFiles.size, PR_INT_MAX),
   };
 }

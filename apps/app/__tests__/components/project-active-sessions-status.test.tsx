@@ -25,7 +25,7 @@ vi.mock("@repo/navigation/link", () => ({
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
 import { PROJECT_ACTIVE_SESSIONS_DATE_RANGE } from "@repo/app/agents/lib/project-active-sessions";
 import { SESSION_DATE_RANGE_PARAM } from "@repo/app/agents/lib/session-date-range-param";
-import { ProjectActiveSessionsStatus } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/project-active-sessions-status";
+import { ProjectActiveSessionsStatus } from "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/project-active-sessions-status";
 
 const ORG_SLUG = "agentflow-ai";
 const PROJECT_ID = "019f8008-1969-74f9-b056-99c13cca9a07";

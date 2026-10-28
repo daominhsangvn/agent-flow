@@ -277,7 +277,6 @@ describe("BranchViewContainer comment diff navigation", () => {
           producedByPlanSlug: "PLN-741",
           featureSlug: "feature-1",
           projectId: "project-1",
-          teamId: "team-1",
         },
       }),
       isLoading: false,
@@ -299,7 +298,7 @@ describe("BranchViewContainer comment diff navigation", () => {
     ).toHaveAttribute("href", "/acme/issues/feature-1");
     expect(
       screen.getByRole("link", { name: BACK_TO_PROJECT_NAME })
-    ).toHaveAttribute("href", "/acme/teams/team-1/projects/project-1");
+    ).toHaveAttribute("href", "/acme/projects/project-1");
   });
 
   test.each([

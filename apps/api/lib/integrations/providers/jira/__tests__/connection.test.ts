@@ -14,6 +14,7 @@ import {
   BOT_DC_NAME,
   BOT_EMAIL,
   CLOUD_SITE_URL,
+  cloudConfig,
   DC_SITE_URL,
   dataCenterConfig,
   jsonResponse,
@@ -21,6 +22,8 @@ import {
   networkFailure,
   routedHttp,
 } from "./jira.test-helpers";
+
+const CLOUD_ID = "35273b54-3f06-40d2-880f-dd28cf8daafa";
 
 describe("jiraConnectionConfigSchema", () => {
   it("defaults to Cloud and normalizes the site URL to its origin", () => {
@@ -47,6 +50,27 @@ describe("jiraConnectionConfigSchema", () => {
       siteUrl: DC_SITE_URL,
       email: null,
     });
+  });
+
+  it("keeps a valid cloud id on Cloud only", () => {
+    const cloudId = "35273B54-3F06-40D2-880F-DD28CF8DAAFA";
+    expect(
+      jiraConnectionConfigSchema.parse({ ...cloudConfigInput(), cloudId })
+        .cloudId
+    ).toBe(cloudId.toLowerCase());
+    expect(
+      jiraConnectionConfigSchema.parse({
+        deployment: JiraDeployment.DataCenter,
+        siteUrl: DC_SITE_URL,
+        cloudId,
+      })
+    ).not.toHaveProperty("cloudId");
+    expect(
+      jiraConnectionConfigSchema.safeParse({
+        ...cloudConfigInput(),
+        cloudId: "../../evil",
+      }).success
+    ).toBe(false);
   });
 
   it("is idempotent on a stored config", () => {
@@ -213,6 +237,107 @@ describe("validateJiraConnection", () => {
     expect(JSON.stringify(result)).not.toContain(API_TOKEN);
   });
 
+  it("falls back to the Atlassian API gateway for an API token with scopes", async () => {
+    const fake = routedHttp([
+      {
+        method: HttpMethod.Get,
+        path: "/rest/api/3/myself",
+        respond: (request) =>
+          request.url.startsWith(CLOUD_SITE_URL)
+            ? jsonResponse(401, { errorMessages: ["Unauthorized"] })
+            : jsonResponse(200, CLOUD_MYSELF),
+      },
+      {
+        method: HttpMethod.Get,
+        path: "/_edge/tenant_info",
+        respond: jsonResponse(200, { cloudId: CLOUD_ID.toUpperCase() }),
+      },
+      {
+        method: HttpMethod.Get,
+        path: `/ex/jira/${CLOUD_ID}/rest/api/3/myself`,
+        respond: jsonResponse(200, CLOUD_MYSELF),
+      },
+    ]);
+    const ctx = makeJiraContext({ http: fake.http, account: null });
+
+    const result = await validateJiraConnection(
+      ctx,
+      ValidateConnectionReason.Save
+    );
+
+    expect(result.ok && result.account?.externalAccountId).toBe(BOT_ACCOUNT_ID);
+    expect(result.ok && result.config).toEqual({
+      ...ctx.connection.config,
+      cloudId: CLOUD_ID,
+    });
+    expect(fake.requests.map((request) => request.url)).toEqual([
+      `${CLOUD_SITE_URL}/rest/api/3/myself`,
+      `${CLOUD_SITE_URL}/_edge/tenant_info`,
+      `https://api.atlassian.com/ex/jira/${CLOUD_ID}/rest/api/3/myself`,
+    ]);
+    // The site's tenant info is public: the token is never sent there.
+    expect(fake.requests[1]?.headers?.authorization).toBeUndefined();
+    expect(fake.requests[2]?.headers?.authorization).toBe(
+      `Basic ${Buffer.from(`${BOT_EMAIL}:${API_TOKEN}`).toString("base64")}`
+    );
+  });
+
+  it("re-detects the gateway instead of trusting a submitted cloud id", async () => {
+    const fake = routedHttp([
+      {
+        method: HttpMethod.Get,
+        path: "/rest/api/3/myself",
+        respond: jsonResponse(200, CLOUD_MYSELF),
+      },
+    ]);
+    const ctx = makeJiraContext({
+      http: fake.http,
+      config: { ...cloudConfig(), cloudId: CLOUD_ID },
+      account: null,
+    });
+
+    const result = await validateJiraConnection(
+      ctx,
+      ValidateConnectionReason.Save
+    );
+
+    expect(result.ok && result.config).toEqual(cloudConfig());
+    expect(fake.requests[0]?.url).toBe(`${CLOUD_SITE_URL}/rest/api/3/myself`);
+  });
+
+  it("keeps the credentials message when the gateway rejects the token too", async () => {
+    const fake = routedHttp([
+      {
+        method: HttpMethod.Get,
+        path: "/rest/api/3/myself",
+        respond: jsonResponse(401, {}),
+      },
+      {
+        method: HttpMethod.Get,
+        path: "/_edge/tenant_info",
+        respond: jsonResponse(200, { cloudId: CLOUD_ID }),
+      },
+      {
+        method: HttpMethod.Get,
+        path: `/ex/jira/${CLOUD_ID}/rest/api/3/myself`,
+        respond: jsonResponse(401, {
+          code: 401,
+          message: "Unauthorized; scope does not match",
+        }),
+      },
+    ]);
+
+    const result = await validateJiraConnection(
+      makeJiraContext({ http: fake.http }),
+      ValidateConnectionReason.Save
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: JIRA_CLOUD_CREDENTIALS_REJECTED,
+    });
+  });
+
   it("explains a CAPTCHA-locked bot account", async () => {
     const fake = routedHttp([
       {
@@ -333,3 +458,7 @@ describe("validateJiraConnection", () => {
     expect(!result.ok && result.error).toContain("deactivated");
   });
 });
+
+function cloudConfigInput() {
+  return { siteUrl: CLOUD_SITE_URL, email: BOT_EMAIL };
+}

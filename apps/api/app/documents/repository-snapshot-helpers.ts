@@ -1,4 +1,3 @@
-import type { JsonObject } from "@repo/api/src/types/common";
 import {
   type ArtifactRepositoryEntry,
   type ArtifactRepositorySnapshot,
@@ -9,7 +8,6 @@ import {
 } from "@repo/api/src/types/document";
 import { log } from "@repo/observability/log";
 import { listProjectRepositoryCheckouts } from "@/app/projects/project-repository-checkouts";
-import { loadProjectRepoDefaults } from "@/app/projects/repository-resolver";
 
 /**
  * Helpers for populating the per-document `repository_snapshot` JSON column
@@ -27,25 +25,22 @@ function emptySnapshot(): ArtifactRepositorySnapshot {
 }
 
 /**
- * Build a snapshot from a project's resolved repo defaults. Used as the
- * fallback when no explicit snapshot is provided to `createDocumentRecord`.
+ * Build a snapshot from a project's repositories (integration connections).
+ * Used as the fallback when no explicit snapshot is provided to
+ * `createDocumentRecord`.
  *
  * Returns:
- *   - A `project_defaults` snapshot when `loadProjectRepoDefaults` returns a
- *     primary. The snapshot contains every selected repo in the override,
- *     with `primaryRepoId` marked as `role: 'primary'` and the rest as
- *     `role: 'additional'`. Branch/ref are omitted — projects don't pin
+ *   - A `project_defaults` snapshot listing the project's repositories, the
+ *     primary at position 0 as `role: 'primary'` and the rest as
+ *     `role: 'additional'`. Branch/ref are omitted; projects don't pin
  *     branches (PLN-237 Q-002).
- *   - An empty `none` snapshot when the project has no resolved defaults
- *     (multi-team project with no override and no legacy fallback).
+ *   - An empty `none` snapshot when the project has no repositories.
  */
 export async function buildSnapshotFromProjectDefaults(
   projectId: string,
-  organizationId: string,
-  projectSettings: JsonObject
+  organizationId: string
 ): Promise<ArtifactRepositorySnapshot> {
-  // Project repositories (integration connections), primary first, take
-  // precedence over the GitHub App team pool.
+  // Project repositories (integration connections), primary first.
   const checkouts = await listProjectRepositoryCheckouts(
     organizationId,
     projectId
@@ -63,48 +58,7 @@ export async function buildSnapshotFromProjectDefaults(
     };
   }
 
-  const defaults = await loadProjectRepoDefaults({
-    projectId,
-    organizationId,
-    projectSettings,
-  });
-
-  if (!defaults) {
-    return emptySnapshot();
-  }
-
-  const { override, primary, teamRepos } = defaults;
-  const fullNameByRepoId = new Map(
-    teamRepos.map((r) => [r.installationRepositoryId, r.repository.fullName])
-  );
-  fullNameByRepoId.set(override.primaryRepoId, primary.fullName);
-
-  // Resolve full names first, dropping ids that aren't in the team pool, then
-  // assign contiguous positions. Positions reflect storage order — gaps would
-  // be confusing for downstream consumers that sort or display the list.
-  const additionalFullNames = override.selectedRepoIds
-    .filter((id) => id !== override.primaryRepoId)
-    .map((id) => fullNameByRepoId.get(id))
-    .filter((fullName): fullName is string => Boolean(fullName));
-
-  const repositories: ArtifactRepositoryEntry[] = [
-    {
-      fullName: primary.fullName,
-      role: RepositoryRole.Primary,
-      position: 0,
-    },
-    ...additionalFullNames.map<ArtifactRepositoryEntry>((fullName, index) => ({
-      fullName,
-      role: RepositoryRole.Additional,
-      position: index + 1,
-    })),
-  ];
-
-  return {
-    repositories,
-    source: SnapshotSource.ProjectDefaults,
-    createdAt: new Date().toISOString(),
-  };
+  return emptySnapshot();
 }
 
 /**

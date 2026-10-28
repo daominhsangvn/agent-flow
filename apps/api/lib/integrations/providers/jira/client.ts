@@ -1,10 +1,11 @@
 import type { JsonValue } from "@repo/api/src/types/common";
 import { Result } from "@repo/api/src/types/result";
 import type { z } from "zod";
-import type {
-  ProviderContext,
-  ProviderHttpRequest,
-  ProviderHttpResponse,
+import {
+  HttpMethod,
+  type ProviderContext,
+  type ProviderHttpRequest,
+  type ProviderHttpResponse,
 } from "../../types";
 import { buildJiraAuthorization, jiraRestBaseUrl } from "./auth";
 import { JiraDeployment } from "./constants";
@@ -51,11 +52,15 @@ export type JiraRequest = {
   /** Path below `/rest/api/{3|2}/`, without a leading slash, segments already encoded. */
   path: string;
   query?: Record<string, JiraQueryValue>;
-  body?: JsonValue;
+  /** JSON, or FormData for a multipart upload. */
+  body?: JsonValue | FormData;
+  /** Sent besides the authorization header. */
+  headers?: Record<string, string>;
+  timeoutMs?: number;
 };
 
 export const JIRA_CLOUD_CREDENTIALS_REJECTED =
-  "Jira rejected the credentials (HTTP 401). Check the bot account's email address and API token. Use a classic API token: scoped API tokens do not work against the site URL.";
+  "Jira rejected the credentials (HTTP 401). Check the bot account's email address and API token. An API token with scopes also needs the read:jira-user, read:jira-work and write:jira-work scopes.";
 export const JIRA_DATA_CENTER_CREDENTIALS_REJECTED =
   "Jira rejected the credentials (HTTP 401). Check the personal access token of the bot account.";
 const JIRA_CAPTCHA_REQUIRED =
@@ -94,6 +99,30 @@ export async function jiraRequestWithoutBody(
     ctx.connection.config.deployment
   );
   return failure ? Result.err(failure) : Result.ok(null);
+}
+
+/**
+ * The body of an authenticated download as text (an attachment's content),
+ * from an absolute URL of this connection (its REST base, or its site on Data
+ * Center). Redirects are followed: Cloud answers with a signed media URL.
+ */
+export async function jiraDownloadText(
+  ctx: JiraContext,
+  url: string,
+  timeoutMs?: number
+): Promise<Result<string, JiraError>> {
+  const { config, secrets } = ctx.connection;
+  const response = await ctx.http.request({
+    method: HttpMethod.Get,
+    url,
+    headers: {
+      accept: "*/*",
+      authorization: buildJiraAuthorization(config, secrets),
+    },
+    timeoutMs,
+  });
+  const failure = classifyJiraFailure(response, config.deployment);
+  return failure ? Result.err(failure) : Result.ok(response.text);
 }
 
 export function buildJiraUrl(
@@ -136,8 +165,12 @@ function sendJiraRequest(
   return ctx.http.request({
     method: request.method,
     url: buildJiraUrl(config, request.path, request.query),
-    headers: { authorization: buildJiraAuthorization(config, secrets) },
+    headers: {
+      ...request.headers,
+      authorization: buildJiraAuthorization(config, secrets),
+    },
     body: request.body,
+    timeoutMs: request.timeoutMs,
   });
 }
 

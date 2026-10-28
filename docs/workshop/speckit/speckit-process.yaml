@@ -1,0 +1,108 @@
+# Project process of "React Calculator (Spec Kit)": GitHub Spec Kit from the
+# toolkit repository workshop/speckit-toolkit replaces the built-in AgentFlow
+# planning and implementation agents.
+toolkit:
+  repository: workshop/speckit-toolkit
+  mounts:
+    - .claude/skills            # /speckit-* skills, linked into the workspace root
+  instructions: |
+    Spec Kit (v1.2.0) is this project's toolkit. Its skills are linked into this
+    workspace's `.claude/skills`; everything else of Spec Kit lives in the toolkit
+    repository's worktree `speckit-toolkit/`, which is the Spec Kit project root.
+
+    - Whenever a Spec Kit skill says "project root" or "repository root", it means
+      `speckit-toolkit/`. Run every Spec Kit script from inside it, e.g.
+      `cd speckit-toolkit && .specify/scripts/bash/check-prerequisites.sh --json`,
+      and read `.specify/...` files (templates, `memory/constitution.md`) there.
+    - Feature artifacts go to `speckit-toolkit/specs/<NNN-short-name>/` (spec.md,
+      plan.md, research.md, data-model.md, contracts/, quickstart.md, tasks.md,
+      checklists/). Never create `specs/` or `.specify/` at the workspace root.
+      `speckit-toolkit/.specify/feature.json` points to the current feature; later
+      steps of this run read it.
+    - The application is the repository `react-calculator/` (React 18 + Vite 4,
+      JavaScript, SCSS). Plans and tasks name files with workspace-relative paths
+      such as `react-calculator/src/logic/calculator.js`; install, test and build
+      inside `react-calculator/` (`npm ci`, `npm test`, `npm run build`).
+    - The constitution `speckit-toolkit/.specify/memory/constitution.md` governs
+      every step. Do not amend it.
+    - Do not create git branches or commits in either repository: AgentFlow commits
+      and pushes both repositories when the implement step ends and opens a pull
+      request in each.
+steps:
+  - type: agent
+    id: specify
+    name: Specify
+    instruction: |
+      /speckit-specify {{issue.key}}: {{issue.title}}
+
+      The full feature description is the PRD in `{{issue.file}}`. Read it first and
+      use all of it (goals, requirements, acceptance criteria) as the feature
+      description. Keep the PRD's acceptance criteria as acceptance scenarios.
+    artifacts:
+      - speckit-toolkit/specs/*/spec.md
+
+  - type: agent
+    id: clarify
+    name: Clarify
+    questions: ask              # questions stop the run; answer them on the run page
+    instruction: |
+      /speckit-clarify
+
+      You run unattended: instead of asking one question at a time, write all your
+      questions (at most 5) at once to the questions file described in CLAUDE.md,
+      each with your recommended option first and marked "(recommended)", then stop.
+      When the session resumes with the answers, record them in the spec's
+      Clarifications section and update the affected requirements. When nothing
+      needs clarifying, say so and write no questions file.
+    artifacts:
+      - speckit-toolkit/specs/*/spec.md
+
+  - type: agent
+    id: plan
+    name: Plan
+    instruction: |
+      /speckit-plan
+
+      The technical context is the existing app in `react-calculator/` and the
+      constitution; check the plan against it (Constitution Check).
+    artifacts:
+      - speckit-toolkit/specs/*/plan.md
+      - speckit-toolkit/specs/*/research.md
+      - speckit-toolkit/specs/*/data-model.md
+      - speckit-toolkit/specs/*/quickstart.md
+
+  - type: agent
+    id: tasks
+    name: Tasks
+    role: plan                  # its result is the run's Implementation Plan
+    instruction: |
+      /speckit-tasks
+
+      Then write the run's implementation plan for the reviewers to
+      `.agentflow-ai/work/plan.md`: the feature in two or three sentences (from
+      spec.md), the technical approach and the files that change per repository
+      (from plan.md), the Constitution Check result, and the complete task list
+      copied from tasks.md (keep the `- [ ] T001 ...` lines and phases), followed by
+      the paths of the Spec Kit documents under `speckit-toolkit/specs/`.
+    artifacts:
+      - speckit-toolkit/specs/*/tasks.md
+
+  - type: approval
+    id: approve-plan
+    name: Approve the plan
+    show:
+      - tasks
+      - speckit-toolkit/specs/*/spec.md
+      - speckit-toolkit/specs/*/plan.md
+
+  - type: agent
+    id: implement
+    name: Implement
+    role: implement             # pushes both repositories, writes release notes
+    instruction: |
+      /speckit-implement
+
+      Implement the tasks of the current feature (`speckit-toolkit/.specify/feature.json`)
+      in `react-calculator/`, phase by phase, and mark each finished task `[X]` in
+      its tasks.md. Before you finish, `npm ci`, `npm test` and `npm run build`
+      must pass in `react-calculator/`.

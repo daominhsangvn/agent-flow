@@ -2,6 +2,7 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { killProcessTree } from "./platform-shell.js";
 import { assertPathAllowed } from "./security.js";
 
 const execFileAsync = promisify(execFile);
@@ -64,6 +65,7 @@ export class ProcessManager {
       cwd: options.cwd,
       env: options.env,
       detached: true,
+      windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -159,6 +161,7 @@ export class ProcessManager {
       cwd: options.cwd,
       env: options.env,
       detached: true,
+      windowsHide: true,
       stdio: ["ignore", logFd, logFd],
     });
 
@@ -223,11 +226,11 @@ export class ProcessManager {
       return;
     }
 
-    this.killSafely(-pid, "SIGTERM");
+    this.killTreeSafely(pid, "SIGTERM");
     await new Promise((resolve) => setTimeout(resolve, gracePeriodMs));
 
     if (this.isProcessRunning(pid)) {
-      this.killSafely(-pid, "SIGKILL");
+      this.killTreeSafely(pid, "SIGKILL");
     }
   }
 
@@ -248,9 +251,9 @@ export class ProcessManager {
     }
   }
 
-  private killSafely(pid: number, signal: NodeJS.Signals): void {
+  private killTreeSafely(pid: number, signal: NodeJS.Signals): void {
     try {
-      process.kill(pid, signal);
+      killProcessTree(pid, signal);
     } catch (error) {
       const processError = error as NodeJS.ErrnoException;
       if (processError.code !== "ESRCH") {

@@ -22,6 +22,7 @@ import {
   FALLBACK_GATEWAY_PORTS,
   type HealthResponse,
 } from "../shared/contracts.js";
+import type { SystemCheckHostOptions } from "./operations/health-check-runner.js";
 import type { MemberPackInstaller } from "./operations/member-pack-install.js";
 import type { WorktreeProvider } from "./operations/symphony-loop.js";
 import {
@@ -111,6 +112,8 @@ export type DesktopGatewayServerOptions = {
   isUpdateAndRestartEnabled?: () => boolean;
   /** `app.isPackaged`, forwarded to the Gateway Version check (ISS-5369). */
   isPackagedBuild?: () => boolean;
+  /** What the host changes about the System Check (a headless runner). */
+  systemCheckHost?: SystemCheckHostOptions;
   /** Starts a vetted catalog-pack install for member self-service (FEA-4082). */
   installPack?: MemberPackInstaller;
 };
@@ -177,6 +180,7 @@ export class DesktopGatewayServer {
       applyUpdate: this.options.applyUpdate,
       isUpdateAndRestartEnabled: this.options.isUpdateAndRestartEnabled,
       isPackagedBuild: this.options.isPackagedBuild,
+      systemCheckHost: this.options.systemCheckHost,
       installPack: this.options.installPack,
     });
   }

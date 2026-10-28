@@ -148,15 +148,12 @@ export function PlanEditorHeader({
     evaluatePlanRunInFlight ||
     evaluateCodeRunInFlight;
 
-  const breadcrumbs: BreadcrumbEntry[] = plan.project?.teams?.[0]?.id
+  const breadcrumbs: BreadcrumbEntry[] = plan.project?.id
     ? [
-        {
-          label: plan.project.teams[0].name,
-          href: `/${orgSlug}/teams/${plan.project.teams[0].id}/projects`,
-        },
+        { label: "Projects", href: `/${orgSlug}/projects` },
         {
           label: plan.project.name,
-          href: `/${orgSlug}/teams/${plan.project.teams[0].id}/projects/${plan.project.id}`,
+          href: `/${orgSlug}/projects/${plan.project.id}`,
         },
         { label: plan.title },
       ]

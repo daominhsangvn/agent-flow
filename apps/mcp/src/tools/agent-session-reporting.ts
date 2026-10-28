@@ -38,14 +38,7 @@ const agentSessionReportingSharedFilters = {
     .enum(AGENT_SESSION_VIEWER_SCOPE_OPTIONS)
     .optional()
     .describe(
-      'Aggregation scope: "self" (your own sessions), "organization" (all org sessions), or "team". Defaults to the widest scope you are authorized for.'
-    ),
-  teamId: z
-    .string()
-    .uuid()
-    .optional()
-    .describe(
-      'Team id (UUID) to aggregate over. Required when viewerScope is "team"; must be omitted for any other scope.'
+      'Aggregation scope: "self" (your own sessions) or "organization" (all org sessions). Defaults to the widest scope you are authorized for.'
     ),
   quality: z
     .enum(SESSION_QUALITY_VALUES)
@@ -96,7 +89,6 @@ type AgentSessionReportingInput = {
   endDate?: string;
   harness?: string;
   viewerScope?: (typeof AGENT_SESSION_VIEWER_SCOPE_OPTIONS)[number];
-  teamId?: string;
   quality?: (typeof SESSION_QUALITY_VALUES)[number];
 };
 
@@ -112,7 +104,6 @@ export function buildAgentSessionReportingQuery(
     endDate: input.endDate,
     harness: input.harness,
     viewerScope: input.viewerScope,
-    teamId: input.teamId,
     // FEA-3345: the server default is now fail-open `all`. This MCP reporting
     // tool keeps its documented `substantive` default (exclude idle sessions from
     // the aggregates) by sending it explicitly when the agent omits `quality`, so

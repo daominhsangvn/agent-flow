@@ -12,8 +12,7 @@ vi.mock("@repo/app/users/hooks/use-users", () => ({
 }));
 
 vi.mock("../../../projects/hooks/use-projects", () => ({
-  useProjects: (teamId: unknown, options?: { enabled?: boolean }) =>
-    mockUseProjects(teamId, options),
+  useProjects: (options?: { enabled?: boolean }) => mockUseProjects(options),
 }));
 
 import {
@@ -95,7 +94,7 @@ describe("useProjectSuggestions", () => {
 
     const { result } = renderHook(() => useProjectSuggestions(true));
 
-    expect(mockUseProjects).toHaveBeenCalledWith(undefined, { enabled: true });
+    expect(mockUseProjects).toHaveBeenCalledWith({ enabled: true });
     // The slug is the resolvable value; it differs from the display name, so it
     // shows as the secondary detail line.
     expect(result.current.options).toEqual([

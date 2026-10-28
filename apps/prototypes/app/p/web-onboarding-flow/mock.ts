@@ -769,7 +769,6 @@ export const orgMembers: readonly OrgMember[] = [
 // is behind a flag (off by default), so it is not listed here. The Set-up-AI-
 // agents card (AgentOnboardingCard) is intentionally omitted per the brief.
 export const ChecklistItemId = {
-  CreateTeam: "create-team",
   CreateProject: "create-project",
   DownloadDesktop: "download-desktop",
   ConnectGitHub: "connect-github",
@@ -788,20 +787,14 @@ export type ChecklistItem = {
   target?: SettingsTarget;
 };
 
-// State after the wizard: team and project just created (done), the rest still
+// State after the wizard: project just created (done), the rest still
 // open. That makes the "Invite team members" row the natural next action the
 // spotlight points at.
 export const onboardingChecklist: readonly ChecklistItem[] = [
   {
-    id: ChecklistItemId.CreateTeam,
-    label: "Create a team",
-    description: "Set up your first team to organize projects",
-    completed: true,
-  },
-  {
     id: ChecklistItemId.CreateProject,
     label: "Create a project",
-    description: "Start your first project within a team",
+    description: "Start your first project",
     completed: true,
   },
   {

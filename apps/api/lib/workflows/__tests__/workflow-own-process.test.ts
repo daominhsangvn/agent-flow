@@ -7,7 +7,10 @@ import {
   type ProjectProcess,
   RunProcessSource,
 } from "@repo/api/src/types/project-process";
-import type { WorkflowAgentConfig } from "@repo/api/src/types/workflow";
+import {
+  type WorkflowAgentConfig,
+  workflowPrdRuleSchema,
+} from "@repo/api/src/types/workflow";
 import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toLoopStepConfig } from "@/lib/workflows/engine/agent-step";
@@ -48,7 +51,9 @@ function agent(process: ProjectProcess | null): WorkflowAgentConfig {
     mode: WorkflowAgentMode.PlanAndExecute,
     stopOnOpenQuestions: true,
     computeTargetId: "0199a5f0-0000-7000-8000-0000000000c1",
+    runners: [],
     repository: null,
+    prd: workflowPrdRuleSchema.parse({}),
     instructions: "",
     titleTemplate: "{{source.key}}",
     process,

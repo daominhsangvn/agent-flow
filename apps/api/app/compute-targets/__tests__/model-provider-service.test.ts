@@ -1,8 +1,11 @@
-import { ModelProviderMode } from "@repo/api/src/types/compute-target-model-provider";
+import {
+  ClaudeCodeVersionChannel,
+  ModelProviderMode,
+} from "@repo/api/src/types/compute-target-model-provider";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   computeTargetModelProviderService,
-  resolveComputeTargetClaudeEnv,
+  resolveComputeTargetClaudeRuntime,
 } from "@/app/compute-targets/model-provider-service";
 
 const IDS = {
@@ -78,6 +81,7 @@ const deepseek = {
     CLAUDE_CODE_EFFORT_LEVEL: "max",
     ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-lite",
   },
+  claudeCodeVersion: ClaudeCodeVersionChannel.Latest,
 };
 
 describe("computeTargetModelProviderService", () => {
@@ -90,8 +94,14 @@ describe("computeTargetModelProviderService", () => {
       model: null,
       env: {},
       token: { isSet: false, lastFour: null },
+      claudeCodeVersion: ClaudeCodeVersionChannel.Latest,
     });
-    await expect(resolveComputeTargetClaudeEnv(IDS.target)).resolves.toBeNull();
+    await expect(
+      resolveComputeTargetClaudeRuntime(IDS.target)
+    ).resolves.toEqual({
+      claudeEnv: null,
+      claudeCodeVersion: ClaudeCodeVersionChannel.Latest,
+    });
   });
 
   it("stores the token sealed and returns only its last four characters", async () => {
@@ -129,7 +139,13 @@ describe("computeTargetModelProviderService", () => {
       IDS.org,
       IDS.owner,
       IDS.target,
-      { mode: ModelProviderMode.Machine, baseUrl: null, model: null, env: {} }
+      {
+        mode: ModelProviderMode.Machine,
+        baseUrl: null,
+        model: null,
+        env: {},
+        claudeCodeVersion: ClaudeCodeVersionChannel.Latest,
+      }
     );
 
     expect(kept?.token.isSet).toBe(true);
@@ -152,7 +168,7 @@ describe("computeTargetModelProviderService", () => {
   });
 });
 
-describe("resolveComputeTargetClaudeEnv", () => {
+describe("resolveComputeTargetClaudeRuntime", () => {
   it("builds the Claude Code environment with the model filling unset model variables", async () => {
     await computeTargetModelProviderService.update(
       IDS.org,
@@ -164,7 +180,9 @@ describe("resolveComputeTargetClaudeEnv", () => {
       }
     );
 
-    await expect(resolveComputeTargetClaudeEnv(IDS.target)).resolves.toEqual({
+    const runtime = await resolveComputeTargetClaudeRuntime(IDS.target);
+
+    expect(runtime.claudeEnv).toEqual({
       ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
       ANTHROPIC_AUTH_TOKEN: "sk-deepseek-1234",
       ANTHROPIC_MODEL: "deepseek-chat",
@@ -187,9 +205,65 @@ describe("resolveComputeTargetClaudeEnv", () => {
       mocks.row.modelProviderTokenEncrypted = "corrupt";
     }
 
-    const env = await resolveComputeTargetClaudeEnv(IDS.target);
+    const { claudeEnv: env } = await resolveComputeTargetClaudeRuntime(
+      IDS.target
+    );
 
     expect(env?.ANTHROPIC_BASE_URL).toBe("https://api.deepseek.com/anthropic");
     expect(env).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
+  });
+});
+
+describe("Claude Code version", () => {
+  it("stores an exact version in custom and machine mode and sends it with loops", async () => {
+    const custom = await computeTargetModelProviderService.update(
+      IDS.org,
+      IDS.owner,
+      IDS.target,
+      { ...deepseek, claudeCodeVersion: "2.1.290" }
+    );
+    const customRuntime = await resolveComputeTargetClaudeRuntime(IDS.target);
+    const machine = await computeTargetModelProviderService.update(
+      IDS.org,
+      IDS.owner,
+      IDS.target,
+      {
+        mode: ModelProviderMode.Machine,
+        baseUrl: null,
+        model: null,
+        env: {},
+        claudeCodeVersion: "2.1.295",
+      }
+    );
+
+    expect(custom?.claudeCodeVersion).toBe("2.1.290");
+    expect(customRuntime.claudeCodeVersion).toBe("2.1.290");
+    expect(customRuntime.claudeEnv?.ANTHROPIC_BASE_URL).toBe(
+      "https://api.deepseek.com/anthropic"
+    );
+    expect(machine?.claudeCodeVersion).toBe("2.1.295");
+    await expect(
+      resolveComputeTargetClaudeRuntime(IDS.target)
+    ).resolves.toEqual({ claudeEnv: null, claudeCodeVersion: "2.1.295" });
+  });
+
+  it("runs the latest release for a stored version it cannot use, keeping the provider", async () => {
+    if (mocks.row) {
+      mocks.row.modelProvider = {
+        mode: ModelProviderMode.Custom,
+        baseUrl: "https://proxy.example.com",
+        model: null,
+        env: { ANTHROPIC_CUSTOM_HEADERS: "x-key: 1" },
+        claudeCodeVersion: "../../bin/sh",
+      };
+    }
+
+    const runtime = await resolveComputeTargetClaudeRuntime(IDS.target);
+
+    expect(runtime.claudeCodeVersion).toBe(ClaudeCodeVersionChannel.Latest);
+    expect(runtime.claudeEnv).toEqual({
+      ANTHROPIC_BASE_URL: "https://proxy.example.com",
+      ANTHROPIC_CUSTOM_HEADERS: "x-key: 1",
+    });
   });
 });

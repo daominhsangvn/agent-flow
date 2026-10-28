@@ -20,6 +20,7 @@ const INBOUND_URL = "https://api.acme.dev/webhooks/integrations/key-1";
 const INBOUND_SECRET = "whsec_abc123";
 
 const mocks = vi.hoisted(() => ({
+  inboundUrlWarning: null as string | null,
   inboundEnabled: vi.fn(),
   rotateMutateAsync: vi.fn(),
   rotateError: null as Error | null,
@@ -37,6 +38,7 @@ vi.mock("../../hooks/use-integrations", () => ({
         inboundUrl: INBOUND_URL,
         inboundSecret: INBOUND_SECRET,
         setupInstructions: "1. Open **Jira settings**\n2. Add the webhook",
+        inboundUrlWarning: mocks.inboundUrlWarning,
       },
       isLoading: false,
       error: null,
@@ -68,6 +70,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.deliveries = [];
   mocks.rotateError = null;
+  mocks.inboundUrlWarning = null;
 });
 
 describe("IntegrationInboundDialog", () => {
@@ -92,6 +95,25 @@ describe("IntegrationInboundDialog", () => {
     expect(secret).toHaveValue(INBOUND_SECRET);
     // Markdown, not raw text.
     expect(screen.getByText("Jira settings").tagName).toBe("STRONG");
+    expect(
+      screen.queryByTestId("integration-inbound-url-warning")
+    ).not.toBeInTheDocument();
+  });
+
+  it("warns when the inbound URL cannot be reached from the internet", () => {
+    mocks.inboundUrlWarning =
+      "Services on the internet such as Jira Cloud and Azure DevOps cannot reach localhost:3002.";
+    render(
+      <IntegrationInboundDialog
+        connection={jiraConnection}
+        isAdmin
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.getByTestId("integration-inbound-url-warning")
+    ).toHaveTextContent("cannot reach localhost:3002");
   });
 
   it("copies the URL and the secret", async () => {

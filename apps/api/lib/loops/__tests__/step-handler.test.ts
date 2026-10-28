@@ -24,6 +24,7 @@ const STEP = {
     mounts: [".specify"],
     instructions: "",
   },
+  integrationTools: true,
 };
 
 describe("STEP loops", () => {
@@ -42,6 +43,17 @@ describe("STEP loops", () => {
         metadata: { workflowRunId: "run-1", [LOOP_STEP_METADATA_KEY]: STEP },
       })
     ).toEqual(STEP);
+  });
+
+  it("reads a step stored before integration tools as one without them", () => {
+    const { integrationTools: _tools, ...stored } = STEP;
+
+    expect(
+      readLoopStepConfig({
+        command: LoopCommand.Step,
+        metadata: { [LOOP_STEP_METADATA_KEY]: stored },
+      })
+    ).toEqual(stored);
   });
 
   it("send no step for another command or settings that are not valid", () => {

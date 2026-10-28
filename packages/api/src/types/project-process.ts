@@ -9,8 +9,10 @@ import {
   LoopStepFinish,
   type LoopStepQuestion,
   LoopStepQuestionSchema,
+  LoopStepRole,
 } from "@agentflow-ai/loops-api/loop-step";
 import { z } from "zod";
+import { connectionGrantsSchema } from "./connection-grants.ts";
 import type { WorkflowAgentConfig } from "./workflow.ts";
 import { WorkflowAgentMode } from "./workflow-agent-mode.ts";
 
@@ -58,6 +60,16 @@ export const ProcessStepFinish = LoopStepFinish;
 export type ProcessStepFinish = LoopStepFinish;
 
 /**
+ * What an agent step is to AgentFlow (docs/workflows.md "Step roles"): a
+ * `plan` step writes the run's implementation plan, an `implement` step works
+ * from the approved plan, pushes and writes release notes. AgentFlow adds the
+ * role's contract to the agent's instructions, so a toolkit command only has
+ * to do the work. The values travel to the computer unchanged (LoopStepRole).
+ */
+export const ProcessStepRole = LoopStepRole;
+export type ProcessStepRole = LoopStepRole;
+
+/**
  * What a plan step does with an open question its agents recommend an answer
  * for: settle it with the recommendation (`accept`), or keep it open for
  * people with the recommendation as a suggestion (`suggest`).
@@ -92,6 +104,40 @@ export const PROCESS_PATHS_MAX = 20;
 export const PROCESS_DOCUMENT_TITLE_MAX = 200;
 /** Characters of the YAML a process is edited as (ProjectProcess.source). */
 export const PROCESS_SOURCE_MAX = 200_000;
+export const PROCESS_SIGNAL_LABELS_MAX = 10;
+export const PROCESS_SIGNAL_LABEL_MAX = 255;
+export const REVIEW_HISTORY_MAX = 50;
+export const PENDING_SIGNALS_MAX = 10;
+
+/** How a feedback round runs the step again. */
+export const ReviewSession = {
+  /** Continue the step's agent session with the feedback (`--resume`). */
+  Resume: "resume",
+  /** A new session with the step's instruction and the feedback. */
+  Fresh: "fresh",
+} as const;
+export type ReviewSession = (typeof ReviewSession)[keyof typeof ReviewSession];
+
+/** What people decided on a step under review. */
+export const ReviewDecisionKind = {
+  /** Go on: the plan is approved, or the review is complete. */
+  Approve: "approve",
+  /** Run the step again with the feedback. */
+  Feedback: "feedback",
+  /** Fail the run (AgentFlow only). */
+  Reject: "reject",
+} as const;
+export type ReviewDecisionKind =
+  (typeof ReviewDecisionKind)[keyof typeof ReviewDecisionKind];
+
+/** Where a review decision came from. */
+export const ReviewSignalVia = {
+  App: "app",
+  Label: "label",
+  Mention: "mention",
+} as const;
+export type ReviewSignalVia =
+  (typeof ReviewSignalVia)[keyof typeof ReviewSignalVia];
 
 /** Ids of the steps of the built-in flow (also used for runs recorded before processes existed). */
 export const AgentFlowStepId = {
@@ -133,6 +179,8 @@ const agentFlowExecuteStepSchema = z.object({
   id: stepIdSchema,
   name: stepNameSchema,
   review: z.enum(ProcessExecuteReview).default(ProcessExecuteReview.Full),
+  /** The implementation writes release notes; true unless turned off. */
+  releaseNotes: z.boolean().optional(),
 });
 
 const stepDocumentSchema = z.object({
@@ -143,6 +191,41 @@ const stepDocumentSchema = z.object({
   title: z.string().trim().max(PROCESS_DOCUMENT_TITLE_MAX).default(""),
 });
 export type ProcessStepDocument = z.infer<typeof stepDocumentSchema>;
+
+/** Labels (Jira) or tags (Azure DevOps) added on the source item as a signal. */
+const signalLabelsSchema = z
+  .array(z.string().trim().min(1).max(PROCESS_SIGNAL_LABEL_MAX))
+  .max(PROCESS_SIGNAL_LABELS_MAX)
+  .default([]);
+
+/** A signal that lets the run go on: an approval, or the end of a review. */
+const goOnSignalSchema = z.object({ labels: signalLabelsSchema });
+
+/**
+ * A step's review (docs/workflows.md "Review loops"): after the step, the run
+ * waits until people let it go on (`approve` on a plan step, `complete` on
+ * any other) or send feedback, which runs the step again with it.
+ */
+const stepReviewSchema = z.object({
+  approve: goOnSignalSchema.optional(),
+  complete: goOnSignalSchema.optional(),
+  feedback: z
+    .object({
+      labels: signalLabelsSchema,
+      /** A comment that mentions the bot; its text is the feedback. */
+      mention: z.boolean().default(false),
+    })
+    .default({ labels: [], mention: false }),
+  /** Prompt of a feedback round ({{feedback.text}}, ...); empty: the feedback itself. */
+  instruction: z.string().trim().max(PROCESS_INSTRUCTION_MAX).optional(),
+  session: z.enum(ReviewSession).default(ReviewSession.Resume),
+  /** Remove a feedback label from the source item once it was acted on. */
+  consumeLabels: z.boolean().default(true),
+});
+export type ProcessStepReview = z.infer<typeof stepReviewSchema>;
+
+/** Most automatic retries a step may ask for (AgentProcessStep.retry). */
+export const STEP_AUTO_RETRY_ATTEMPTS_MAX = 5;
 
 const agentStepSchema = z.object({
   type: z.literal(ProcessStepType.Agent),
@@ -179,6 +262,29 @@ const agentStepSchema = z.object({
     .max(24 * 60)
     .nullable()
     .default(null),
+  /**
+   * What the step's agent may read and write through the project's
+   * connections (connection-grants.ts). Without it the agent only reads the
+   * run's source item.
+   */
+  connections: connectionGrantsSchema.optional(),
+  /** What the step is to AgentFlow; absent: a step without a role. */
+  role: z.enum(ProcessStepRole).optional(),
+  /** An implement step writes release notes; true unless turned off. */
+  releaseNotes: z.boolean().optional(),
+  /** People review the step's work before the run goes on. */
+  review: stepReviewSchema.optional(),
+  /**
+   * Automatic retries of the step after its agent failed on the model
+   * provider (an expired token, a quota, an overload): after a backoff the
+   * failed session goes on in a fork (`--resume --fork-session`). Absent: a
+   * failure fails the run (an administrator can still retry it).
+   */
+  retry: z
+    .object({
+      attempts: z.number().int().min(1).max(STEP_AUTO_RETRY_ATTEMPTS_MAX),
+    })
+    .optional(),
 });
 
 const approvalStepSchema = z.object({
@@ -190,6 +296,8 @@ const approvalStepSchema = z.object({
     .array(z.string().trim().min(1).max(200))
     .max(PROCESS_PATHS_MAX)
     .default([]),
+  /** Labels (tags) added on the source item that approve, besides AgentFlow. */
+  approve: goOnSignalSchema.optional(),
 });
 
 export type AgentProcessStep = z.infer<typeof agentStepSchema>;
@@ -242,21 +350,23 @@ export const projectProcessSchema = z
       }
       seen.add(step.id);
     });
-    const planIndex = process.steps.findIndex(
+    const planIndex = process.steps.findIndex(isPlanStep);
+    const agentFlowPlanIndex = process.steps.findIndex(
       (step) => step.type === ProcessStepType.AgentFlowPlan
     );
     process.steps.forEach((step, index) => {
-      if (step.type === ProcessStepType.AgentFlowPlan && index !== planIndex) {
+      if (isPlanStep(step) && index !== planIndex) {
         ctx.addIssue({
           code: "custom",
-          path: ["steps", index, "type"],
-          message: "A process has at most one AgentFlow plan step",
+          path: ["steps", index, ...planStepIssuePath(step)],
+          message:
+            "A process has at most one plan step (an AgentFlow plan step or a step with role: plan)",
         });
       }
       // EXECUTE continues the PLAN loop's state on the same computer.
       if (
         step.type === ProcessStepType.AgentFlowExecute &&
-        (planIndex < 0 || planIndex > index)
+        (agentFlowPlanIndex < 0 || agentFlowPlanIndex > index)
       ) {
         ctx.addIssue({
           code: "custom",
@@ -264,6 +374,9 @@ export const projectProcessSchema = z
           message:
             "The AgentFlow implement step needs a AgentFlow plan step before it",
         });
+      }
+      if (step.type === ProcessStepType.Agent) {
+        checkAgentStepRole(step, index, planIndex, ctx);
       }
     });
   });
@@ -304,6 +417,23 @@ export type ProcessAnswer = z.infer<typeof processAnswerSchema>;
  * resumes), or the approval a step waits for (and the decision until the run
  * moves on).
  */
+/** One decision on a step under review (RunStepState.review). */
+export const reviewDecisionSchema = z.object({
+  kind: z.enum(ReviewDecisionKind),
+  via: z.enum(ReviewSignalVia),
+  /** The feedback, or the comment of an approval or rejection. */
+  text: z.string().max(PROCESS_ANSWER_MAX),
+  /** User id of who decided in AgentFlow. */
+  by: z.string().nullable(),
+  /** Who signalled on the source item (its display name). */
+  author: z.string().nullable(),
+  /** The label (tag) that signalled. */
+  label: z.string().nullable(),
+  /** ISO time of the decision. */
+  at: z.string(),
+});
+export type ReviewDecision = z.infer<typeof reviewDecisionSchema>;
+
 export const runStepStateSchema = z.object({
   waiting: z
     .object({
@@ -347,6 +477,63 @@ export const runStepStateSchema = z.object({
     .object({
       stepId: z.string(),
       /** The loop whose questions could not be read. */
+      loopId: z.string(),
+      attempts: z.number().int().min(1),
+    })
+    .nullable()
+    .optional(),
+  /**
+   * The step under review (AgentProcessStep.review): the run waits for a
+   * decision while `decision` is null; earlier rounds are in `history`.
+   * While a feedback round runs, it stays with `decision` cleared.
+   */
+  review: z
+    .object({
+      stepId: z.string(),
+      /** The step's latest loop; a feedback round resumes its session. */
+      loopId: z.string(),
+      /** 1 for the first review of the step, +1 per feedback round. */
+      round: z.number().int().min(1),
+      /** ISO time the run started waiting (empty while a round runs). */
+      requestedAt: z.string(),
+      decision: reviewDecisionSchema.nullable().default(null),
+      history: z
+        .array(reviewDecisionSchema)
+        .max(REVIEW_HISTORY_MAX)
+        .default([]),
+    })
+    .nullable()
+    .optional(),
+  /**
+   * Signals from the source item that arrived while the step still worked;
+   * applied once it waits for its review or approval.
+   */
+  pendingSignals: z
+    .array(reviewDecisionSchema)
+    .max(PENDING_SIGNALS_MAX)
+    .optional(),
+  /**
+   * The step's agent failed on the model provider; its session was resumed
+   * in a fork (`attempts` automatic retries so far, AgentProcessStep.retry)
+   * while the run stays running.
+   */
+  autoRetry: z
+    .object({
+      stepId: z.string(),
+      /** The failed loop whose session the retry forked. */
+      loopId: z.string(),
+      attempts: z.number().int().min(1),
+    })
+    .nullable()
+    .optional(),
+  /**
+   * A plan step ended without writing the plan; its session was resumed to
+   * write it (`attempts` times so far) while the run stays running.
+   */
+  outputRepair: z
+    .object({
+      stepId: z.string(),
+      /** The loop that did not write the plan. */
       loopId: z.string(),
       attempts: z.number().int().min(1),
     })
@@ -520,6 +707,14 @@ export type DecidedStepApproval = z.output<
   typeof decideStepApprovalInputSchema
 >;
 
+/** POST /workflow-runs/{id}/review: the decision on the step under review. */
+export const decideStepReviewInputSchema = z.object({
+  decision: z.enum(ReviewDecisionKind),
+  comment: z.string().trim().max(PROCESS_ANSWER_MAX).default(""),
+});
+export type DecideStepReviewInput = z.input<typeof decideStepReviewInputSchema>;
+export type DecidedStepReview = z.output<typeof decideStepReviewInputSchema>;
+
 /** Who saved a process version. */
 export type ProjectProcessAuthor = { id: string; name: string | null } | null;
 
@@ -580,6 +775,25 @@ export type RunProcessView = {
     show: string[];
     decided: boolean;
   } | null;
+  /**
+   * The step under review (AgentProcessStep.review): its round, the signals
+   * people can give on the source item and what was decided in earlier
+   * rounds. `waiting` while it waits for a decision.
+   */
+  review: {
+    stepId: string;
+    round: number;
+    /** The step is a plan step: Approve / Replan, else Done / Request changes. */
+    planStep: boolean;
+    waiting: boolean;
+    requestedAt: string;
+    /** Labels (tags) on the source item that approve or complete it. */
+    goOnLabels: string[];
+    feedbackLabels: string[];
+    /** A comment that mentions the bot sends feedback. */
+    mention: boolean;
+    history: ReviewDecision[];
+  } | null;
   /** Files each agent step collected, from its latest loop. */
   stepFiles: Array<{
     stepId: string;
@@ -587,3 +801,145 @@ export type RunProcessView = {
     files: LoopStepCollectedFile[];
   }>;
 };
+
+/** A step that writes the run's implementation plan: AgentFlow's plan step, or an agent step with role plan. */
+export function isPlanStep(step: ProcessStep): boolean {
+  return (
+    step.type === ProcessStepType.AgentFlowPlan ||
+    (step.type === ProcessStepType.Agent && step.role === ProcessStepRole.Plan)
+  );
+}
+
+/** True when the process has a plan step, so its runs get a plan document. */
+export function processHasPlanStep(process: ProjectProcess): boolean {
+  return process.steps.some(isPlanStep);
+}
+
+/** What an agent step does with its changes: an implement step always pushes. */
+export function agentStepFinish(step: AgentProcessStep): ProcessStepFinish {
+  return step.role === ProcessStepRole.Implement
+    ? ProcessStepFinish.Push
+    : step.finish;
+}
+
+/**
+ * An implement step (role implement, or AgentFlow's implement step) writes
+ * release notes unless `releaseNotes: false`.
+ */
+export function writesReleaseNotes(step: ProcessStep): boolean {
+  const isImplementStep =
+    step.type === ProcessStepType.AgentFlowExecute ||
+    (step.type === ProcessStepType.Agent &&
+      step.role === ProcessStepRole.Implement);
+  return isImplementStep && step.releaseNotes !== false;
+}
+
+/** Where a second plan step is reported: its role, or its type. */
+function planStepIssuePath(step: ProcessStep): string[] {
+  return step.type === ProcessStepType.Agent ? ["role"] : ["type"];
+}
+
+/** The rules of an agent step's role (docs/workflows.md "Step roles"). */
+function checkAgentStepRole(
+  step: AgentProcessStep,
+  index: number,
+  planIndex: number,
+  ctx: z.RefinementCtx
+): void {
+  if (
+    step.role === ProcessStepRole.Implement &&
+    (planIndex < 0 || planIndex > index)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["steps", index, "role"],
+      message:
+        "A step with role: implement needs a plan step before it (an AgentFlow plan step or a step with role: plan)",
+    });
+  }
+  if (
+    step.role === ProcessStepRole.Plan &&
+    step.document?.type === ProcessDocumentType.ImplementationPlan
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["steps", index, "document", "type"],
+      message:
+        "A step with role: plan already writes the run's implementation plan; remove its IMPLEMENTATION_PLAN document",
+    });
+  }
+  checkStepReview(step, index, ctx);
+  if (
+    step.releaseNotes !== undefined &&
+    step.role !== ProcessStepRole.Implement
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["steps", index, "releaseNotes"],
+      message: "releaseNotes applies to steps with role: implement",
+    });
+  }
+}
+
+/** A review's signals: `approve` on a plan step, `complete` elsewhere, each label once. */
+function checkStepReview(
+  step: AgentProcessStep,
+  index: number,
+  ctx: z.RefinementCtx
+): void {
+  const review = step.review;
+  if (!review) {
+    return;
+  }
+  const planStep = step.role === ProcessStepRole.Plan;
+  if (review.approve && !planStep) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["steps", index, "review", "approve"],
+      message:
+        "review.approve is for a step with role: plan; use review.complete to end the review of another step",
+    });
+  }
+  if (review.complete && planStep) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["steps", index, "review", "complete"],
+      message: "A plan step is approved: use review.approve",
+    });
+  }
+  const labels = [
+    ...(review.approve?.labels ?? []),
+    ...(review.complete?.labels ?? []),
+    ...review.feedback.labels,
+  ].map((label) => label.toLowerCase());
+  if (new Set(labels).size !== labels.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["steps", index, "review"],
+      message:
+        "A label can signal one thing only (approve, complete or feedback)",
+    });
+  }
+}
+
+/** Labels that let a step under review go on (approve or complete). */
+export function reviewGoOnLabels(review: ProcessStepReview): string[] {
+  return [
+    ...(review.approve?.labels ?? []),
+    ...(review.complete?.labels ?? []),
+  ];
+}
+
+/** An approval step's decision from an approve signal of the source item. */
+export function approvalFromSignal(
+  signal: ReviewDecision
+): NonNullable<NonNullable<RunStepState["approval"]>["decision"]> {
+  return {
+    approved: true,
+    comment: signal.label
+      ? `Approved with the label "${signal.label}"${signal.author ? ` by ${signal.author}` : ""}.`
+      : signal.text,
+    decidedBy: signal.by,
+    decidedAt: signal.at,
+  };
+}

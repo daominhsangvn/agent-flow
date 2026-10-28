@@ -62,7 +62,7 @@ export function useOrgUserDirectory(): ActivityDirectory<User> {
 export function useProjectDirectory(
   enabled: boolean
 ): ActivityDirectory<ProjectWithDetails> {
-  const query = useProjects(undefined, { enabled });
+  const query = useProjects({ enabled });
   return useDirectory(query.data, {
     isError: query.isError,
     isPending: query.isPending,

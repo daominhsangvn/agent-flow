@@ -1,0 +1,141 @@
+name: LeaveDesk · QC design
+description: >-
+  As soon as a Jira LD ticket has its approved PRD, the label qc-design has the
+  QC agent team (generated with revfactory/harness) design its test cases from
+  the PRD, in parallel with the development: questions on the ticket, the test
+  cases attached to the ticket and kept in leavedesk-qa through a pull request.
+  The QC run after the merge only automates and runs them.
+project: LeaveDesk
+triggers:
+  - connection: jira                   # the one Jira bot
+    type: jira.issue_conditions
+    config:
+      labels: [qc-design]              # adding the label starts the design (or resumes it)
+      projectKeys: [LD]
+agent:
+  runAs: admin@agentflow.local
+  runner: runner-1                     # designing needs no browser
+  prd:
+    instruction: >-
+      PRD only when the description itself is a whole product requirements
+      document (numbered functional requirements and acceptance criteria). A
+      ticket analysed by the BA team (a raw requirement with a comment that
+      summarizes its PRD, "Full PRD attached: PRD-<KEY>.md") is an Issue: its
+      PRD already exists from the BA run. Otherwise an Issue.
+  process:
+    toolkit:
+      repository: workshop/leavedesk-qa
+      mounts:
+        - .claude/agents
+        - .claude/skills
+      instructions: |
+        ## LeaveDesk QC team: test design
+
+        The QC agent team of `leavedesk-qa/` (generated with revfactory/harness) is linked into
+        this workspace's `.claude/agents` and `.claude/skills`. Its orchestrator skill is
+        `qa-test`; this run uses only its design part, as the step's instruction says.
+
+        - What to test comes from the ticket only. Read the ticket
+          (`.agentflow-ai/work/issue.md`, or the `source_item_get` tool for its attachment names)
+          and read the attachment `PRD-<KEY>.md` with the `source_item_attachment_read` tool
+          (the attachment links in issue.md cannot be downloaded from here). Save its text as
+          `.agentflow-ai/work/qa/prd.md`: that is the PRD (FR, BR, AC: the expected results).
+          Without that attachment the PRD is the ticket's description. The ticket's comments
+          hold the BA's answers, and the answers to this run's questions.
+        - Where the `qa-test` skill or its agents say to read the PRD from issue.md or from
+          `leavedesk-knowledge/`, use `.agentflow-ai/work/qa/prd.md`. Do not read
+          `leavedesk-knowledge/` or `leavedesk-superpowers/`.
+        - The feature is not built yet: `leavedesk-app/` shows the conventions (test ids, routes,
+          demo users, `LEAVEDESK_TODAY`) and what exists today, not the feature. A difference
+          between the PRD and the code is expected, not a finding. Do not start the app.
+        - Write only in `leavedesk-qa/`. Create no git branches or commits: AgentFlow commits,
+          pushes and opens the pull request.
+    steps:
+      - type: agent
+        id: design
+        name: Design the test cases
+        timeoutMinutes: 90
+        questions: ask                 # what the PRD leaves untestable goes to the ticket
+        finish: push                   # commits and pushes leavedesk-qa
+        connections:
+          source: [comment]            # reads the PRD attachment; attaches the test cases
+        instruction: |
+          Design the test cases of {{issue.key}} ({{issue.title}}) with the QC team, following the
+          `qa-test` skill's Phase 0, 1, 2 and the test-case part of Phase 4 only, with key
+          {{issue.key}}. Skip the app baseline, `npm ci`, Phase 3 (automate), Phase 5 (run) and
+          Phase 6 (report): those run after the merge, in the QC run.
+          1. Phase 1 (`qa-analyst`): give it `.agentflow-ai/work/qa/prd.md` as the ticket. It writes
+             leavedesk-qa/_workspace/{{issue.key}}/01_analyst_spec-map.md.
+          2. Phase 2 (`qa-test-designer`): leavedesk-qa/test-cases/{{issue.key}}.md, every AC covered,
+             expected results from the PRD, the data plan included. Test ids and routes the PRD
+             names come from the PRD.
+          3. Review (`qa-reviewer`, test cases only, no specs): one fix round for blocker findings
+             through `qa-test-designer`, keeping the case ids.
+          4. Questions: an AC whose expected result cannot be decided from the PRD and the
+             ticket's comments becomes a question in .agentflow-ai/work/questions.json (2-4 options,
+             the recommended one first with its reason); mark its cases BLOCKED in the test cases. Anything that needs a person to confirm or
+             decide is a question too, even when you can propose an answer: a PRD rule you had to
+             interpret for an expected result, or an expected result that differs from the PRD.
+             Never ask anyone to confirm something in a comment or the summary instead.
+             When answers are in the ticket's comments (a resumed run), apply them to the test
+             cases and drop those questions. If questions remain, stop here: attach and post
+             nothing.
+          5. When no question remains, hand the test cases over on the ticket, once:
+             copy leavedesk-qa/test-cases/{{issue.key}}.md to .agentflow-ai/work/qa/TESTCASES-{{issue.key}}.md,
+             upload it with `"$AGENTFLOW_ATTACH" .agentflow-ai/work/qa/TESTCASES-{{issue.key}}.md text/markdown`
+             and keep the printed id; write .agentflow-ai/work/qa/design-summary.md (at most 12
+             lines: how many cases per AC group, UI vs API, the questions answered and how, what
+             stays BLOCKED, and "Test cases attached: TESTCASES-{{issue.key}}.md"). The summary asks
+             nobody anything and mentions nobody; a deviation from the PRD you made is a line
+             "Note: <what changed and why>"; call the
+             source_item_comment tool once with its text and that id as attachment.
+        reply: .agentflow-ai/work/qa/design-summary.md
+        artifacts:
+          - leavedesk-qa/test-cases/*.md
+actions:
+  - on: workflow.triggered
+    type: jira.add_link                # a fixed URL: typed links do not render templates
+    continueOnError: true
+    config:
+      url: http://localhost:3300/workshop/leavedesk-qa
+      title: LeaveDesk test cases and results (leavedesk-qa)
+  - on: workflow.triggered
+    type: jira.add_comment
+    continueOnError: true
+    config:
+      message: "🧪 The QC bot is designing the test cases of {{source.key}} from its PRD. Follow the run: {{run.url}}"
+  - on: input.needed
+    instruction: |
+      The QC design run of {{source.key}} waits for answers: {{run.url}}
+      Post one comment that lists the "{{step.name}}" step's open questions numbered, each with its options labelled a, b, c… and the recommended one marked "(recommended)" with its reason (the questions are in the run; the test cases so far are in leavedesk-qa/test-cases/{{source.key}}.md). End with: answer by replying to this comment (Reply on the comment, so the answer stays in its thread; e.g. "1a, 2c", or in your own words) in one reply: the reply continues the run.
+    connections:
+      source: [comment]
+  - on: execute.completed              # the design step pushed leavedesk-qa
+    type: local_git.create_pull_request
+    config:
+      title: "{{source.key}}: test cases"
+      description: |-
+        Test cases of {{source.key}}: {{source.title}} ({{source.url}}), designed from its PRD.
+
+        AgentFlow run: {{run.url}}
+  - on: workflow.completed
+    instruction: |
+      The test cases of {{source.key}} are designed and attached to the ticket. Add a web link to the ticket: {{pr.url}} titled "Test cases {{source.key}}". Post nothing else.
+    connections:
+      source: [link]
+  - on: workflow.failed
+    type: jira.add_comment             # {{summary}}: why it stopped + run link
+  - on: [workflow.started, plan.started, plan.completed, input.needed, execute.started, execute.completed, workflow.completed, workflow.failed]
+    connection: http                   # every run event to the event feed (docs/workshop/event-feed.py)
+    type: webhook.post
+    enabled: false                     # off: queued behind a stopped feed, it delayed the later actions
+    config:
+      url: http://localhost:4545/agentflow
+  - on: [input.needed, workflow.failed]
+    type: agentflow.email              # Mailpit: http://localhost:8025; default subject names the event and item
+    config:
+      to: [admin@agentflow.local]
+  - on: [workflow.completed, workflow.failed]
+    type: jira.update_labels           # the label stays until the run ends; a reply to its question continues it
+    config:
+      remove: [qc-design]

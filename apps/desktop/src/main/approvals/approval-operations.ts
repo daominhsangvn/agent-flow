@@ -16,6 +16,24 @@ import {
   MEMBER_PACK_INSTALL_PATH,
 } from "@repo/api/src/types/member-pack-install";
 import {
+  ORCHESTRATOR_TURN_CANCEL_GATEWAY_PATH,
+  ORCHESTRATOR_TURN_CANCEL_OPERATION_ID,
+  ORCHESTRATOR_TURN_GATEWAY_PATH,
+  ORCHESTRATOR_TURN_OPERATION_ID,
+} from "@repo/api/src/types/orchestrator";
+import {
+  RUNNER_CAPABILITIES_REFRESH_GATEWAY_PATH,
+  RUNNER_CAPABILITIES_REFRESH_OPERATION_ID,
+} from "@repo/api/src/types/runner-capabilities";
+import {
+  WORKFLOW_DECISION_GATEWAY_PATH,
+  WORKFLOW_DECISION_OPERATION_ID,
+} from "@repo/api/src/types/workflow-decision";
+import {
+  WORKFLOW_INSTRUCTION_GATEWAY_PATH,
+  WORKFLOW_INSTRUCTION_OPERATION_ID,
+} from "@repo/api/src/types/workflow-instruction";
+import {
   BROWSER_COMMAND_KEY_APPROVAL_REQUEST_OPERATION_ID,
   BROWSER_COMMAND_KEY_APPROVAL_REQUEST_PATH,
   BROWSER_COMMAND_KEY_REVOKE_OPERATION_ID,
@@ -60,6 +78,11 @@ export const SUPPORTED_OPERATION_IDS = [
   BROWSER_COMMAND_KEY_REVOKE_OPERATION_ID,
   BROWSER_COMMAND_KEY_APPROVAL_REQUEST_OPERATION_ID,
   MEMBER_PACK_INSTALL_OPERATION_ID,
+  WORKFLOW_INSTRUCTION_OPERATION_ID,
+  WORKFLOW_DECISION_OPERATION_ID,
+  ORCHESTRATOR_TURN_OPERATION_ID,
+  ORCHESTRATOR_TURN_CANCEL_OPERATION_ID,
+  RUNNER_CAPABILITIES_REFRESH_OPERATION_ID,
 ] as const;
 
 export type OperationId = (typeof SUPPORTED_OPERATION_IDS)[number];
@@ -140,6 +163,21 @@ export function resolveOperationId(pathname: string): OperationId | null {
   }
   if (pathname === "/api/gateway/run-viewer-chat") {
     return "run_viewer_chat";
+  }
+  if (pathname === WORKFLOW_INSTRUCTION_GATEWAY_PATH) {
+    return WORKFLOW_INSTRUCTION_OPERATION_ID;
+  }
+  if (pathname === WORKFLOW_DECISION_GATEWAY_PATH) {
+    return WORKFLOW_DECISION_OPERATION_ID;
+  }
+  if (pathname === ORCHESTRATOR_TURN_GATEWAY_PATH) {
+    return ORCHESTRATOR_TURN_OPERATION_ID;
+  }
+  if (pathname === ORCHESTRATOR_TURN_CANCEL_GATEWAY_PATH) {
+    return ORCHESTRATOR_TURN_CANCEL_OPERATION_ID;
+  }
+  if (pathname === RUNNER_CAPABILITIES_REFRESH_GATEWAY_PATH) {
+    return RUNNER_CAPABILITIES_REFRESH_OPERATION_ID;
   }
   if (pathname.startsWith("/api/gateway/codex/argue/")) {
     return "codex_argue";

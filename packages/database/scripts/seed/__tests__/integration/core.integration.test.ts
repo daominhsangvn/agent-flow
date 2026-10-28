@@ -2,7 +2,7 @@
  * Core integration tests: TS-I.1, TS-I.3, TS-I.4, TS-I.5, TS-I.6, TS-I.7
  *
  * Covers:
- *   TS-I.1  Team and Projects created and queryable (AC-001, AC-002)
+ *   TS-I.1  Projects created and queryable (AC-001, AC-002)
  *   TS-I.3  Loops cover all 7 LoopStatus values with >=4 LoopCommand types (AC-004)
  *   TS-I.4  Artifacts cover all ArtifactType and DocumentStatus values (AC-005)
  *   TS-I.5  Feature artifacts exist for all FeatureStatus values (AC-005)
@@ -51,29 +51,10 @@ describe.skipIf(!DATABASE_URL_SET)(
     });
 
     // -------------------------------------------------------------------------
-    // TS-I.1: Team and Projects created and queryable (AC-001, AC-002)
+    // TS-I.1: Projects created and queryable (AC-001, AC-002)
     // -------------------------------------------------------------------------
 
-    describe("TS-I.1 — Team and Projects created and queryable (AC-001, AC-002)", () => {
-      it("creates exactly one team scoped to the organization", async () => {
-        const count = await ctx.prisma.team.count({
-          where: { organizationId: BASELINE_ORG_ID },
-        });
-        expect(count).toBeGreaterThanOrEqual(1);
-      });
-
-      it("adds the seed user as a team member", async () => {
-        const teams = await ctx.prisma.team.findMany({
-          where: { organizationId: BASELINE_ORG_ID },
-          include: { members: true },
-        });
-        const allMembers = teams.flatMap((t) => t.members);
-        const seedMember = allMembers.find(
-          (m) => m.userId === BASELINE_USER_ID
-        );
-        expect(seedMember).toBeDefined();
-      });
-
+    describe("TS-I.1 — Projects created and queryable (AC-001, AC-002)", () => {
       it("creates at least two projects scoped to the organization", async () => {
         const count = await ctx.prisma.project.count({
           where: { organizationId: BASELINE_ORG_ID },

@@ -36,6 +36,7 @@ If you reach for one of these, the module likely belongs in `apps/app`, not here
 - **`shared/` for cross-feature code only:** `api`, `auth`, `feature-flags`, `query`, `lib` (pure utils), `hooks`, `components`, `storybook`, `observability`.
 - **No barrel files** (Biome `noBarrelFile`). Consumers use subpath imports: `@repo/app/shared/lib/format-utils`, `@repo/app/tags/hooks/use-tags`. Do not create `index.ts` re-export hubs.
 - New functions, types, and constants go at the bottom of the file.
+- **YAML editors** (project process, workflow configuration, connection settings) share `shared/components/yaml-code-editor.tsx` (the CodeMirror setup) and `shared/lib/yaml-cursor.ts`, `yaml-problems.ts`, `yaml-completion.ts`. A feature supplies only what fits at the cursor and what its problems are; do not copy the editor, the cursor analysis or the problem placement into a slice. Values checked against integration field descriptors go through `integrations/lib/integration-yaml-fields.ts`. Secrets never go in a YAML editor: they stay password fields beside it.
 
 ## Client vs Server
 

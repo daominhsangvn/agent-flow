@@ -93,26 +93,42 @@ describe("parseAdoInbound workitem.updated", () => {
     expect(result.deliveryId).toBe(TEST_EVENT_ID);
     expect(result.eventType).toBe(AdoServiceHookEventType.WorkItemUpdated);
     expect(result.ignoredReason).toBeUndefined();
+    const occurrence = {
+      occurredAt: new Date("2026-10-04T11:58:12.345Z"),
+      actor: { id: HUMAN.id, displayName: HUMAN.displayName },
+      item: {
+        provider: IntegrationProviderKey.AzureDevOps,
+        externalId: String(TEST_WORK_ITEM_ID),
+        key: `#${TEST_WORK_ITEM_ID}`,
+        url: `${TEST_ORG_URL}/Fabrikam%20Web/_workitems/edit/${TEST_WORK_ITEM_ID}`,
+        title: "Export orders as CSV",
+        container: TEST_PROJECT,
+      },
+    };
+    const workItemAttributes = {
+      [AdoEventAttribute.Project]: TEST_PROJECT,
+      [AdoEventAttribute.WorkItemType]: "User Story",
+      [AdoEventAttribute.AreaPath]: "Fabrikam Web\\Checkout",
+      [AdoEventAttribute.Tags]: ["Checkout", "Backend"],
+      [AdoEventAttribute.State]: "New",
+    };
     expect(result.events).toEqual([
       {
         triggerType: AzureDevOpsTriggerType.WorkItemAssigned,
         dedupKey: `${TEST_WORK_ITEM_ID}:rev:7`,
-        occurredAt: new Date("2026-10-04T11:58:12.345Z"),
-        actor: { id: HUMAN.id, displayName: HUMAN.displayName },
-        item: {
-          provider: IntegrationProviderKey.AzureDevOps,
-          externalId: String(TEST_WORK_ITEM_ID),
-          key: `#${TEST_WORK_ITEM_ID}`,
-          url: `${TEST_ORG_URL}/Fabrikam%20Web/_workitems/edit/${TEST_WORK_ITEM_ID}`,
-          title: "Export orders as CSV",
-          container: TEST_PROJECT,
-        },
+        ...occurrence,
+        attributes: workItemAttributes,
+      },
+      {
+        triggerType: AzureDevOpsTriggerType.WorkItemConditions,
+        dedupKey: `${TEST_WORK_ITEM_ID}:conditions:7`,
+        ...occurrence,
         attributes: {
-          [AdoEventAttribute.Project]: TEST_PROJECT,
-          [AdoEventAttribute.WorkItemType]: "User Story",
-          [AdoEventAttribute.AreaPath]: "Fabrikam Web\\Checkout",
-          [AdoEventAttribute.Tags]: ["Checkout", "Backend"],
-          [AdoEventAttribute.State]: "New",
+          ...workItemAttributes,
+          [AdoEventAttribute.AssignedToBot]: true,
+          [AdoEventAttribute.BecameAssigned]: true,
+          [AdoEventAttribute.AddedTags]: [],
+          [AdoEventAttribute.Mentioned]: false,
         },
       },
     ]);
@@ -132,6 +148,7 @@ describe("parseAdoInbound workitem.updated", () => {
 
     expect(result.events.map((event) => event.triggerType)).toEqual([
       AzureDevOpsTriggerType.WorkItemAssigned,
+      AzureDevOpsTriggerType.WorkItemConditions,
     ]);
     expect(result.events[0]?.actor).toEqual({
       id: HUMAN.uniqueName,
@@ -180,11 +197,23 @@ describe("parseAdoInbound workitem.updated", () => {
     ).toEqual([
       [AzureDevOpsTriggerType.WorkItemAssigned, `${TEST_WORK_ITEM_ID}:rev:7`],
       [AzureDevOpsTriggerType.WorkItemTagged, `${TEST_WORK_ITEM_ID}:tags:7`],
+      [
+        AzureDevOpsTriggerType.WorkItemConditions,
+        `${TEST_WORK_ITEM_ID}:conditions:7`,
+      ],
     ]);
     expect(result.events[1]?.attributes[AdoEventAttribute.AddedTags]).toEqual([
       "AgentFlow",
       "Backend",
     ]);
+    // One change both assigned and tagged: the conditions event has both facts.
+    expect(result.events[2]?.attributes).toMatchObject({
+      [AdoEventAttribute.Tags]: ["checkout", "AgentFlow", "Backend"],
+      [AdoEventAttribute.AssignedToBot]: true,
+      [AdoEventAttribute.BecameAssigned]: true,
+      [AdoEventAttribute.AddedTags]: ["AgentFlow", "Backend"],
+      [AdoEventAttribute.Mentioned]: false,
+    });
   });
 
   it("uses revision.id when workItemId is missing (resource.id is the update id)", async () => {
@@ -238,6 +267,10 @@ describe("parseAdoInbound workitem.created", () => {
     ).toEqual([
       [AzureDevOpsTriggerType.WorkItemAssigned, `${TEST_WORK_ITEM_ID}:rev:1`],
       [AzureDevOpsTriggerType.WorkItemTagged, `${TEST_WORK_ITEM_ID}:tags:1`],
+      [
+        AzureDevOpsTriggerType.WorkItemConditions,
+        `${TEST_WORK_ITEM_ID}:conditions:1`,
+      ],
     ]);
     expect(result.events[0]?.actor).toEqual({
       id: HUMAN.uniqueName,
@@ -334,6 +367,10 @@ describe("parseAdoInbound with unexpected non-essential values", () => {
       result.events.map((event) => [event.triggerType, event.dedupKey])
     ).toEqual([
       [AzureDevOpsTriggerType.WorkItemAssigned, `${TEST_WORK_ITEM_ID}:rev:7`],
+      [
+        AzureDevOpsTriggerType.WorkItemConditions,
+        `${TEST_WORK_ITEM_ID}:conditions:7`,
+      ],
     ]);
     expect(result.events[0]?.occurredAt).toEqual(
       new Date("2026-10-04T11:58:12.345Z")
@@ -354,6 +391,10 @@ describe("parseAdoInbound with unexpected non-essential values", () => {
     ).toEqual([
       [AzureDevOpsTriggerType.WorkItemAssigned, `${TEST_WORK_ITEM_ID}:rev:1`],
       [AzureDevOpsTriggerType.WorkItemTagged, `${TEST_WORK_ITEM_ID}:tags:1`],
+      [
+        AzureDevOpsTriggerType.WorkItemConditions,
+        `${TEST_WORK_ITEM_ID}:conditions:1`,
+      ],
     ]);
   });
 

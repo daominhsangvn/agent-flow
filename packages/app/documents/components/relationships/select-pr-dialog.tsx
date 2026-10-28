@@ -111,8 +111,8 @@ export function SelectPullRequestDialog({
   // document (e.g. a plan-only surface).
   const tagSourceArtifactId = documentId ?? planId ?? null;
 
-  // Resolve the project's repos via the post-PLN-237 chain: project
-  // override → single-team inheritance.
+  // Resolve the project's repos: prior loop, then the project's primary
+  // repository.
   const resolved = useResolvedJobRepos({
     projectId,
     enabled: open && !!projectId,
@@ -121,25 +121,24 @@ export function SelectPullRequestDialog({
   const isResolvingRepo = resolved.isLoading;
 
   // Deduplicate primary + additional by repo id so we don't query the same
-  // repo twice when it appears in both slots.
+  // repo twice when it appears in both slots. PR lookups are keyed by the
+  // GitHub installation-repo id, so entries without one are skipped.
   const repos = useMemo(() => {
     const seen = new Set<string>();
     const out: Array<{ id: string; fullName?: string }> = [];
-    if (resolved.primary?.id) {
-      seen.add(resolved.primary.id);
-      out.push({
-        id: resolved.primary.id,
-        fullName: resolved.primary.fullName,
-      });
-    }
-    for (const repo of resolved.additional) {
-      if (repo.id && !seen.has(repo.id)) {
-        seen.add(repo.id);
-        out.push({ id: repo.id, fullName: repo.fullName });
+    const resolvedIds = [resolved.primary, ...resolved.additional]
+      .map((repo) => repo?.id)
+      .filter((id): id is string => Boolean(id));
+    for (const id of resolvedIds) {
+      const entry = resolved.pool.find((r) => r.id === id);
+      if (!entry?.githubRepositoryId || seen.has(id)) {
+        continue;
       }
+      seen.add(id);
+      out.push({ id: entry.githubRepositoryId, fullName: entry.fullName });
     }
     return out;
-  }, [resolved.primary, resolved.additional]);
+  }, [resolved.primary, resolved.additional, resolved.pool]);
 
   const {
     pullRequests: allPullRequests,

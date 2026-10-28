@@ -20,7 +20,7 @@ import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { FileTextIcon, TriangleAlertIcon } from "lucide-react";
 import { useMemo, useState } from "react";
-import { DocumentsView } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/documents-view";
+import { DocumentsView } from "@/app/(authenticated)/[orgSlug]/projects/[projectId]/components/documents-view";
 
 /**
  * Org-level Documents index (FEA-4140). Lists project-less DOC artifacts —

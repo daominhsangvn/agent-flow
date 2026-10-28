@@ -187,7 +187,7 @@ When the orchestrator prompt contains **"FINALIZE MODE"**, flesh out the existin
       mkdir -p "$AGENTFLOW_WORKDIR/.agentflow-ai/decision-tables"
       DT_BEFORE=$(ls -1 "$AGENTFLOW_WORKDIR/.agentflow-ai/decision-tables/" 2>/dev/null || true)
       ```
-   2. **Activate skill**: Activate `code:decision-table` with the finalized plan as context.
+   2. **Activate skill**: Activate `code:decision-table` with the finalized plan as context, and have it write the artifact into `$AGENTFLOW_WORKDIR/.agentflow-ai/decision-tables/` (the literal resolved path), not the repository root's `.agentflow-ai/decision-tables/` the skill defaults to. That directory is the one this algorithm counts and the one the orchestrator's Phase 5.5 reads (`$AGENTFLOW_WORKDIR/<decisionTable.path>`); on a workspace run the current directory is not a repository at all.
    3. **Compute set-difference**: After the skill completes, capture the new file set and compute what was added:
       ```bash
       DT_AFTER=$(ls -1 "$AGENTFLOW_WORKDIR/.agentflow-ai/decision-tables/" 2>/dev/null || true)

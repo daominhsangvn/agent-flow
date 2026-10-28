@@ -210,9 +210,8 @@ function isPrEvaluatable(pr: PullRequestInfo | null): boolean {
 }
 
 function getPlanRedirectPath(plan: DocumentDetail, orgSlug: string): string {
-  const teamId = plan.project?.teams?.[0]?.id;
-  if (teamId) {
-    return `/${orgSlug}/teams/${teamId}/projects/${plan.project?.id ?? ""}`;
+  if (plan.project?.id) {
+    return `/${orgSlug}/projects/${plan.project.id}`;
   }
   return `/${orgSlug}/implementation-plans`;
 }

@@ -7,10 +7,7 @@ import {
 } from "./better-auth";
 
 const RE_OPEN_ORGANIZATION_SWITCHER = /open organization switcher/i;
-const RE_ADD_TEAM = /add team/i;
-const RE_YOUR_TEAMS = /your teams/i;
-const RE_TEAM_NAME = /^team name$/i;
-const RE_CREATE_TEAM = /^create team$/i;
+const RE_ALL_PROJECTS = /^all projects$/i;
 const RE_PROJECT_NAME = /^project name$/i;
 const RE_CREATE_PROJECT = /^create project$/i;
 const ONBOARDING_PATH_SEGMENT = "/onboarding";
@@ -35,10 +32,7 @@ export async function ensureAuthenticatedShellReady(page: Page) {
   await expect(
     page.getByRole("button", { name: RE_OPEN_ORGANIZATION_SWITCHER })
   ).toBeVisible({ timeout: SHELL_TIMEOUT_MS });
-  await expect(page.getByText(RE_YOUR_TEAMS)).toBeVisible({
-    timeout: SHELL_TIMEOUT_MS,
-  });
-  await expect(page.getByRole("button", { name: RE_ADD_TEAM })).toBeVisible({
+  await expect(page.getByRole("link", { name: RE_ALL_PROJECTS })).toBeVisible({
     timeout: SHELL_TIMEOUT_MS,
   });
 }
@@ -111,14 +105,11 @@ async function waitForAuthenticatedEntry(
 }
 
 /**
- * Drives the two-step onboarding wizard (create team, then project). The
+ * Drives the one-step onboarding wizard (create project). The
  * setup project calls PUT /onboarding/complete-wizard first, so this only
  * runs when that flag was lost (e.g. a test deleted the org's last project).
  */
 async function completeOnboarding(page: Page) {
-  await page.getByLabel(RE_TEAM_NAME).fill(`E2E Test Team ${Date.now()}`);
-  await page.getByRole("button", { name: RE_CREATE_TEAM }).click();
-
   await page.getByLabel(RE_PROJECT_NAME).fill(`E2E Test Project ${Date.now()}`);
   await page.getByRole("button", { name: RE_CREATE_PROJECT }).click();
 

@@ -19,92 +19,32 @@ import {
   useAgentSessionUsage,
 } from "../use-agent-sessions";
 
-const TEAM_A = "019f0fcb-8336-7c4d-9f64-528fb9520c32";
-const TEAM_B = "019f0fcb-8336-7c4d-9f64-528fb9520c33";
-
-describe("agent-session team-scope hooks", () => {
-  it("disables explicit team usage queries until teamId exists", () => {
+describe("agent-session query gating", () => {
+  it("does not run the usage query while disabled", () => {
     const source = createSource();
 
-    renderHook(
-      () =>
-        useAgentSessionUsage({
-          viewerScope: AgentSessionViewerScope.Team,
-        }),
-      { wrapper: createWrapper(source) }
-    );
+    renderHook(() => useAgentSessionUsage({}, { enabled: false }), {
+      wrapper: createWrapper(source),
+    });
 
     expect(source.usage).not.toHaveBeenCalled();
   });
 
-  it("passes teamId through analytics queries and isolates cache keys", async () => {
+  it("runs the analytics query by default", async () => {
     const source = createSource();
 
-    const { rerender, result } = renderHook(
-      ({ teamId }) => ({
-        queryClient: useQueryClient(),
-        analytics: useAgentSessionAnalytics({
-          teamId,
-          viewerScope: AgentSessionViewerScope.Team,
-        }),
-      }),
-      {
-        initialProps: { teamId: TEAM_A },
-        wrapper: createWrapper(source),
-      }
-    );
-
-    await waitFor(() =>
-      expect(source.analytics).toHaveBeenCalledWith({
-        teamId: TEAM_A,
-        viewerScope: AgentSessionViewerScope.Team,
-      })
-    );
-
-    rerender({ teamId: TEAM_B });
-
-    await waitFor(() =>
-      expect(source.analytics).toHaveBeenCalledWith({
-        teamId: TEAM_B,
-        viewerScope: AgentSessionViewerScope.Team,
-      })
-    );
-
-    expect(
-      result.current.queryClient.getQueryData(
-        agentSessionKeys.analytics("source", {
-          teamId: TEAM_A,
-          viewerScope: AgentSessionViewerScope.Team,
-        })
-      )
-    ).toEqual({
-      byAgentType: [],
-      byProject: [],
-      byRepository: [],
-      byTool: [],
-      viewerScope: AgentSessionViewerScope.Team,
+    renderHook(() => useAgentSessionAnalytics({}), {
+      wrapper: createWrapper(source),
     });
-    expect(
-      result.current.queryClient.getQueryData(
-        agentSessionKeys.analytics("source", {
-          teamId: TEAM_B,
-          viewerScope: AgentSessionViewerScope.Team,
-        })
-      )
-    ).toEqual({
-      byAgentType: [],
-      byProject: [],
-      byRepository: [],
-      byTool: [],
-      viewerScope: AgentSessionViewerScope.Team,
-    });
+
+    await waitFor(() => expect(source.analytics).toHaveBeenCalledWith({}));
   });
 });
 
 const LIST_FIXTURE: AgentSessionListResponse = {
   items: [],
   total: 0,
-  viewerScope: AgentSessionViewerScope.Team,
+  viewerScope: AgentSessionViewerScope.Organization,
 };
 
 const USAGE_FIXTURE: AgentSessionUsageSummary = {
@@ -123,7 +63,7 @@ const USAGE_FIXTURE: AgentSessionUsageSummary = {
   totalInputTokens: 0,
   totalOutputTokens: 0,
   totalSessions: 0,
-  viewerScope: AgentSessionViewerScope.Team,
+  viewerScope: AgentSessionViewerScope.Organization,
 };
 
 // FEA-4157: the Sessions table + its prop-driven summary cards read through ONE
@@ -289,7 +229,7 @@ function createSource(): AgentSessionsDataSource {
       byProject: [],
       byRepository: [],
       byTool: [],
-      viewerScope: AgentSessionViewerScope.Team,
+      viewerScope: AgentSessionViewerScope.Organization,
     } satisfies AgentSessionAnalytics),
   };
 }

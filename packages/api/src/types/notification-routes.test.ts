@@ -28,10 +28,9 @@ describe("getNotificationEntityPath", () => {
     expect(
       getNotificationEntityPath({
         kind: NotificationEntityKind.Project,
-        teamId: "team-1",
         projectId: "proj-2",
       })
-    ).toBe("/teams/team-1/projects/proj-2");
+    ).toBe("/projects/proj-2");
   });
 
   it("builds the plain branch deep-link path when no tab is requested", () => {

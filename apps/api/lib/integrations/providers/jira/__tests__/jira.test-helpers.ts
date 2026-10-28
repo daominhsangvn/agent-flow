@@ -242,6 +242,7 @@ export function makeRunSnapshot(
     step: null,
     reply: null,
     documents: [],
+    releaseNotes: null,
     stepReplies: {},
     summaryMarkdown:
       "✅ **PROJ-123** is done. Pull request: [#42](https://github.com/acme/repo/pull/42) (branch `feature/proj-123`).",
@@ -293,11 +294,12 @@ export function renderer(
     );
 }
 
-/** Body of a recorded request, as the JSON the provider sent. */
+/** Body of a recorded request, as the JSON the provider sent (null for a multipart upload). */
 export function requestBody(
   request: ProviderHttpRequest | undefined
 ): JsonValue {
-  return request?.body ?? null;
+  const body = request?.body;
+  return body === undefined || body instanceof FormData ? null : body;
 }
 
 export function requestQuery(

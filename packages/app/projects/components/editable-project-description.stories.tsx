@@ -10,13 +10,13 @@ import { EditableProjectDescription } from "./editable-project-description";
  */
 const PROJECT_ID = "01PROJECT000000000000000";
 
-// useUpdateProject.onSuccess reads result.id/slug/teams, so the fixture must
+// useUpdateProject.onSuccess reads result.id/slug, so the fixture must
 // return a minimally-shaped ProjectWithDetails (not the default {}).
 const projectRoutes: FixtureRoute[] = [
   {
     method: "PUT",
     path: "/projects/*",
-    respond: () => ({ id: PROJECT_ID, slug: "q3-roadmap", teams: [] }),
+    respond: () => ({ id: PROJECT_ID, slug: "q3-roadmap" }),
   },
 ];
 

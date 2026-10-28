@@ -1,8 +1,9 @@
 import { IntegrationProviderKey } from "@repo/api/src/types/integration";
 import { describe, expect, it } from "vitest";
-import type { InboundRequest } from "../../../types";
+import { HttpMethod, type InboundRequest } from "../../../types";
 import {
   JIRA_WEBHOOK_IDENTIFIER_HEADER,
+  JiraEventAttribute,
   JiraIgnoredReason,
   JiraTriggerType,
 } from "../constants";
@@ -21,25 +22,44 @@ import {
   CLOUD_BOT_ACCOUNT,
   cloudConfig,
   DC_BOT_ACCOUNT,
+  type FakeHttp,
   HUMAN_ACCOUNT_ID,
+  jsonResponse,
   makeJiraContext,
+  requestQuery,
   routedHttp,
 } from "./jira.test-helpers";
 
 const DELIVERY_ID = "0b6c1d2e-3f40-4a5b-8c6d-7e8f9a0b1c2d";
+const ISSUE_PATH = "/rest/api/3/issue/10042";
 
-function parse(body: unknown) {
+function parse(body: unknown, fake: FakeHttp = routedHttp([])) {
   const request: InboundRequest = {
     rawBody: JSON.stringify(body),
     headers: new Headers({ [JIRA_WEBHOOK_IDENTIFIER_HEADER]: DELIVERY_ID }),
     url: new URL("https://api.example.com/webhooks/integrations/key-1"),
   };
   const ctx = makeJiraContext({
-    http: routedHttp([]).http,
+    http: fake.http,
     config: cloudConfig(),
     account: CLOUD_BOT_ACCOUNT,
   });
   return parseJiraRequest(request, ctx);
+}
+
+/** GET /rest/api/3/issue/10042?fields=… as the comment trigger reads it. */
+function commentedIssue(fields: Record<string, unknown>) {
+  return {
+    id: "10042",
+    key: "PROJ-123",
+    fields: {
+      summary: "Add CSV export to the reports page",
+      issuetype: { name: "Story" },
+      project: { key: "PROJ" },
+      status: { name: "In Progress" },
+      ...fields,
+    },
+  };
 }
 
 /** Jira Cloud `comment_created` admin webhook (REST v2 shape, wiki markup body). */
@@ -136,13 +156,90 @@ describe("jira.issue_mentioned webhooks", () => {
       commentWebhook(`[~accountid:${BOT_ACCOUNT_ID}] please implement this`)
     );
 
-    expect(result.events).toHaveLength(1);
+    expect(result.events).toHaveLength(2);
     expect(result.events[0]).toMatchObject({
       triggerType: JiraTriggerType.IssueMentioned,
       dedupKey: "PROJ-123:mention:comment-10900",
       item: { provider: IntegrationProviderKey.Jira, key: "PROJ-123" },
       actor: { id: HUMAN_USER.accountId },
     });
+    expect(result.events[1]).toMatchObject({
+      triggerType: JiraTriggerType.IssueConditions,
+      dedupKey: "PROJ-123:conditions:comment-10900",
+      attributes: {
+        [JiraEventAttribute.Mentioned]: true,
+        [JiraEventAttribute.BecameAssigned]: false,
+        [JiraEventAttribute.AddedLabels]: [],
+      },
+    });
+  });
+
+  it("reads the commented issue, whose webhook lacks the labels, for the filters", async () => {
+    const fake = routedHttp([
+      {
+        method: HttpMethod.Get,
+        path: ISSUE_PATH,
+        respond: jsonResponse(
+          200,
+          commentedIssue({
+            labels: ["ai-ready"],
+            assignee: { accountId: BOT_ACCOUNT_ID },
+          })
+        ),
+      },
+    ]);
+    const payload = commentWebhook(`[~accountid:${BOT_ACCOUNT_ID}] go`);
+    // A comment webhook's issue carries only a few fields.
+    const { labels: _labels, ...trimmedFields } = payload.issue.fields;
+
+    const result = await parse(
+      { ...payload, issue: { ...payload.issue, fields: trimmedFields } },
+      fake
+    );
+
+    expect(fake.requests).toHaveLength(1);
+    expect(requestQuery(fake.requests[0]).get("fields")).toContain("labels");
+    expect(result.events.map((event) => event.attributes)).toEqual([
+      expect.objectContaining({
+        [JiraEventAttribute.Labels]: ["ai-ready"],
+        [JiraEventAttribute.Status]: "In Progress",
+      }),
+      expect.objectContaining({
+        [JiraEventAttribute.Labels]: ["ai-ready"],
+        [JiraEventAttribute.AssignedToBot]: true,
+        [JiraEventAttribute.Mentioned]: true,
+      }),
+    ]);
+  });
+
+  it("keeps the mention with the webhook's fields when the issue cannot be read", async () => {
+    const result = await parse(
+      commentWebhook(`[~accountid:${BOT_ACCOUNT_ID}] go`),
+      routedHttp([
+        {
+          method: HttpMethod.Get,
+          path: ISSUE_PATH,
+          respond: jsonResponse(503, { errorMessages: ["down"] }),
+        },
+      ])
+    );
+
+    expect(result.events.map((event) => event.triggerType)).toEqual([
+      JiraTriggerType.IssueMentioned,
+      JiraTriggerType.IssueConditions,
+    ]);
+    expect(result.events[0]?.attributes[JiraEventAttribute.Labels]).toEqual([
+      "ai-ready",
+      "reports",
+    ]);
+  });
+
+  it("does not read the issue for a comment without a bot mention", async () => {
+    const fake = routedHttp([]);
+
+    await parse(commentWebhook("Looks good"), fake);
+
+    expect(fake.requests).toEqual([]);
   });
 
   it("ignores comments without a bot mention and comments by the bot", async () => {
@@ -171,8 +268,12 @@ describe("jira.issue_mentioned webhooks", () => {
 
     expect(result.events.map((event) => event.triggerType)).toEqual([
       JiraTriggerType.IssueMentioned,
+      JiraTriggerType.IssueConditions,
     ]);
-    expect(result.events[0]?.dedupKey).toBe("PROJ-123:created");
+    expect(result.events.map((event) => event.dedupKey)).toEqual([
+      "PROJ-123:created",
+      "PROJ-123:conditions:created",
+    ]);
   });
 
   it("uses the assigned trigger's filters", () => {

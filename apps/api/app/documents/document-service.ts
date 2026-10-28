@@ -1,5 +1,4 @@
 import { ArtifactType, LinkType } from "@repo/api/src/types/artifact";
-import type { JsonObject } from "@repo/api/src/types/common";
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import {
   type ArtifactRepositorySnapshot,
@@ -285,8 +284,9 @@ export async function createDocumentRecord(
  *   2. `sourceId`-based inheritance from the parent artifact's snapshot.
  *      Empty parent snapshots fall through to project defaults so the new
  *      artifact still gets meaningful repos when possible.
- *   3. Project defaults via `loadProjectRepoDefaults`. Templates and any
- *      project with no resolved primary produce a `source: 'none'`
+ *   3. Project defaults from the project's repositories
+ *      (`buildSnapshotFromProjectDefaults`). Templates and any
+ *      project with no repositories produce a `source: 'none'`
  *      empty snapshot.
  */
 async function resolveRepositorySnapshot(opts: {
@@ -332,7 +332,7 @@ async function resolveRepositorySnapshot(opts: {
 
   const project = await tx.project.findFirst({
     where: { id: resolvedProjectId, organizationId },
-    select: { settings: true },
+    select: { id: true },
   });
   if (!project) {
     return {
@@ -342,11 +342,7 @@ async function resolveRepositorySnapshot(opts: {
     };
   }
 
-  return buildSnapshotFromProjectDefaults(
-    resolvedProjectId,
-    organizationId,
-    (project.settings ?? {}) as JsonObject
-  );
+  return buildSnapshotFromProjectDefaults(resolvedProjectId, organizationId);
 }
 
 /** Transform Artifact + detail into the DocumentWithProject wire shape. */
@@ -365,9 +361,6 @@ function toDocumentWithProject(
       ? {
           id: artifact.project.id,
           name: artifact.project.name,
-          teams: artifact.project.teams.map(
-            (pt: { team: { id: string; name: string } }) => pt.team
-          ),
         }
       : null,
     tags: mapTagRelations(artifact.tagArtifacts ?? []),
@@ -378,7 +371,7 @@ function toDocumentWithProject(
 export const documentService = {
   /**
    * Find all DOCUMENT artifacts with optional filters (org-scoped). Returns
-   * each document with its project (with teams), and generation status
+   * each document with its project, and generation status
    * (resolved from Loop records, with dismissed failures suppressed).
    */
   async findAll(

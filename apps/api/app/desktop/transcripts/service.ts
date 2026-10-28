@@ -28,7 +28,6 @@ import {
   presignTranscriptUploadPart,
 } from "@repo/storage";
 import { computeTargetsService } from "@/app/compute-targets/service";
-import { isOrgSessionSyncPolicyEnabled } from "@/lib/org-session-sync-policy";
 import { resolveSkipReasonPrecedence } from "./skip-reason-precedence";
 import {
   decideSyncPlan,
@@ -57,13 +56,6 @@ const PLAN_TX_TIMEOUT_MS = 30_000;
 /** Backend-only outcomes the routes map to HTTP responses. */
 export const TranscriptSyncErrorReason = {
   Forbidden: "forbidden",
-  /**
-   * FEA-4169: the org's server-owned session-sync policy is OFF, so no
-   * transcript bytes may be ingested for this organization. Mapped to a 403 by
-   * the route (a denial the client backs off on), distinct from `Forbidden`
-   * (compute-target ownership) so the desktop can taxonomize it if needed.
-   */
-  PolicyDisabled: "policy_disabled",
   RateLimited: "rate_limited",
   InvalidRequest: "invalid_request",
   /** ETag moved / checksum mismatch / unknown upload — client re-plans. */
@@ -113,11 +105,6 @@ export type TranscriptServiceDeps = {
   s3?: TranscriptS3Port;
   now?: () => number;
   rateLimiter?: TranscriptRateLimiter;
-  /**
-   * FEA-4169: server-side ORG POLICY gate. Defaults to the DB-backed
-   * {@link isOrgSessionSyncPolicyEnabled}. Overridable in tests.
-   */
-  isOrgPolicyEnabled?: (organizationId: string) => Promise<boolean>;
 };
 
 type AuthContext = {
@@ -145,7 +132,6 @@ type ResolvedDeps = {
   s3: TranscriptS3Port;
   now: () => number;
   rateLimiter: TranscriptRateLimiter;
-  isOrgPolicyEnabled: (organizationId: string) => Promise<boolean>;
 };
 
 /** Per-plan context derived from the stored row + request. */
@@ -161,8 +147,6 @@ function resolveDeps(deps?: TranscriptServiceDeps): ResolvedDeps {
     s3: deps?.s3 ?? defaultS3Port,
     now: deps?.now ?? Date.now,
     rateLimiter: deps?.rateLimiter ?? transcriptRateLimiter,
-    isOrgPolicyEnabled:
-      deps?.isOrgPolicyEnabled ?? isOrgSessionSyncPolicyEnabled,
   };
 }
 
@@ -257,15 +241,6 @@ async function authorizeTranscriptRequest(
   );
   if (!target) {
     return { error: TranscriptSyncErrorReason.Forbidden };
-  }
-  // FEA-4169: server-owned ORG POLICY gate. When the org's session-sync policy
-  // is OFF, no transcript bytes may be ingested — the server denies here so an
-  // older/compromised Desktop that ignores the policy cannot request presigned
-  // upload URLs (planSync), complete a multipart upload, or mark-skip a file for
-  // a policy-off org. Enforced BEFORE rate-limit/S3 work; fail-closed
-  // (unresolved org → deny) and independent of any client-sent field.
-  if (!(await deps.isOrgPolicyEnabled(input.organizationId))) {
-    return { error: TranscriptSyncErrorReason.PolicyDisabled };
   }
   if (!deps.rateLimiter.attempt(request.computeTargetId, deps.now())) {
     return { error: TranscriptSyncErrorReason.RateLimited };

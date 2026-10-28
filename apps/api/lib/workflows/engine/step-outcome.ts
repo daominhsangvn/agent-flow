@@ -35,7 +35,11 @@ export type EngineRun = {
   stepId?: string | null;
   /** Progress of the current process step (RunStepState). */
   stepState?: unknown;
-  workflow: { name: string; enabled: boolean; projectId: string | null };
+  /** The trigger's project: the run's documents, process and connections. */
+  projectId: string;
+  /** The source project connection; null for the built-in HTTP endpoint. */
+  projectConnectionId: string | null;
+  workflow: { name: string; enabled: boolean };
 };
 
 /** Run columns a transition may set besides status/phaseStartedAt. */

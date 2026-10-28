@@ -5,7 +5,7 @@ Surface-agnostic application code shared between the Next.js web shell
 
 ## Rules
 
-- **No surface bindings.** No `next/*`, no Clerk/`@repo/auth/*`, no
+- **No surface bindings.** No `next/*`, no `@repo/auth/*`, no
   `server-only`, no `@repo/database`, no `@/*` app alias. Transport, auth, and
   navigation are injected through ports (`shared/api`, `shared/auth`,
   `@repo/navigation`). Enforced by the Biome `noRestrictedImports` guardrail for
@@ -39,16 +39,17 @@ ported to `@repo/app`:
 - `lib/desktop-command-signing/*` — command signing (security-critical,
   local-only); `hooks/queries/use-public-keys.ts` is part of the same flow.
 - Compute-target code — `hooks/queries/use-compute-targets`,
-  `use-compute-target-status-stream`, `use-agent-onboarding` (consumes targets),
-  and `components/compute-target-popover`. Managing compute targets is a
+  `use-compute-target-status-stream` and `use-agent-onboarding` (consumes
+  targets). Managing compute targets is a
   web-app/control-plane concern: the desktop app *is* a compute target, so it
   never enumerates or selects them. Web-only by nature, not deferred.
 
-### Excluded — removed with the Engineer/Desktop surface
+### Excluded — Engineer/Desktop-coupled
 
-Slated for deletion alongside the Engineer feature, so **not worth porting**.
-Per the FEA-1510 directive: do not port anything in (or coupled to) an
-`engineer/` tree.
+The hosted edition slated these for deletion alongside the Engineer feature.
+In this self-hosted edition loops run only on desktop compute targets, so the
+Engineer surface stays, but the rule is the same: do not port anything in (or
+coupled to) an `engineer/` tree into `@repo/app`.
 
 - `lib/engineer/*` — Engineer feature (security-critical, local FS/process).
 - `lib/git/*`, `lib/system-check/*` — Engineer-feature subtrees.
@@ -57,18 +58,16 @@ Per the FEA-1510 directive: do not port anything in (or coupled to) an
   hooks (`use-chat-session` etc. reach into `lib/engineer/*`, route-local
   `comment-context`, and `env`), `lib/chat/{chat-markdown,chat-utils}` (import
   `lib/engineer/*`, `lib/git/*`), and the server-side `lib/chat/runner-token/*`
-  (Clerk auth, `next/server`). The surface-agnostic chat **core** — stream/state
+  (`@repo/auth`, `next/server`). The surface-agnostic chat **core** — stream/state
   reducers, NDJSON `stream-utils`, context builders, `default-models`,
   `mcp-instructions`, `build-section`, and the leaf presentational components —
   ported to `@repo/app/chat/` (shared with the non-Engineer document-chat path).
-- `lib/run-loop-launcher.ts`, `lib/diff-viewer-theme.ts` — Engineer-coupled.
+- `lib/loops/run-loop-launcher.ts` — Engineer-coupled.
 - `lib/markdown.tsx` — imports the excluded `lib/engineer/*`.
-- `lib/desktop-installer-script.ts`, `lib/desktop-managed-onboarding.ts`,
-  `lib/desktop-provisioning-platform.ts` — surface-agnostic and individually
-  portable (each has colocated tests), **but** consumed only by Desktop
-  onboarding/provisioning flows that go away with the Desktop surface. Deferred
-  as throwaway risk; revisit only if Desktop onboarding outlives the Engineer
-  removal.
+- `lib/desktop-installer-script.ts`, `lib/desktop-managed-onboarding.ts` —
+  surface-agnostic and individually portable (each has colocated tests),
+  **but** consumed only by the web app's Desktop onboarding/provisioning flows,
+  so there is nothing to share them with.
 
 ### Deferred — portable, but each needs a deliberate decision (tackle last)
 
@@ -85,7 +84,7 @@ Building `/${orgSlug}/…` hrefs is a *routing* concern, not auth — so it live
 the navigation port, not the auth snapshot. `@repo/navigation/use-org-path`
 returns an `OrgPathBuilder` (`(orgRelativePath) => href`); the web adapter
 (`apps/app/lib/navigation/next-adapter.tsx`) implements it via the app-owned
-`useOrgSlug()` (route param + Clerk fallback, which correctly stays in
+`useOrgSlug()` (route param + active-organization fallback from `@repo/auth`, which correctly stays in
 `apps/app`). Shared components call `useOrgPath()` and never interpolate a raw
 slug — the builder also guards the empty-slug (hydrating) case so it never emits
 a protocol-relative `//…`. Do NOT thread the slug through `AuthSnapshot` (that

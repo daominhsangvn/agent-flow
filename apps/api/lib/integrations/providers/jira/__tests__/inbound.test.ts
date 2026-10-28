@@ -30,6 +30,9 @@ import {
   HUMAN_USER,
   issueCreatedWebhook,
   labelsAddedWebhook,
+  labelsItem,
+  statusChangedWebhook,
+  statusItem,
   WEBHOOK_TIMESTAMP,
 } from "./jira.test-fixtures";
 import {
@@ -169,8 +172,26 @@ describe("verifyJiraRequest", () => {
 });
 
 describe("parseJiraRequest", () => {
-  it("emits jira.issue_assigned for an issue assigned to the bot (Cloud)", async () => {
+  it("emits jira.issue_assigned and jira.issue_conditions for an issue assigned to the bot (Cloud)", async () => {
     const result = await parse(assignedToBotWebhook());
+    const occurrence = {
+      occurredAt: new Date(WEBHOOK_TIMESTAMP),
+      actor: { id: HUMAN_ACCOUNT_ID, displayName: "Bea Analyst" },
+      item: {
+        provider: IntegrationProviderKey.Jira,
+        externalId: "10042",
+        key: "PROJ-123",
+        url: `${CLOUD_SITE_URL}/browse/PROJ-123`,
+        title: "Add CSV export to the reports page",
+        container: "PROJ",
+      },
+    };
+    const issueAttributes = {
+      [JiraEventAttribute.ProjectKey]: "PROJ",
+      [JiraEventAttribute.IssueType]: "Story",
+      [JiraEventAttribute.Labels]: ["ai-ready", "reports"],
+      [JiraEventAttribute.Status]: "To Do",
+    };
     expect(result).toEqual({
       deliveryId: DELIVERY_ID,
       eventType: JiraWebhookEvent.IssueUpdated,
@@ -178,21 +199,19 @@ describe("parseJiraRequest", () => {
         {
           triggerType: JiraTriggerType.IssueAssigned,
           dedupKey: "PROJ-123:assignee:10234",
-          occurredAt: new Date(WEBHOOK_TIMESTAMP),
-          actor: { id: HUMAN_ACCOUNT_ID, displayName: "Bea Analyst" },
-          item: {
-            provider: IntegrationProviderKey.Jira,
-            externalId: "10042",
-            key: "PROJ-123",
-            url: `${CLOUD_SITE_URL}/browse/PROJ-123`,
-            title: "Add CSV export to the reports page",
-            container: "PROJ",
-          },
+          ...occurrence,
+          attributes: issueAttributes,
+        },
+        {
+          triggerType: JiraTriggerType.IssueConditions,
+          dedupKey: "PROJ-123:conditions:10234",
+          ...occurrence,
           attributes: {
-            [JiraEventAttribute.ProjectKey]: "PROJ",
-            [JiraEventAttribute.IssueType]: "Story",
-            [JiraEventAttribute.Labels]: ["ai-ready", "reports"],
-            [JiraEventAttribute.Status]: "To Do",
+            ...issueAttributes,
+            [JiraEventAttribute.AssignedToBot]: true,
+            [JiraEventAttribute.BecameAssigned]: true,
+            [JiraEventAttribute.AddedLabels]: [],
+            [JiraEventAttribute.Mentioned]: false,
           },
         },
       ],
@@ -209,6 +228,7 @@ describe("parseJiraRequest", () => {
     });
     expect(result.events.map((event) => event.dedupKey)).toEqual([
       "PROJ-123:assignee:10234",
+      "PROJ-123:conditions:10234",
     ]);
   });
 
@@ -278,7 +298,17 @@ describe("parseJiraRequest", () => {
         "PROJ-123:created",
         ["ai-ready", "reports"],
       ],
+      [
+        JiraTriggerType.IssueConditions,
+        "PROJ-123:conditions:created",
+        ["ai-ready", "reports"],
+      ],
     ]);
+    expect(result.events.at(-1)?.attributes).toMatchObject({
+      [JiraEventAttribute.AssignedToBot]: true,
+      [JiraEventAttribute.BecameAssigned]: true,
+      [JiraEventAttribute.Mentioned]: false,
+    });
   });
 
   it("ignores a created issue that is unassigned and unlabeled", async () => {
@@ -290,12 +320,107 @@ describe("parseJiraRequest", () => {
 
   it("emits jira.issue_labeled with only the added labels", async () => {
     const result = await parse(labelsAddedWebhook());
-    expect(result.events).toHaveLength(1);
-    expect(result.events[0]?.triggerType).toBe(JiraTriggerType.IssueLabeled);
-    expect(result.events[0]?.dedupKey).toBe("PROJ-123:labels:10301");
+    expect(
+      result.events.map((event) => [event.triggerType, event.dedupKey])
+    ).toEqual([
+      [JiraTriggerType.IssueLabeled, "PROJ-123:labels:10301"],
+      [JiraTriggerType.IssueConditions, "PROJ-123:conditions:10301"],
+    ]);
     expect(
       result.events[0]?.attributes[JiraEventAttribute.AddedLabels]
     ).toEqual(["ai-ready"]);
+    expect(result.events[1]?.attributes).toMatchObject({
+      [JiraEventAttribute.AssignedToBot]: false,
+      [JiraEventAttribute.BecameAssigned]: false,
+      [JiraEventAttribute.AddedLabels]: ["ai-ready"],
+      [JiraEventAttribute.Mentioned]: false,
+    });
+  });
+
+  it("emits jira.issue_status_changed for a status item", async () => {
+    const result = await parse(
+      statusChangedWebhook({ from: "To Do", to: "PRD Review" })
+    );
+    expect(result.events).toHaveLength(1);
+    const event = result.events[0];
+    expect(event?.triggerType).toBe(JiraTriggerType.IssueStatusChanged);
+    expect(event?.dedupKey).toBe("PROJ-123:status:10401");
+    expect(event?.attributes).toMatchObject({
+      [JiraEventAttribute.FromStatus]: "To Do",
+      [JiraEventAttribute.ToStatus]: "PRD Review",
+    });
+    expect(event?.itemChange).toEqual({
+      status: { from: "To Do", to: "PRD Review" },
+    });
+    expect(event?.actor).toMatchObject({ id: HUMAN_ACCOUNT_ID });
+  });
+
+  it("emits the status event next to the bot assignment events", async () => {
+    const body = assignedToBotWebhook();
+    const result = await parse({
+      ...body,
+      changelog: {
+        ...body.changelog,
+        items: [...(body.changelog?.items ?? []), statusItem("To Do", "Doing")],
+      },
+    });
+    expect(result.events.map((event) => event.triggerType)).toEqual([
+      JiraTriggerType.IssueAssigned,
+      JiraTriggerType.IssueStatusChanged,
+      JiraTriggerType.IssueConditions,
+    ]);
+  });
+
+  it("emits the status event of an Automation body not assigned to the bot", async () => {
+    const result = await parse({
+      ...automationBody({ assignee: null }),
+      changelog: { items: [statusItem("To Do", "Doing")] },
+    });
+    expect(
+      result.events.map((event) => [event.triggerType, event.dedupKey])
+    ).toEqual([
+      [
+        JiraTriggerType.IssueStatusChanged,
+        `PROJ-123:status:automation-${DELIVERY_ID}`,
+      ],
+    ]);
+  });
+
+  it("ignores a status change made by the bot", async () => {
+    const result = await parse(
+      statusChangedWebhook({ from: "To Do", to: "Doing", user: BOT_USER })
+    );
+    expect(result.ignoredReason).toBe(JiraIgnoredReason.CausedByBot);
+  });
+
+  it("emits jira.issue_labeled for a removal, without a conditions event", async () => {
+    const body = labelsAddedWebhook();
+    const result = await parse({
+      ...body,
+      changelog: { id: "10302", items: [labelsItem("create-prd ui", "ui")] },
+    });
+    expect(result.events.map((event) => event.triggerType)).toEqual([
+      JiraTriggerType.IssueLabeled,
+    ]);
+    const event = result.events[0];
+    expect(event?.attributes[JiraEventAttribute.RemovedLabels]).toEqual([
+      "create-prd",
+    ]);
+    expect(event?.attributes[JiraEventAttribute.AddedLabels]).toEqual([]);
+    expect(event?.itemChange).toEqual({
+      labels: { added: [], removed: ["create-prd"] },
+    });
+  });
+
+  it("reports both lists when a label is replaced", async () => {
+    const body = labelsAddedWebhook();
+    const result = await parse({
+      ...body,
+      changelog: { id: "10303", items: [labelsItem("old", "new")] },
+    });
+    expect(result.events[0]?.itemChange).toEqual({
+      labels: { added: ["new"], removed: ["old"] },
+    });
   });
 
   it("treats a Jira Automation body as an assignment check against the assignee", async () => {
@@ -308,6 +433,10 @@ describe("parseJiraRequest", () => {
         JiraTriggerType.IssueAssigned,
         `PROJ-123:assignee:automation-${DELIVERY_ID}`,
       ],
+      [
+        JiraTriggerType.IssueConditions,
+        `PROJ-123:conditions:automation-${DELIVERY_ID}`,
+      ],
     ]);
     const other = await parse(
       automationBody({
@@ -319,8 +448,10 @@ describe("parseJiraRequest", () => {
 
   it("recognises the Data Center bot by user name", async () => {
     const result = await parse(dataCenterAssignedWebhook(), { dc: true });
-    expect(result.events).toHaveLength(1);
-    expect(result.events[0]?.dedupKey).toBe("PROJ-123:assignee:20410");
+    expect(result.events.map((event) => event.dedupKey)).toEqual([
+      "PROJ-123:assignee:20410",
+      "PROJ-123:conditions:20410",
+    ]);
     expect(result.events[0]?.item.url).toBe(`${DC_SITE_URL}/browse/PROJ-123`);
     expect(result.events[0]?.actor).toEqual({
       id: "JIRAUSER10001",
@@ -357,6 +488,24 @@ describe("parseJiraRequest with Jira Automation bodies", () => {
 
     const result = await parseSample({ ...sample, user: HUMAN_USER });
 
+    const occurrence = {
+      occurredAt: new Date(sample.timestamp),
+      actor: { id: HUMAN_ACCOUNT_ID, displayName: "Bea Analyst" },
+      item: {
+        provider: IntegrationProviderKey.Jira,
+        externalId: "11111",
+        key: "SP-53",
+        url: `${CLOUD_SITE_URL}/browse/SP-53`,
+        title: "sample, Please ignore",
+        container: "SP",
+      },
+    };
+    const issueAttributes = {
+      [JiraEventAttribute.ProjectKey]: "SP",
+      [JiraEventAttribute.IssueType]: "[System] Service request",
+      [JiraEventAttribute.Labels]: ["sample-space"],
+      [JiraEventAttribute.Status]: "Waiting for support",
+    };
     expect(result).toEqual({
       deliveryId: DELIVERY_ID,
       eventType: JIRA_AUTOMATION_EVENT_TYPE,
@@ -364,21 +513,19 @@ describe("parseJiraRequest with Jira Automation bodies", () => {
         {
           triggerType: JiraTriggerType.IssueAssigned,
           dedupKey: `SP-53:assignee:automation-${DELIVERY_ID}`,
-          occurredAt: new Date(sample.timestamp),
-          actor: { id: HUMAN_ACCOUNT_ID, displayName: "Bea Analyst" },
-          item: {
-            provider: IntegrationProviderKey.Jira,
-            externalId: "11111",
-            key: "SP-53",
-            url: `${CLOUD_SITE_URL}/browse/SP-53`,
-            title: "sample, Please ignore",
-            container: "SP",
-          },
+          ...occurrence,
+          attributes: issueAttributes,
+        },
+        {
+          triggerType: JiraTriggerType.IssueConditions,
+          dedupKey: `SP-53:conditions:automation-${DELIVERY_ID}`,
+          ...occurrence,
           attributes: {
-            [JiraEventAttribute.ProjectKey]: "SP",
-            [JiraEventAttribute.IssueType]: "[System] Service request",
-            [JiraEventAttribute.Labels]: ["sample-space"],
-            [JiraEventAttribute.Status]: "Waiting for support",
+            ...issueAttributes,
+            [JiraEventAttribute.AssignedToBot]: true,
+            [JiraEventAttribute.BecameAssigned]: true,
+            [JiraEventAttribute.AddedLabels]: [],
+            [JiraEventAttribute.Mentioned]: false,
           },
         },
       ],
@@ -430,7 +577,10 @@ describe("parseJiraRequest with Jira Automation bodies", () => {
     });
 
     expect(result.ignoredReason).toBeUndefined();
-    expect(result.events).toHaveLength(1);
+    expect(result.events.map((item) => item.triggerType)).toEqual([
+      JiraTriggerType.IssueAssigned,
+      JiraTriggerType.IssueConditions,
+    ]);
     const [event] = result.events;
     expect(event?.dedupKey).toBe(`SP-53:assignee:automation-${DELIVERY_ID}`);
     expect(event?.actor).toEqual({

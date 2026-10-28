@@ -45,16 +45,15 @@ describe("searchHitRoute", () => {
     ).toBe("/issues/f");
   });
 
-  it("builds a team-scoped project route and an id-keyed loop route", () => {
+  it("builds an org-level project route and an id-keyed loop route", () => {
     expect(
       searchHitRoute(
         hit({
           entityType: SearchEntityType.Project,
           entityId: "p1",
-          teamId: "t1",
         })
       )
-    ).toBe("/teams/t1/projects/p1");
+    ).toBe("/projects/p1");
     expect(
       searchHitRoute(hit({ entityType: SearchEntityType.Loop, entityId: "l1" }))
     ).toBe("/loops/l1");
@@ -86,12 +85,12 @@ describe("searchHitRoute", () => {
     ).toBeNull();
   });
 
-  it("returns null when a project is missing its owning team", () => {
+  it("builds the project route without a team", () => {
     expect(
       searchHitRoute(
         hit({ entityType: SearchEntityType.Project, entityId: "p1" })
       )
-    ).toBeNull();
+    ).toBe("/projects/p1");
   });
 
   it("builds an id-keyed branch route (FEA-3930)", () => {
@@ -224,11 +223,9 @@ describe("searchHitSchema route fields", () => {
       deepLink: "/documents/d1",
       slug: "d",
       entitySubtype: "PRD",
-      teamId: "t1",
     });
     expect(parsed.slug).toBe("d");
     expect(parsed.entitySubtype).toBe("PRD");
-    expect(parsed.teamId).toBe("t1");
     expect(parsed.updatedAt).toBeInstanceOf(Date);
   });
 
@@ -244,7 +241,6 @@ describe("searchHitSchema route fields", () => {
     });
     expect(parsed.slug).toBeUndefined();
     expect(parsed.entitySubtype).toBeUndefined();
-    expect(parsed.teamId).toBeUndefined();
   });
 });
 

@@ -64,9 +64,10 @@ describe("POST /artifact-links/branches", () => {
     });
     mocks.loadProjectRepoDefaults.mockResolvedValue({
       primary: {
-        installationRepositoryId: "repo-1",
+        projectRepositoryId: "repo-1",
         fullName: "agentflow-ai/symphony-alpha",
       },
+      additional: [],
     });
   });
 
@@ -98,7 +99,7 @@ describe("POST /artifact-links/branches", () => {
     expect(mocks.branchUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
         organizationId: "org-1",
-        repositoryId: "repo-1",
+        repositoryId: null,
         repositoryFullName: "agentflow-ai/symphony-alpha",
         sourceArtifactId: SOURCE_ARTIFACT_ID,
       })

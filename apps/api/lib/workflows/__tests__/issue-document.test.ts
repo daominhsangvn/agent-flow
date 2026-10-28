@@ -123,6 +123,23 @@ describe("buildIssueBody", () => {
     );
   });
 
+  it("lists the item's web links after its attachments", () => {
+    const markdown = body({
+      links: [
+        {
+          url: "https://acme.atlassian.net/wiki/spaces/ENG/pages/123",
+          title: "Implementation [plan]",
+        },
+        { url: "https://x.test/a b", title: null },
+      ],
+    });
+
+    expect(markdown).toContain(
+      "## Links\n\n- [Implementation plan](https://acme.atlassian.net/wiki/spaces/ENG/pages/123)\n- [https://x.test/a b](https://x.test/a%20b)"
+    );
+    expect(body()).not.toContain("## Links");
+  });
+
   it("uses a placeholder for an empty description and caps the size", () => {
     expect(body({ bodyMarkdown: "  " })).toContain("_No description._");
     const huge = body({ bodyMarkdown: "y".repeat(ISSUE_BODY_MAX_LENGTH * 2) });

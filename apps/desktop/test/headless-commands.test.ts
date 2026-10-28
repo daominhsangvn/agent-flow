@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  WORKFLOW_DECISION_GATEWAY_PATH,
+  WORKFLOW_DECISION_OPERATION_ID,
+} from "@repo/api/src/types/workflow-decision";
+import {
+  WORKFLOW_INSTRUCTION_GATEWAY_PATH,
+  WORKFLOW_INSTRUCTION_OPERATION_ID,
+} from "@repo/api/src/types/workflow-instruction";
+import {
   classifyHeadlessCommand,
   HEADLESS_RUNNER_OPERATION_IDS,
   HeadlessCommandRejection,
@@ -44,6 +52,22 @@ test("accepts loop, kill, status, logs and health check commands", () => {
       );
     }
   }
+});
+
+test("accepts a workflow instruction's read-only agent", () => {
+  const decision = classifyHeadlessCommand(WORKFLOW_INSTRUCTION_GATEWAY_PATH);
+
+  assert.deepEqual(decision, {
+    accepted: true,
+    operationId: WORKFLOW_INSTRUCTION_OPERATION_ID,
+  });
+});
+
+test("accepts a workflow decision", () => {
+  assert.deepEqual(classifyHeadlessCommand(WORKFLOW_DECISION_GATEWAY_PATH), {
+    accepted: true,
+    operationId: WORKFLOW_DECISION_OPERATION_ID,
+  });
 });
 
 test("refuses workstation operations such as chats, filesystem and deploy", () => {

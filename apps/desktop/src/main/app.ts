@@ -2021,6 +2021,7 @@ export class DesktopApplication {
       }),
       loopRunnerRefreshSupported: true,
       loopRunnerHeartbeatSupported: true,
+      loopStepForkSession: true,
     };
   }
 

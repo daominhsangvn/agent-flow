@@ -82,10 +82,6 @@ vi.mock("../components/transcript-search-card", () => ({
   TranscriptSearchCard: () => null,
 }));
 
-vi.mock("../components/session-sync-policy-card", () => ({
-  SessionSyncPolicyCard: () => null,
-}));
-
 vi.mock("../components/session-frustration-card", () => ({
   SessionFrustrationCard: () => null,
 }));

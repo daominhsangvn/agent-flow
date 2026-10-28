@@ -29,6 +29,7 @@ export const IntegrationProviderKey = {
   GitHub: "github",
   Bitbucket: "bitbucket",
   LocalGit: "local_git",
+  Confluence: "confluence",
 } as const;
 export type IntegrationProviderKey =
   (typeof IntegrationProviderKey)[keyof typeof IntegrationProviderKey];
@@ -153,6 +154,23 @@ export type IntegrationTriggerSummary = {
   manualRun: { label: string; placeholder: string } | null;
 };
 
+/**
+ * What an action works on, which decides its connection:
+ * - source_item: the run's source item (a comment, a transition), always
+ *   through the run's source connection;
+ * - repository: a project repository (pull requests), through the
+ *   connection that owns it;
+ * - external: anything else (a new item, a channel message, a pipeline, an
+ *   HTTPS call), through the connection the workflow names.
+ */
+export const IntegrationOperationTarget = {
+  SourceItem: "source_item",
+  Repository: "repository",
+  External: "external",
+} as const;
+export type IntegrationOperationTarget =
+  (typeof IntegrationOperationTarget)[keyof typeof IntegrationOperationTarget];
+
 export type IntegrationActionSummary = {
   /** Globally unique action type key ("jira.add_comment"). */
   key: string;
@@ -161,6 +179,18 @@ export type IntegrationActionSummary = {
   configFields: IntegrationFieldDescriptor[];
   /** Run events preselected when the action is added to a workflow. */
   defaultEvents: string[];
+  /**
+   * Acts on the run's repositories, each through the connection that owns it
+   * (a pull request per pushed repository). Left without a connection in a
+   * workflow, it runs on every connection that owns one of them.
+   */
+  repositoryScoped: boolean;
+  target: IntegrationOperationTarget;
+  /**
+   * For a source_item action: the write a `source` grant names for it
+   * (`comment`, `transition`); null otherwise.
+   */
+  sourceOperation: string | null;
 };
 
 export type IntegrationProviderSummary = {
@@ -176,6 +206,11 @@ export type IntegrationProviderSummary = {
    * the update otherwise).
    */
   credentialOriginFields: string[];
+  /**
+   * Fields of a project connection's settings (Jira project keys, Azure
+   * DevOps projects); empty when a project connection has none.
+   */
+  projectSettingsFields: IntegrationFieldDescriptor[];
   /** Empty when the provider has no inbound side (post-action only). */
   deliveryModes: IntegrationDeliveryMode[];
   capabilities: IntegrationCapability[];
@@ -184,6 +219,12 @@ export type IntegrationProviderSummary = {
    * built-in HTTP trigger and HTTPS call (the generic webhook).
    */
   builtIn: boolean;
+  /**
+   * The server provides this provider's connection to every organization
+   * (Local Git, configured by the API's environment): it is not offered in
+   * Add connection.
+   */
+  providedByServer: boolean;
   triggers: IntegrationTriggerSummary[];
   actions: IntegrationActionSummary[];
 };
@@ -209,6 +250,12 @@ export type IntegrationConnection = {
    * and hidden from Settings.
    */
   managedByWorkflowId: string | null;
+  /**
+   * Provided by the server to every organization (Local Git) and configured
+   * by the API's environment: listed, tested and used like any connection,
+   * but never edited or deleted here.
+   */
+  providedByServer: boolean;
   id: string;
   provider: string;
   name: string;
@@ -225,7 +272,7 @@ export type IntegrationConnection = {
   lastDeliveryAt: Date | null;
   lastValidatedAt: Date | null;
   lastError: string | null;
-  /** Number of workflow triggers and actions that use this connection. */
+  /** Workflow triggers, actions, project repositories and project connections that use this connection. */
   usageCount: number;
   createdAt: Date;
   updatedAt: Date;
@@ -241,6 +288,12 @@ export type IntegrationInboundDetails = {
   inboundSecret: string;
   /** Provider-written markdown telling the admin how to configure the source system. */
   setupInstructions: string;
+  /**
+   * Why a service on the internet (Jira Cloud, Azure DevOps, …) cannot call
+   * `inboundUrl`: plain HTTP, localhost or a private address. Null when the
+   * URL looks public.
+   */
+  inboundUrlWarning: string | null;
 };
 
 export type IntegrationConnectionTestResult = {

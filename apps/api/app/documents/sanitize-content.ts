@@ -49,6 +49,11 @@ const SANITIZE_OPTIONS: IOptions = {
   },
   allowProtocolRelative: false,
   disallowedTagsMode: "discard",
+  // Document content is Markdown, not HTML: sanitize-html entity-encodes `&`
+  // and `>` in text, which turns `a -> b` or `x >= 1` into `-&gt;` / `&gt;=`
+  // for every reader (editor, agents, plan.md on the runner). Text keeps `<`
+  // encoded, so restoring `>` and `&` cannot form a tag.
+  textFilter: (text) => text.replaceAll("&gt;", ">").replaceAll("&amp;", "&"),
 };
 
 const ALLOWED_TAGS_SET = new Set(

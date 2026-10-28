@@ -51,14 +51,13 @@ describe("getNotificationEntityPath", () => {
     });
   });
 
-  it("routes projects to /teams/<teamId>/projects/<projectId>", () => {
+  it("routes projects to /projects/<projectId>", () => {
     expect(
       getNotificationEntityPath({
         kind: NotificationEntityKind.Project,
-        teamId: "team-1",
         projectId: "proj-2",
       })
-    ).toBe("/teams/team-1/projects/proj-2");
+    ).toBe("/projects/proj-2");
   });
 
   it("routes loops to /loops/<loopId>", () => {

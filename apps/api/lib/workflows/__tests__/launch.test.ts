@@ -5,7 +5,10 @@ import {
   LoopStatus,
   RunLoopCommand,
 } from "@repo/api/src/types/loop";
-import { WorkflowRunErrorCode } from "@repo/api/src/types/workflow";
+import {
+  WorkflowRunErrorCode,
+  workflowPrdRuleSchema,
+} from "@repo/api/src/types/workflow";
 import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -111,7 +114,9 @@ const baseInput: LaunchWorkflowLoopInput = {
     mode: WorkflowAgentMode.PlanAndExecute,
     stopOnOpenQuestions: true,
     computeTargetId: TARGET_ID,
+    runners: [],
     repository: { fullName: "acme/app", branch: "develop" },
+    prd: workflowPrdRuleSchema.parse({}),
     instructions: "",
     titleTemplate: "{{source.key}}",
     process: null,

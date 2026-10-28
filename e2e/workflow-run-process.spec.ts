@@ -4,8 +4,10 @@ import { IntegrationProviderKey } from "@repo/api/src/types/integration";
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
 import {
   ProcessStepType,
+  RunProcessSource,
   type RunProcessView,
 } from "@repo/api/src/types/project-process";
+import { DISPLAYED_SESSION_STATUS } from "@repo/api/src/types/session-status";
 import {
   type WorkflowRunDetail,
   WorkflowRunStatus,
@@ -29,6 +31,10 @@ const SPEC_FILE = {
 const WEBHOOK_REQUEST_TRIGGER = "webhook.request";
 const ANSWERS_SENT_RE = /Answers sent to "Clarify"/;
 const DECIDED_RE = /Decided\. The run goes on in a moment\./;
+const LIVE_SESSION_ID = randomUUID();
+const ENDED_SESSION_ID = randomUUID();
+/** The ended session ran 4m 05s. */
+const ENDED_SESSION_MS = 245_000;
 
 type RunRoute = {
   runId: string;
@@ -129,6 +135,38 @@ test.describe("workflow run process card", { tag: E2ETag.Smoke }, () => {
   });
 });
 
+test.describe("workflow run sessions", { tag: E2ETag.Smoke }, () => {
+  test("lists the run's sessions and opens the running one live", async ({
+    apiToken,
+    page,
+  }) => {
+    const run = await serveRun(page, apiToken, {
+      status: WorkflowRunStatus.Executing,
+      process: processView({ stepId: "implement" }),
+    });
+    const { orgSlug } = requireOrgClaims(apiToken);
+
+    await page.goto(run.url);
+    const rows = page.getByTestId("run-session");
+    await expect(rows).toHaveCount(2, { timeout: 30_000 });
+    await expect(rows.first()).toHaveAttribute("data-live", "true");
+    await expect(rows.first()).toContainText("SES-21 Implement color picker");
+    await expect(rows.first()).toContainText("Specify");
+    await expect(
+      rows.first().getByRole("link", { name: "Watch live" })
+    ).toHaveAttribute("href", `/${orgSlug}/sessions/${LIVE_SESSION_ID}`);
+    await expect(
+      rows.nth(1).getByRole("link", { name: "SES-20 Specify color picker" })
+    ).toHaveAttribute("href", `/${orgSlug}/sessions/${ENDED_SESSION_ID}`);
+    await expect(
+      rows.nth(1).getByRole("link", { name: "Watch live" })
+    ).toHaveCount(0);
+    await expect(rows.nth(1).getByTestId("run-session-duration")).toHaveText(
+      "4m 5s"
+    );
+  });
+});
+
 /**
  * Serves GET /workflow-runs/{id} with the given state and records the
  * answers / approval POSTs, after which the run reads as answered / decided.
@@ -170,6 +208,7 @@ function runDetail(
   state: Pick<WorkflowRunDetail, "status" | "process">
 ): WorkflowRunDetail {
   const now = new Date();
+  const loopId = randomUUID();
   return {
     id: runId,
     workflowId,
@@ -183,7 +222,7 @@ function runDetail(
       title: "Color picker web app",
       url: null,
     },
-    prUrl: null,
+    pullRequests: [],
     error: null,
     createdAt: now,
     updatedAt: now,
@@ -193,7 +232,7 @@ function runDetail(
     branchName: null,
     loops: [
       {
-        loopId: randomUUID(),
+        loopId,
         command: LoopCommand.Step,
         status: LoopStatus.Completed,
         adopted: false,
@@ -203,7 +242,39 @@ function runDetail(
         completedAt: now,
       },
     ],
+    sessions: [
+      {
+        id: LIVE_SESSION_ID,
+        slug: "SES-21",
+        name: "Implement color picker",
+        loopId,
+        command: LoopCommand.Step,
+        stepId: "specify",
+        status: DISPLAYED_SESSION_STATUS.ACTIVE,
+        harness: "claude-code",
+        model: "claude-opus-5-5",
+        startedAt: now,
+        lastActivityAt: now,
+        endedAt: null,
+      },
+      {
+        id: ENDED_SESSION_ID,
+        slug: "SES-20",
+        name: "Specify color picker",
+        loopId,
+        command: LoopCommand.Step,
+        stepId: "specify",
+        status: DISPLAYED_SESSION_STATUS.INACTIVE,
+        harness: "claude-code",
+        model: null,
+        startedAt: new Date(now.getTime() - ENDED_SESSION_MS),
+        lastActivityAt: now,
+        endedAt: now,
+      },
+    ],
     actionRuns: [],
+    documents: [],
+    toolCalls: [],
     ...state,
   };
 }
@@ -213,6 +284,7 @@ function processView(
 ): RunProcessView {
   return {
     version: 2,
+    source: RunProcessSource.Project,
     toolkit: "contoso/colorkit",
     steps: [
       { id: "specify", name: "Specify", type: ProcessStepType.Agent },

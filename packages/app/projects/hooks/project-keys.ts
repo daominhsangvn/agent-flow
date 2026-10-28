@@ -11,7 +11,6 @@ export const projectKeys = {
     [...projectKeys.lists(), filters] as const,
   details: () => [...projectKeys.all, "detail"] as const,
   detail: (id: string) => [...projectKeys.details(), id] as const,
-  recent: (teamId: string) => [...projectKeys.all, "recent", teamId] as const,
   favorites: () => [...projectKeys.all, "favorites"] as const,
   bySlug: (slug: string) => [...projectKeys.all, "by-slug", slug] as const,
 };

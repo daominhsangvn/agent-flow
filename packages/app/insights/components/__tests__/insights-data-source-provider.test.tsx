@@ -16,17 +16,12 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebInsightsDataSourceProvider } from "../insights-data-source-provider";
 
-const { useGitHubIntegrationStatusMock, useTeamsMock } = vi.hoisted(() => ({
+const { useGitHubIntegrationStatusMock } = vi.hoisted(() => ({
   useGitHubIntegrationStatusMock: vi.fn(),
-  useTeamsMock: vi.fn(),
 }));
 
 vi.mock("@repo/app/github/hooks/use-github-integration", () => ({
   useGitHubIntegrationStatus: useGitHubIntegrationStatusMock,
-}));
-
-vi.mock("@repo/app/teams/hooks/use-teams", () => ({
-  useTeams: useTeamsMock,
 }));
 
 vi.mock("@repo/app/shared/api/use-api-client", () => ({
@@ -44,7 +39,6 @@ describe("WebInsightsDataSourceProvider", () => {
     useGitHubIntegrationStatusMock.mockReturnValue({
       data: { connected: true },
     });
-    useTeamsMock.mockReturnValue({ data: [] });
 
     renderWithProvider(<AvailabilityProbe />);
 
@@ -57,7 +51,6 @@ describe("WebInsightsDataSourceProvider", () => {
     useGitHubIntegrationStatusMock.mockReturnValue({
       data: { connected: true },
     });
-    useTeamsMock.mockReturnValue({ data: [] });
 
     renderWithProvider(<AvailabilityProbe withActiveProvenance />);
 
@@ -77,7 +70,6 @@ describe("WebInsightsDataSourceProvider", () => {
         },
       },
     });
-    useTeamsMock.mockReturnValue({ data: [] });
 
     renderWithProvider(<AvailabilityProbe withActiveProvenance />);
 
@@ -90,7 +82,6 @@ describe("WebInsightsDataSourceProvider", () => {
     useGitHubIntegrationStatusMock.mockReturnValue({
       data: { connected: true },
     });
-    useTeamsMock.mockReturnValue({ data: [] });
 
     renderWithProvider(<AvailabilityProbe withDisconnectedProvenance />);
 
@@ -103,7 +94,6 @@ describe("WebInsightsDataSourceProvider", () => {
     useGitHubIntegrationStatusMock.mockReturnValue({
       data: { connected: false },
     });
-    useTeamsMock.mockReturnValue({ data: [] });
 
     renderWithProvider(<AvailabilityProbe withActiveProvenance />);
 
@@ -116,7 +106,6 @@ describe("WebInsightsDataSourceProvider", () => {
     useGitHubIntegrationStatusMock.mockReturnValue({
       data: { connected: true },
     });
-    useTeamsMock.mockReturnValue({ data: [] });
     const queryClient = createQueryClient();
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
 
@@ -130,7 +119,6 @@ describe("WebInsightsDataSourceProvider", () => {
     useGitHubIntegrationStatusMock.mockImplementation(() => ({
       data: { connected },
     }));
-    useTeamsMock.mockReturnValue({ data: [] });
     const queryClient = createQueryClient();
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
     const rendered = renderWithProvider(<div />, queryClient);
@@ -157,7 +145,6 @@ describe("WebInsightsDataSourceProvider", () => {
         },
       },
     }));
-    useTeamsMock.mockReturnValue({ data: [] });
     const queryClient = createQueryClient();
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
     const rendered = renderWithProvider(<div />, queryClient);
@@ -186,7 +173,6 @@ describe("WebInsightsDataSourceProvider", () => {
         },
       },
     });
-    useTeamsMock.mockReturnValue({ data: [] });
 
     renderWithProvider(<ConnectHrefProbe />, undefined, {
       githubAuthorizeHref:
@@ -216,7 +202,6 @@ describe("WebInsightsDataSourceProvider", () => {
         },
       },
     });
-    useTeamsMock.mockReturnValue({ data: [] });
 
     renderWithProvider(<ConnectHrefProbe />, undefined, {
       githubAuthorizeHref:
@@ -236,7 +221,6 @@ describe("WebInsightsDataSourceProvider", () => {
     useGitHubIntegrationStatusMock.mockReturnValue({
       data: { connected: false },
     });
-    useTeamsMock.mockReturnValue({ data: [] });
 
     renderWithProvider(<ConnectHrefProbe />, undefined, {
       githubAuthorizeHref:

@@ -2,6 +2,7 @@ import { Result } from "@repo/api/src/types/result";
 import { z } from "zod";
 import { jsonObjectSchema, stringRecordSchema } from "@/lib/json-schema";
 import { isRecord } from "@/lib/type-guards";
+import { ATLASSIAN_CLOUD_ID_RE } from "../atlassian/auth";
 import { JiraDeployment } from "./constants";
 import { epochMillisToIso } from "./dates";
 
@@ -32,13 +33,18 @@ const connectionInputSchema = z.object({
   deployment: z.enum(JiraDeployment).default(JiraDeployment.Cloud),
   siteUrl: z.string().trim().min(1, SITE_URL_HINT).max(2048),
   email: z.string().trim().max(320).nullish(),
+  /**
+   * Not on the form: set by validation when the Cloud token only works
+   * through the Atlassian API gateway (an API token with scopes).
+   */
+  cloudId: z.string().trim().regex(ATLASSIAN_CLOUD_ID_RE).nullish(),
 });
 type ConnectionInput = z.infer<typeof connectionInputSchema>;
 
 /**
  * Normalizes the site URL (Cloud: origin only; Data Center: origin plus
- * context path, no trailing slash) and drops the email on Data Center, where
- * the personal access token alone authenticates.
+ * context path, no trailing slash) and drops the email (and the cloud id) on
+ * Data Center, where the personal access token alone authenticates.
  */
 export const jiraConnectionConfigSchema = connectionInputSchema
   .superRefine(checkConnectionInput)
@@ -221,6 +227,8 @@ export const jiraWebhookBodySchema = z.looseObject({
   comment: z
     .looseObject({
       id: idSchema,
+      /** Set on a reply in a comment thread: the comment it replies to. */
+      parentId: idSchema.nullish(),
       author: optionalUserSchema,
       updateAuthor: optionalUserSchema,
       /** Wiki markup in webhooks; ADF when a v3 shape is sent. */
@@ -246,6 +254,8 @@ export type JiraSearchResult = z.infer<typeof jiraSearchResultSchema>;
 
 export const jiraCommentSchema = z.looseObject({
   id: idSchema,
+  /** Set on a reply in a comment thread: the comment it replies to. */
+  parentId: idSchema.nullish(),
   author: optionalUserSchema,
   created: jiraDateSchema,
   /** ADF on Cloud v3, wiki markup on v2. */
@@ -283,6 +293,7 @@ export const jiraErrorBodySchema = z.looseObject({
 export const jiraPollCursorSchema = z.object({
   since: z.iso.datetime({ offset: true }),
 });
+
 export type JiraPollCursor = z.infer<typeof jiraPollCursorSchema>;
 
 /**
@@ -344,13 +355,17 @@ function normalizeConnectionInput(input: ConnectionInput): {
   deployment: JiraDeployment;
   siteUrl: string;
   email: string | null;
+  cloudId?: string;
 } {
   const site = normalizeSiteUrl(input.siteUrl, input.deployment);
+  const isCloud = input.deployment === JiraDeployment.Cloud;
   return {
     deployment: input.deployment,
     siteUrl: site.ok ? site.value : input.siteUrl,
-    email:
-      input.deployment === JiraDeployment.Cloud ? (input.email ?? null) : null,
+    email: isCloud ? (input.email ?? null) : null,
+    ...(isCloud && input.cloudId
+      ? { cloudId: input.cloudId.toLowerCase() }
+      : {}),
   };
 }
 
@@ -394,3 +409,44 @@ function readOwnProperty(
 function normalizeJiraDate(value: string | number): string | null {
   return typeof value === "number" ? epochMillisToIso(value) : value;
 }
+
+/** `GET issue/{id}/remotelink`: the issue's web links. */
+export const jiraRemoteLinksSchema = z.array(
+  z.looseObject({
+    object: z
+      .looseObject({ url: z.string().nullish(), title: z.string().nullish() })
+      .nullish(),
+  })
+);
+
+export const jiraCreatedIssueSchema = z.looseObject({
+  id: idSchema,
+  key: z.string(),
+});
+
+export const jiraIssueLinkTypeSchema = z.looseObject({
+  id: idSchema,
+  name: z.string(),
+  inward: z.string(),
+  outward: z.string(),
+});
+export type JiraIssueLinkType = z.infer<typeof jiraIssueLinkTypeSchema>;
+
+export const jiraIssueLinkTypesSchema = z.looseObject({
+  issueLinkTypes: z.array(jiraIssueLinkTypeSchema).nullish(),
+});
+
+export const jiraFoundIssuesSchema = z.looseObject({
+  issues: z
+    .array(
+      z.looseObject({
+        id: idSchema,
+        key: z.string(),
+        fields: z
+          .looseObject({ summary: z.string().nullish() })
+          .nullish()
+          .catch(null),
+      })
+    )
+    .nullish(),
+});

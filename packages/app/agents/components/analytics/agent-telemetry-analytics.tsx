@@ -58,8 +58,6 @@ import type { ReactNode } from "react";
 import { useMemo } from "react";
 // Projects owns project metadata; org monitoring imports the narrow hook only to label URL-owned filters.
 import { useProjects } from "../../../projects/hooks/use-projects";
-// Teams owns team metadata; org monitoring imports the narrow hook only to label URL-owned filters.
-import { useTeams } from "../../../teams/hooks/use-teams";
 import {
   useAgentSessionAnalytics,
   useAgentSessions,
@@ -129,7 +127,6 @@ export type AgentTelemetryAnalyticsQueryState = {
   dateRange: DateRange;
   harness: string;
   status: string;
-  selectedTeamId: string | null;
   selectedProjectId: string | null;
   selectedUserId: string | null;
   page: number;
@@ -177,11 +174,7 @@ export function AgentTelemetryAnalytics({
       projectId: queryState.selectedProjectId ?? undefined,
       startDate: getStartDateForRange(queryState.dateRange),
       status: queryState.status === "all" ? undefined : queryState.status,
-      teamId: queryState.selectedTeamId ?? undefined,
       userId: queryState.selectedUserId ?? undefined,
-      viewerScope: queryState.selectedTeamId
-        ? AgentSessionViewerScope.Team
-        : undefined,
     }),
     [queryState]
   );
@@ -199,12 +192,7 @@ export function AgentTelemetryAnalytics({
     organizationFiltersEnabled &&
     viewerScope !== undefined &&
     viewerScope !== AgentSessionViewerScope.Self;
-  const teamsQuery = useTeams({ enabled: isAdminViewer });
-  const projectsQuery = useProjects(
-    queryState.selectedTeamId ?? undefined,
-    { enabled: isAdminViewer },
-    undefined
-  );
+  const projectsQuery = useProjects({ enabled: isAdminViewer });
   const hasLoadedSessions = (sessionsQuery.data?.items.length ?? 0) > 0;
   const showEmptyTelemetryState =
     usageQuery.data?.totalSessions === 0 &&
@@ -230,9 +218,6 @@ export function AgentTelemetryAnalytics({
           projectsError={projectsQuery.isError}
           projectsLoading={projectsQuery.isLoading}
           queryState={queryState}
-          teams={toMetadataOptions(teamsQuery.data)}
-          teamsError={teamsQuery.isError}
-          teamsLoading={teamsQuery.isLoading}
           users={usageQuery.data?.byUser ?? []}
         />
       ) : null}
@@ -375,26 +360,15 @@ function AdminFilters({
   projectsError,
   projectsLoading,
   queryState,
-  teams,
-  teamsError,
-  teamsLoading,
   users,
 }: Readonly<{
   queryState: AgentTelemetryAnalyticsQueryState;
   onQueryStateChange: (state: AgentTelemetryAnalyticsQueryState) => void;
-  teams: Array<{ id: string; name: string }>;
-  teamsLoading: boolean;
-  teamsError: boolean;
   projects: Array<{ id: string; name: string }>;
   projectsLoading: boolean;
   projectsError: boolean;
   users: AgentSessionUsageByUser[];
 }>) {
-  const teamOptions = withSelectedFallbackOption(
-    teams,
-    queryState.selectedTeamId,
-    "Selected team"
-  );
   const projectOptions = withSelectedFallbackOption(
     projects,
     queryState.selectedProjectId,
@@ -403,30 +377,7 @@ function AdminFilters({
 
   return (
     <div className="space-y-2">
-      <div className="grid gap-3 md:grid-cols-3">
-        <Select
-          onValueChange={(value) =>
-            onQueryStateChange({
-              ...queryState,
-              page: 0,
-              selectedProjectId: null,
-              selectedTeamId: value === "all" ? null : value,
-            })
-          }
-          value={queryState.selectedTeamId ?? "all"}
-        >
-          <SelectTrigger aria-label="Filter by team">
-            <SelectValue placeholder="Filter by team" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All teams</SelectItem>
-            {teamOptions.map((team) => (
-              <SelectItem key={team.id} value={team.id}>
-                {team.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      <div className="grid gap-3 md:grid-cols-2">
         <Select
           onValueChange={(value) =>
             onQueryStateChange({
@@ -472,12 +423,6 @@ function AdminFilters({
           </SelectContent>
         </Select>
       </div>
-      <MetadataAvailabilityNotice
-        isError={teamsError}
-        isLoading={teamsLoading}
-        kind="team"
-        selectedId={queryState.selectedTeamId}
-      />
       <MetadataAvailabilityNotice
         isError={projectsError}
         isLoading={projectsLoading}
@@ -987,7 +932,7 @@ function MetadataAvailabilityNotice({
   kind,
   selectedId,
 }: Readonly<{
-  kind: "project" | "team";
+  kind: "project";
   selectedId: string | null;
   isLoading: boolean;
   isError: boolean;

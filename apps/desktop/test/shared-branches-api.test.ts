@@ -592,13 +592,9 @@ describe("getSharedBranches (B1 list projection)", () => {
 });
 
 describe("getSharedBranchUsage (B1 usage rollup)", () => {
-  test("missing source / cloud filter → empty canonical summary", async () => {
+  test("missing source → empty canonical summary", async () => {
     assert.deepEqual(
       await getSharedBranchUsage(null),
-      emptySharedBranchesUsageSummary()
-    );
-    assert.deepEqual(
-      await getSharedBranchUsage(makeSource({}), { teamId: "t1" }),
       emptySharedBranchesUsageSummary()
     );
   });

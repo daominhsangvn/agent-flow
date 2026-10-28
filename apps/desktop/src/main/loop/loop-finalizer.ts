@@ -24,8 +24,11 @@ import { validateOutboundUrlForSurface } from "../../server/outbound-url-policy.
 import {
   parseApiKeySource,
   parseHarnessResult,
+  parseHarnessUsageTotals,
   parseTokenUsage,
   resolveClaudeOutputPath,
+  resolveRunTokenUsage,
+  withHarnessUsageTotals,
 } from "../cost/token-usage.js";
 import { ReconciliationStatus } from "../cost/usage-reconciliation.js";
 import {
@@ -459,7 +462,9 @@ export async function tryPostCompletedEvent(
     return { failed: false };
   }
 
-  const tokensUsed = parseTokenUsage(claudeWorkDir);
+  const streamUsage = parseTokenUsage(claudeWorkDir);
+  const harnessTotals = parseHarnessUsageTotals(claudeWorkDir);
+  const tokensUsed = resolveRunTokenUsage(streamUsage, harnessTotals);
   const completedResult = buildCompletedEventResult(
     job,
     command,
@@ -479,8 +484,8 @@ export async function tryPostCompletedEvent(
   // and reconcile our derived cost against it. Additive event fields — safe for
   // an API that has not yet learned to persist them.
   const usageReconciliation = buildUsageReconciliation(
-    parseHarnessResult(claudeWorkDir),
-    tokensUsed.tokensByModel
+    withHarnessUsageTotals(parseHarnessResult(claudeWorkDir), harnessTotals),
+    streamUsage.tokensByModel
   );
 
   // FEA-3523: ride the same stdout seam to feed the COARSE `rate_limit_event`
@@ -508,6 +513,11 @@ export async function tryPostCompletedEvent(
       turns: tokensUsed.turns,
       models: tokensUsed.models,
     },
+    // Per-model attribution, as the error event sends it: without it the cloud
+    // prices the run against a synthetic default model.
+    ...(Object.keys(tokensUsed.tokensByModel).length > 0
+      ? { tokensByModel: tokensUsed.tokensByModel }
+      : {}),
     usageReconciliation:
       toCompletedEventUsageReconciliation(usageReconciliation),
     ...(apiKeySource == null ? {} : { apiKeySource }),
@@ -571,7 +581,10 @@ export async function tryPostErrorEvent(
   // double-records. Fail-closed — never breaks finalize.
   ingestHarnessSessionLimits(claudeWorkDir);
 
-  const tokenUsage = parseTokenUsage(claudeWorkDir);
+  const tokenUsage = resolveRunTokenUsage(
+    parseTokenUsage(claudeWorkDir),
+    parseHarnessUsageTotals(claudeWorkDir)
+  );
   const apiKeySource = parseApiKeySource(claudeWorkDir);
   const logTail =
     readLogTail(path.join(claudeWorkDir, "symphony-loop.log")) ?? undefined;

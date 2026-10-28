@@ -37,6 +37,8 @@ export const env = createEnv({
     pensero(),
   ],
   server: {
+    /** The MCP endpoint runners hand to agents for integration tools. */
+    AGENTFLOW_MCP_URL: z.url().optional(),
     INTERNAL_API_SECRET: z.string().min(1).optional(),
     LOCAL_GATEWAY_JWT_SECRET: z
       .string()
@@ -51,6 +53,7 @@ export const env = createEnv({
   },
   client: {},
   runtimeEnv: {
+    AGENTFLOW_MCP_URL: process.env.AGENTFLOW_MCP_URL,
     INTERNAL_API_SECRET: process.env.INTERNAL_API_SECRET,
     LOCAL_GATEWAY_JWT_SECRET: process.env.LOCAL_GATEWAY_JWT_SECRET,
     RELAY_API_URL: process.env.RELAY_API_URL,

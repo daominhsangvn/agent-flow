@@ -207,11 +207,6 @@ export function buildWhere(
     artifact: { is: artifactWhere },
   };
 
-  if (isMissingTeamScope(filters)) {
-    where.artifactId = { in: [] };
-    return where;
-  }
-
   applySessionFacetFilters(where, filters);
   applyArtifactFacetFilters(artifactWhere, filters);
   // ISS-4559: the per-viewer `sessions-displayed-status-parity` gate, resolved at
@@ -295,15 +290,6 @@ export function buildIdleCountWhere(
   return where;
 }
 
-function isMissingTeamScope(
-  filters: AgentSessionUsageQuery | AgentSessionListQuery
-): boolean {
-  return (
-    filters.viewerScope === AgentSessionViewerScope.Team &&
-    filters.teamId === undefined
-  );
-}
-
 /**
  * Append AND-clauses to a where-predicate, normalizing the existing `where.AND`
  * (which Prisma allows to be either a single object or an array) to an array
@@ -327,17 +313,6 @@ function applySessionFacetFilters(
   filters: AgentSessionUsageQuery | AgentSessionListQuery
 ): void {
   applyUserScope(where, filters);
-  if (filters.teamId) {
-    where.user = {
-      is: {
-        teamMemberships: {
-          some: {
-            teamId: filters.teamId,
-          },
-        },
-      },
-    };
-  }
   if (filters.repositories && filters.repositories.length > 0) {
     where.repositoryFullName = { in: filters.repositories };
   }
@@ -1115,17 +1090,6 @@ export function buildLastSyncTargetWhere(
 
   if (filters.userId) {
     where.userId = filters.userId;
-  }
-  if (filters.teamId) {
-    where.user = {
-      is: {
-        teamMemberships: {
-          some: {
-            teamId: filters.teamId,
-          },
-        },
-      },
-    };
   }
 
   return where;

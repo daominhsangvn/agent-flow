@@ -1,6 +1,7 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import { log } from "@repo/observability/log";
 import { authenticateLoopRunnerRequest } from "@/lib/auth/loop-runner-jwt";
+import { storeStepAttachments } from "@/lib/loops/step-attachments";
 import {
   errorResponse,
   parseBody,
@@ -42,11 +43,18 @@ export async function POST(
       return parseError;
     }
 
+    // Step attachment bytes go to object storage; the record keeps only keys
+    const artifacts = await storeStepAttachments({
+      organizationId: claims.organizationId,
+      loopId,
+      artifacts: body.artifacts,
+    });
+
     // Store artifacts on the loop record
     const updatedCount = await loopsService.updateUploadedArtifacts(
       loopId,
       claims.organizationId,
-      body.artifacts
+      artifacts
     );
     if (updatedCount === 0) {
       log.warn("[upload-artifacts] No rows updated — loop may be terminal", {

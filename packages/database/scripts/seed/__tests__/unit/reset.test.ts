@@ -19,7 +19,6 @@ type AnyDelegate = any;
 
 const EMPTY_SCOPE: ResetScope = {
   projectIds: [],
-  teamIds: [],
   artifactIds: [],
   documentDetailIds: [],
   branchArtifactIds: [],

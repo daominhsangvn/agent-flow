@@ -163,6 +163,7 @@ describe("inbound endpoint", () => {
       inboundUrl,
       inboundSecret: PROVIDER_INBOUND_SECRET,
       setupInstructions: `Send webhook events for Jira Cloud to ${inboundUrl}`,
+      inboundUrlWarning: null,
     });
     expect(JSON.stringify(row)).not.toContain(PROVIDER_INBOUND_SECRET);
   });

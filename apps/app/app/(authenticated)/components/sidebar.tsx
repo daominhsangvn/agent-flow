@@ -36,12 +36,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import { BarChart3, Coins, PackageIcon, TimerOff } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { ComputeTargetPopover } from "@/components/compute-target-popover";
 import { useOrgSlug } from "@/hooks/use-org-slug";
 import { AccountMenu } from "./account-menu";
-import { InboxBadge } from "./inbox-badge";
 import { Search } from "./search";
-import { SidebarTeams } from "./sidebar-teams";
+import { SidebarProjects } from "./sidebar-projects";
 
 type GlobalSidebarProperties = {
   readonly children: ReactNode;
@@ -215,9 +213,6 @@ export function GlobalSidebar({
                       key={item.title}
                       title={item.title}
                       tooltip={item.title}
-                      trailing={
-                        item.title === "Inbox" ? <InboxBadge /> : undefined
-                      }
                     />
                   )
                 )}
@@ -230,7 +225,7 @@ export function GlobalSidebar({
               pathname={pathname ?? ""}
             />
 
-            <SidebarTeams />
+            <SidebarProjects />
 
             <LabsNavSection items={labsItems} pathname={pathname ?? ""} />
           </SidebarContent>
@@ -244,9 +239,6 @@ export function GlobalSidebar({
         </div>
         <SidebarFooter>
           <SidebarMenu>
-            <SidebarMenuItem>
-              <ComputeTargetPopover />
-            </SidebarMenuItem>
             {envBadge && (
               <SidebarMenuItem>
                 <div className="w-full rounded border border-warning/30 bg-warning/12 px-2 py-1.5">

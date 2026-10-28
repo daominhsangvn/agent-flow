@@ -4,9 +4,11 @@ import {
   IntegrationConnectionStatus,
   IntegrationDeliveryMode,
   IntegrationFieldKind,
+  IntegrationOperationTarget,
   IntegrationProviderKey,
   type IntegrationProviderSummary,
 } from "@repo/api/src/types/integration";
+import type { ProjectConnection } from "@repo/api/src/types/project-connection";
 import { WorkflowRunEvent } from "@repo/api/src/types/workflow";
 
 /**
@@ -17,6 +19,8 @@ import { WorkflowRunEvent } from "@repo/api/src/types/workflow";
  */
 
 export const JIRA_ISSUE_ASSIGNED = "jira.issue_assigned";
+export const JIRA_ISSUE_STATUS_CHANGED = "jira.issue_status_changed";
+export const JIRA_ISSUE_LABELED = "jira.issue_labeled";
 export const JIRA_ADD_COMMENT = "jira.add_comment";
 export const JIRA_TRANSITION_ISSUE = "jira.transition_issue";
 export const TEAMS_POST_MESSAGE = "microsoft_teams.post_message";
@@ -67,12 +71,14 @@ export const jiraProvider: IntegrationProviderSummary = {
     },
   ],
   credentialOriginFields: ["deployment", "siteUrl"],
+  projectSettingsFields: [],
   deliveryModes: [
     IntegrationDeliveryMode.Webhook,
     IntegrationDeliveryMode.Poll,
   ],
   capabilities: [IntegrationCapability.Triggers, IntegrationCapability.Actions],
   builtIn: false,
+  providedByServer: false,
   triggers: [
     {
       key: JIRA_ISSUE_ASSIGNED,
@@ -92,6 +98,52 @@ export const jiraProvider: IntegrationProviderSummary = {
         },
       ],
       manualRun: { label: "Issue key", placeholder: "PROJ-123" },
+    },
+    {
+      key: JIRA_ISSUE_STATUS_CHANGED,
+      displayName: "Issue status changed",
+      description: "Starts when an issue moves to another status.",
+      configFields: [
+        {
+          key: "from",
+          label: "From statuses",
+          kind: IntegrationFieldKind.StringList,
+        },
+        {
+          key: "to",
+          label: "To statuses",
+          kind: IntegrationFieldKind.StringList,
+        },
+        {
+          key: "projectKeys",
+          label: "Project keys",
+          kind: IntegrationFieldKind.StringList,
+        },
+      ],
+      manualRun: null,
+    },
+    {
+      key: JIRA_ISSUE_LABELED,
+      displayName: "Issue labeled",
+      description: "Starts when a label is added or removed.",
+      configFields: [
+        {
+          key: "label",
+          label: "Label",
+          kind: IntegrationFieldKind.Text,
+          required: true,
+        },
+        {
+          key: "change",
+          label: "Change",
+          kind: IntegrationFieldKind.Select,
+          options: [
+            { value: "added", label: "Added" },
+            { value: "removed", label: "Removed" },
+          ],
+        },
+      ],
+      manualRun: null,
     },
   ],
   actions: [
@@ -113,6 +165,9 @@ export const jiraProvider: IntegrationProviderSummary = {
         WorkflowRunEvent.Failed,
         "run.unknown_event",
       ],
+      repositoryScoped: false,
+      target: IntegrationOperationTarget.SourceItem,
+      sourceOperation: "comment",
     },
     {
       key: JIRA_TRANSITION_ISSUE,
@@ -129,6 +184,9 @@ export const jiraProvider: IntegrationProviderSummary = {
       ],
       // run.triggered is a pre action event; post actions never preselect it.
       defaultEvents: [WorkflowRunEvent.Triggered, WorkflowRunEvent.Succeeded],
+      repositoryScoped: false,
+      target: IntegrationOperationTarget.SourceItem,
+      sourceOperation: "transition",
     },
   ],
 };
@@ -147,9 +205,11 @@ export const teamsProvider: IntegrationProviderSummary = {
     },
   ],
   credentialOriginFields: [],
+  projectSettingsFields: [],
   deliveryModes: [],
   capabilities: [IntegrationCapability.Actions],
   builtIn: false,
+  providedByServer: false,
   triggers: [],
   actions: [
     {
@@ -165,6 +225,9 @@ export const teamsProvider: IntegrationProviderSummary = {
         },
       ],
       defaultEvents: [WorkflowRunEvent.Succeeded],
+      repositoryScoped: false,
+      target: IntegrationOperationTarget.External,
+      sourceOperation: null,
     },
   ],
 };
@@ -190,9 +253,11 @@ export const webhookProvider: IntegrationProviderSummary = {
     },
   ],
   credentialOriginFields: [],
+  projectSettingsFields: [],
   deliveryModes: [IntegrationDeliveryMode.Webhook],
   capabilities: [IntegrationCapability.Triggers],
   builtIn: true,
+  providedByServer: false,
   triggers: [
     {
       key: WEBHOOK_REQUEST,
@@ -211,11 +276,48 @@ export const PROVIDERS: IntegrationProviderSummary[] = [
   webhookProvider,
 ];
 
+export const LOCAL_GIT_CONNECTION_ID = "55555555-5555-4555-8555-555555555555";
+
+/** Local Git as a server that provides its connection to every organization serves it. */
+export const serverLocalGitProvider: IntegrationProviderSummary = {
+  key: IntegrationProviderKey.LocalGit,
+  displayName: "Local Git",
+  description: "Git repositories hosted on your own machine.",
+  docsUrl: null,
+  connectionFields: [
+    {
+      key: "serverUrl",
+      label: "Server URL",
+      kind: IntegrationFieldKind.Url,
+      required: true,
+    },
+    {
+      key: "token",
+      label: "Access token",
+      kind: IntegrationFieldKind.Secret,
+      required: true,
+    },
+  ],
+  credentialOriginFields: ["serverUrl"],
+  projectSettingsFields: [],
+  deliveryModes: [],
+  capabilities: [
+    IntegrationCapability.Actions,
+    IntegrationCapability.Repositories,
+    IntegrationCapability.RepositoryCreation,
+  ],
+  builtIn: false,
+  providedByServer: true,
+  triggers: [],
+  actions: [],
+};
+
 export function makeConnection(
   overrides: Partial<IntegrationConnection> = {}
 ): IntegrationConnection {
   return {
     managedByWorkflowId: null,
+    providedByServer: false,
     id: JIRA_CONNECTION_ID,
     provider: IntegrationProviderKey.Jira,
     name: "Acme Jira",
@@ -265,3 +367,99 @@ export const webhookConnection = makeConnection({
   },
   account: null,
 });
+
+export const serverLocalGitConnection = makeConnection({
+  id: LOCAL_GIT_CONNECTION_ID,
+  provider: IntegrationProviderKey.LocalGit,
+  name: "Local Git",
+  providedByServer: true,
+  config: { serverUrl: "http://localhost:3300", runnerUrl: "", owner: "" },
+  secretFields: { token: { isSet: true, lastFour: "f00d" } },
+  account: { externalAccountId: "1", displayName: "agentflow" },
+  deliveryMode: IntegrationDeliveryMode.None,
+  inboundUrl: null,
+});
+
+export const LOCAL_GIT_CREATE_PULL_REQUEST = "local_git.create_pull_request";
+
+/**
+ * Local Git with its pull request action, which is repository scoped: a run
+ * opens one pull request in every repository the agent team pushed.
+ */
+export const localGitPullRequestProvider: IntegrationProviderSummary = {
+  ...serverLocalGitProvider,
+  actions: [
+    {
+      key: LOCAL_GIT_CREATE_PULL_REQUEST,
+      displayName: "Create pull request",
+      description:
+        "Opens a Local Git pull request in each project repository the agent team pushed a branch to.",
+      configFields: [
+        {
+          key: "title",
+          label: "Title",
+          kind: IntegrationFieldKind.Template,
+          required: true,
+          defaultValue: "{{source.key}}: {{source.title}}",
+        },
+        {
+          key: "targetBranch",
+          label: "Target branch",
+          kind: IntegrationFieldKind.Text,
+          placeholder: "main",
+          description:
+            "Leave empty to merge into the branch the run started from.",
+        },
+        {
+          key: "draft",
+          label: "Open as draft",
+          kind: IntegrationFieldKind.Boolean,
+          defaultValue: false,
+        },
+      ],
+      defaultEvents: [WorkflowRunEvent.Succeeded],
+      repositoryScoped: true,
+      target: IntegrationOperationTarget.Repository,
+      sourceOperation: null,
+    },
+  ],
+};
+
+/** Keys of the project connections the workflow fixtures use. */
+export const JIRA_KEY = "acme-jira";
+export const TEAMS_KEY = "delivery";
+
+/** A project connection of `projectId` to an organization connection. */
+export function makeProjectConnection(
+  projectId: string,
+  overrides: Partial<ProjectConnection> = {}
+): ProjectConnection {
+  return {
+    id: `pc-${overrides.key ?? JIRA_KEY}-${projectId}`,
+    projectId,
+    connectionId: JIRA_CONNECTION_ID,
+    connectionName: "Acme Jira",
+    provider: IntegrationProviderKey.Jira,
+    key: JIRA_KEY,
+    name: "Acme Jira",
+    settings: { projectKeys: ["PROJ"] },
+    createdAt: new Date("2026-10-13T00:00:00.000Z"),
+    updatedAt: new Date("2026-10-13T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+/** The Jira and Teams project connections of a project. */
+export function makeProjectConnections(projectId: string): ProjectConnection[] {
+  return [
+    makeProjectConnection(projectId),
+    makeProjectConnection(projectId, {
+      connectionId: TEAMS_CONNECTION_ID,
+      connectionName: "Delivery channel",
+      provider: IntegrationProviderKey.MicrosoftTeams,
+      key: TEAMS_KEY,
+      name: "Delivery channel",
+      settings: {},
+    }),
+  ];
+}

@@ -7,9 +7,10 @@ import {
   type SourceItem,
   type SourceItemAttachment,
   type SourceItemComment,
+  type SourceItemLink,
   type SourceItemRef,
 } from "../../types";
-import { adfToPlainText } from "./adf";
+import { adfToPlainText } from "../atlassian/adf";
 import {
   type JiraContext,
   type JiraError,
@@ -26,6 +27,7 @@ import {
   type JiraIssue,
   jiraCommentPageSchema,
   jiraIssueSchema,
+  jiraRemoteLinksSchema,
 } from "./schemas";
 
 /**
@@ -65,7 +67,11 @@ export async function fetchJiraIssue(
     );
   }
   const comments = await fetchLatestComments(ctx, issue.value);
-  return toSourceItem(ctx.connection.config.siteUrl, issue.value, comments);
+  const links = await fetchRemoteLinks(ctx, issue.value);
+  return {
+    ...toSourceItem(ctx.connection.config.siteUrl, issue.value, comments),
+    links,
+  };
 }
 
 /**
@@ -109,6 +115,17 @@ export async function resolveJiraManual(
   );
 }
 
+/** An issue of the site from a key or a link (an agent's connection_get_item). */
+export function parseJiraItemReference(
+  config: { siteUrl: string },
+  input: string
+): Result<{ externalId: string; key: string }, string> {
+  const key = parseJiraIssueReference(input, config.siteUrl);
+  return key.ok
+    ? Result.ok({ externalId: key.value, key: key.value })
+    : Result.err(key.error);
+}
+
 /** An issue key (any case) or a browse/board link on the connection's site. */
 export function parseJiraIssueReference(
   input: string,
@@ -148,6 +165,8 @@ export function toSourceItem(
     labels: fields.labels ?? [],
     reporter: fields.reporter?.displayName ?? null,
     assignee: fields.assignee?.displayName ?? null,
+    reporterEmail: fields.reporter?.emailAddress ?? null,
+    assigneeEmail: fields.assignee?.emailAddress ?? null,
     sections: acceptanceCriteriaSections(issue),
     comments: comments
       .map(toSourceComment)
@@ -225,6 +244,8 @@ function rawRichText(value: unknown): string {
 function toSourceComment(comment: JiraComment): SourceItemComment {
   const rendered = comment.renderedBody?.trim();
   return {
+    id: comment.id,
+    parentId: comment.parentId ?? null,
     author: comment.author?.displayName ?? null,
     createdAt: toIsoDate(comment.created),
     bodyMarkdown: rendered
@@ -276,4 +297,30 @@ function sourceFailure(message: string, error: JiraError): Error {
   return error.retryable
     ? new RetryableSourceError(message)
     : new Error(message);
+}
+
+/** The issue's web links (e.g. the page its plan is reviewed on); none when they cannot be read. */
+async function fetchRemoteLinks(
+  ctx: JiraContext,
+  issue: JiraIssue
+): Promise<SourceItemLink[]> {
+  const links = await jiraRequest(
+    ctx,
+    { method: HttpMethod.Get, path: jiraIssuePath(issue.id, "remotelink") },
+    jiraRemoteLinksSchema
+  );
+  if (!links.ok) {
+    ctx.log.warn("Could not load Jira web links; importing without them", {
+      connectionId: ctx.connection.id,
+      issueKey: issue.key,
+      status: links.error.status,
+      kind: links.error.kind,
+    });
+    return [];
+  }
+  return links.value.flatMap((link) =>
+    link.object?.url
+      ? [{ url: link.object.url, title: link.object.title ?? null }]
+      : []
+  );
 }

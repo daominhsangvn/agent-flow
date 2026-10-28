@@ -115,7 +115,6 @@ describe("buildRoutineWriteData — provider capability normalization", () => {
     );
 
     expect(data.sourceId).toBeNull();
-    expect(data.teamId).toBeNull();
     expect(data.ownerId).toBeNull();
     expect(data.ownerName).toBeNull();
     expect(data.cron).toBeNull();
