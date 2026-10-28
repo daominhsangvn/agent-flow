@@ -1,0 +1,55 @@
+# The LeaveDesk orchestrated workflow (worked example for docs/orchestrator-guide.md).
+# Exported from the local AgentFlow on 2026-10-28; paste it into Workflows → New → YAML.
+name: LeaveDesk · Questions
+description: >-
+  People mention the bot on an LD ticket to ask about its requirement, its plan, its tests or the project; the orchestrator answers in the thread, asking the BA, Dev and QC runners when it needs them.
+project: LeaveDesk
+triggers:
+  - connection: jira                   # the project's Jira connection (one bot)
+    type: jira.issue_mentioned         # someone mentions the bot on a ticket
+    config:
+      projectKeys: [LD]
+  - connection: jira
+    type: jira.issue_status_changed    # every status move is a ticket change for the case
+    config:
+      projectKeys: [LD]
+agent:
+  runAs: admin@agentflow.local
+  runner: runner-orch                  # the orchestrator's own runner (no repository clone)
+  mode: orchestrated
+  orchestrator:
+    concurrency: supersede
+    debounceSeconds: 20
+    turnTimeoutMinutes: 10
+    cancelOn: [status_changed, label_removed]
+  instructions: |
+    ## Runners
+    Who does what comes from each runner's AGENTFLOW.md (runners_list): pick the runner by its role (BA, Dev, QC) and the command whose description and produces/needs fit the step. Do not guess commands a runner does not declare.
+
+    ## Flow (Jira status order)
+    To Do → Prepare Requirements → PRD Review → Ready for Dev → Plan Review → In Progress → Testing → Done
+    - Prepare Requirements: the BA runner writes the PRD. Post its questions as one numbered comment. When the PRD is ready, comment a short summary with the PRD file attached and ask the admin to review it (move to PRD Review).
+    - PRD Review: start nothing new. Answer questions (ask the BA runner). Requested changes go back to the BA runner's PRD task; attach the new PRD with what changed.
+    - Ready for Dev (PRD approved): the BA runner archives the PRD; at the same time the Dev runner writes the implementation plan and the QC runner designs the test plan (test cases), both given the PRD. Post Dev's and QC's questions each in its own comment. When both are done, comment a summary with the plan and the test plan attached and ask the admin to review (move to Plan Review).
+    - Plan Review: start nothing new. Answer questions about the plan (ask the Dev runner, resuming its plan task with fork) or the test plan (ask the QC runner). Requested changes go back to that runner's task; attach the new file with what changed.
+    - In Progress (plan approved): the Dev runner implements the approved plan (give it the plan). When done, post the pull request and ask the admin to review and merge it, then move to Testing.
+    - Testing: the QC runner automates and runs the approved test plan against main (give it the PRD, the plan and the test plan; it must not redesign them). Post the verdict with the results and the evidence screenshots attached: passed/failed counts, each failure with its reason.
+    - Done: close the case.
+
+    ## Files on the ticket
+    - A task's files come back with its result (task_get, wait results, the case): name and size. Attach them with reply attachments [{taskId, name}], in the comment that announces them. Never paste a file's content into a comment.
+    - Always use the latest succeeded task that produced the file (a resumed task produces a new version).
+    - If a file you need is missing or "not collected", say so in the comment and do not claim it is attached.
+    - Hand files to the next tasks with task_run files [{taskId, name}] and name them in the prompt. Before task_run, check the command's needs (runners_list) against what the case has.
+    - Answers people gave to a runner's questions are decisions: pass them to later tasks that use the same file (in the prompt), so a later task does not treat them as open.
+    - A task answer that starts with "BLOCKED:" did nothing. Comment on the ticket what is missing and who produces it (from that line). If the missing file already exists from an earlier task of this case, pass it with task_run files and run the task again (once). Otherwise wait for it.
+
+    ## Cancelling
+    - Only a status change cancels tasks. Moving forward in the flow keeps running tasks (say they are still running).
+    - Moving backward (e.g. back to To Do or Prepare Requirements) or to a status outside the flow: cancel the tasks started for the statuses being left (task_cancel), and say so on the ticket.
+    - Several changes in one turn: act on the final status only.
+
+    ## Questions and answers
+    - A reply that answers some questions and asks new ones: answer the new ones first (ask the runner that knows), then resume the task only when every question has an answer; list the ones still open.
+    - A question in any comment never stops or restarts a running task: answer it in its thread.
+    - Default language: Vietnamese. A comment written in another language gets its answer in that language, in its thread. File names, commands and ticket keys stay as they are.

@@ -16,13 +16,17 @@ Jira / Teams / ... ──trigger of an orchestrated workflow──► orchestrat
                                                               └─◄────────────────────────┘ and answers in the thread
 ```
 
-Status: phases 1-6 of the plan are built: runner capabilities, the
-orchestrator settings, `agent.mode: orchestrated`, taking requests
-(conversations, turns, replies), tasks on other runners with wait conditions,
-`supersede`, Teams thread replies, decisions and edited messages, and the case
-pages. Auto runners' capabilities from the toolkit (phase 7) and the guards
-(phase 8) come next. The orchestrator configuration moved from the project into
+Status: phases 1-7 of the plan are built: runner capabilities (also from an
+auto runner's toolkit), the orchestrator settings, `agent.mode: orchestrated`,
+taking requests (conversations, turns, replies), tasks on other runners with
+wait conditions, `supersede`, Teams thread replies, decisions and edited
+messages, and the case pages. Of the guards (phase 8), the task guards and the
+refusal audit are built ("Guards" below); identity mapping, budgets and write
+grants come next. The orchestrator configuration moved from the project into
 the workflow.
+
+To set one up for a project and write its rules, see
+[orchestrator-guide.md](orchestrator-guide.md).
 
 ## Settings (the orchestrated workflow)
 
