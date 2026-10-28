@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+import type {
+  WorkflowRunLoopRef,
+  WorkflowRunPullRequest,
+  WorkflowRunSession,
+} from "./workflow.ts";
+
 /**
  * The project orchestrator's runtime (docs/orchestrator.md): cases (a ticket
  * or a thread of work), conversations (where messages come from and answers
@@ -251,6 +257,10 @@ export type OrchestratorCaseSummary = {
   /** Queued + running tasks. */
   activeTaskCount: number;
   turnRunning: boolean;
+  taskCount: number;
+  turnCount: number;
+  /** Known turn + task loop cost; null when none is known. */
+  costUsd: number | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -285,6 +295,14 @@ export type OrchestratorCaseTurn = {
   finishedAt: string | null;
 };
 
+export type OrchestratorCaseTaskFile = {
+  name: string;
+  size: number;
+  /** False when the runner did not store it (see skipped). */
+  stored: boolean;
+  skipped: string | null;
+};
+
 export type OrchestratorCaseTask = {
   id: string;
   conversationId: string;
@@ -300,6 +318,8 @@ export type OrchestratorCaseTask = {
   resumeTaskId: string | null;
   loopId: string | null;
   reply: string | null;
+  files: OrchestratorCaseTaskFile[];
+  filesOmitted: number;
   questions: Array<{ id: string; question: string; options?: string[] }>;
   error: string | null;
   /** Why a queued task has not started (a busy runner). */
@@ -391,3 +411,10 @@ export const ORCHESTRATOR_CANCEL_ON_DEFAULT: readonly OrchestratorTicketChange[]
     OrchestratorTicketChange.StatusChanged,
     OrchestratorTicketChange.LabelRemoved,
   ];
+
+/** GET /orchestrator/cases/{id}/loops: the loops the case's tasks ran (Date fields, revived). */
+export type OrchestratorCaseLoops = {
+  loops: WorkflowRunLoopRef[];
+  sessions: WorkflowRunSession[];
+  pullRequests: WorkflowRunPullRequest[];
+};

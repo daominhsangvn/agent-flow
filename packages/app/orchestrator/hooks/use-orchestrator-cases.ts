@@ -1,11 +1,14 @@
 "use client";
 
+import { LoopStatus } from "@repo/api/src/types/loop";
 import type {
   DecideOrchestratorDecisionInput,
   OrchestratorCaseDetail,
+  OrchestratorCaseLoops,
   OrchestratorCaseSummary,
   UpdateOrchestratorCaseInput,
 } from "@repo/api/src/types/orchestrator";
+import { isLiveDisplayedSessionStatus } from "@repo/api/src/types/session-status";
 // Cross-slice: same server-message toasts as the integrations mutations.
 import { mutationErrorOptions } from "@repo/app/integrations/lib/mutation-error";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
@@ -24,6 +27,8 @@ export const orchestratorCaseKeys = {
     [...orchestratorCaseKeys.all, "workflow", workflowId] as const,
   detail: (caseId: string) =>
     [...orchestratorCaseKeys.all, "detail", caseId] as const,
+  loops: (caseId: string) =>
+    [...orchestratorCaseKeys.all, "loops", caseId] as const,
 };
 
 export function useWorkflowOrchestratorCases(
@@ -52,6 +57,41 @@ export function useOrchestratorCase(caseId: string, enabled = true) {
     refetchInterval: (query) =>
       isCaseActive(query.state.data) ? CASE_POLL_INTERVAL_MS : false,
   });
+}
+
+export function useOrchestratorCaseLoops(
+  caseId: string,
+  { poll = false }: { poll?: boolean } = {}
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: orchestratorCaseKeys.loops(caseId),
+    queryFn: () =>
+      apiClient.get<OrchestratorCaseLoops>(`${casePath(caseId)}/loops`),
+    enabled: !!caseId,
+    refetchInterval: (query) =>
+      poll || hasLiveWork(query.state.data) ? CASE_POLL_INTERVAL_MS : false,
+  });
+}
+
+const LIVE_LOOP_STATUSES: ReadonlySet<string> = new Set([
+  LoopStatus.Pending,
+  LoopStatus.Claimed,
+  LoopStatus.Running,
+]);
+
+/** Whether any returned loop or session is still going, so the data can still change. */
+function hasLiveWork(data: OrchestratorCaseLoops | undefined): boolean {
+  if (!data) {
+    return false;
+  }
+  return (
+    data.loops.some((loop) => LIVE_LOOP_STATUSES.has(loop.status)) ||
+    data.sessions.some((session) =>
+      isLiveDisplayedSessionStatus(session.status)
+    )
+  );
 }
 
 export function useSetOrchestratorCaseStatus(caseId: string) {

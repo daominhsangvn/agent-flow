@@ -107,6 +107,7 @@ export function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
     ],
     runCounts: { total: 4, active: 1, succeeded: 2, failed: 1 },
     lastRunAt: new Date("2026-10-01T09:00:00.000Z"),
+    caseCounts: null,
     createdAt: new Date("2026-09-01T09:00:00.000Z"),
     updatedAt: new Date("2026-09-02T09:00:00.000Z"),
     ...overrides,

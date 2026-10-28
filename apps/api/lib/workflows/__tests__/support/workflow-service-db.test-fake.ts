@@ -77,6 +77,7 @@ export function workflowServiceDelegates(
     workflowRun: {
       groupBy: vi.fn(() => Promise.resolve(state.runGroups)),
     },
+    orchestratorCase: { groupBy: vi.fn(() => Promise.resolve([])) },
   };
 
   function record() {

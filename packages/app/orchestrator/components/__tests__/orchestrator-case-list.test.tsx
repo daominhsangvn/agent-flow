@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../hooks/use-orchestrator-cases", () => ({
   useWorkflowOrchestratorCases: () => mocks.cases,
+  isCaseActive: (c: { turnRunning: boolean; activeTaskCount: number }) =>
+    c.turnRunning || c.activeTaskCount > 0,
 }));
 
 vi.mock("@repo/navigation/use-org-path", () => ({
@@ -54,6 +56,9 @@ function summary(
     pendingDecisionCount: 0,
     activeTaskCount: 0,
     turnRunning: false,
+    taskCount: 2,
+    turnCount: 3,
+    costUsd: 0.42,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
@@ -81,7 +86,34 @@ describe("OrchestratorCaseList", () => {
       "href",
       "/acme/orchestrator/cases/case-2"
     );
-    expect(screen.getByText("2")).toBeTruthy();
+    expect(screen.getByText("2 pending")).toBeTruthy();
+  });
+
+  it("renders the runs-style columns", () => {
+    mocks.cases.data = [summary({})];
+    render(<OrchestratorCaseList workflowId="w1" />);
+
+    expect(
+      screen.getAllByRole("columnheader").map((h) => h.textContent)
+    ).toEqual(["Case", "Status", "Last activity", "Tasks", "Turns", "Cost"]);
+  });
+
+  it("shows the cost, or a dash when unknown", () => {
+    mocks.cases.data = [
+      summary({ id: "a", costUsd: 0.42 }),
+      summary({ id: "b", title: "Second", costUsd: null }),
+    ];
+    render(<OrchestratorCaseList workflowId="w1" />);
+
+    expect(screen.getByText("$0.42")).toBeTruthy();
+    expect(screen.getByText("-")).toBeTruthy();
+  });
+
+  it("flags a running case", () => {
+    mocks.cases.data = [summary({ turnRunning: true })];
+    render(<OrchestratorCaseList workflowId="w1" />);
+
+    expect(screen.getByText("Running")).toBeTruthy();
   });
 
   it("shows the empty state", () => {

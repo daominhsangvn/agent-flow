@@ -11,6 +11,7 @@ import {
   WorkflowRunStatus,
   type WorkflowTrigger,
 } from "@repo/api/src/types/workflow";
+import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import { type Prisma, withDb } from "@repo/database";
 import { z } from "zod";
 import {
@@ -21,6 +22,10 @@ import {
 import { listIntegrationProviders } from "@/lib/integrations/registry";
 import { displayUserName } from "@/lib/user-display-name";
 import { readAgentConfig, toJsonObject } from "./engine/run-data";
+import {
+  type CaseCountsByWorkflow,
+  loadCaseCounts,
+} from "./workflow-case-counts";
 import {
   removeUnusedWorkflowHttpEndpoint,
   resolveBuiltInHttpChildren,
@@ -65,11 +70,16 @@ export const workflowService = {
         orderBy: { createdAt: "asc" },
       })
     );
-    const counts = await loadRunCounts(
-      organizationId,
-      records.map((record) => record.id)
+    const [counts, caseCounts] = await Promise.all([
+      loadRunCounts(
+        organizationId,
+        records.map((record) => record.id)
+      ),
+      loadCaseCounts(organizationId, orchestratedIds(records)),
+    ]);
+    return records.map((record) =>
+      toWorkflowDto(record, counts, caseCounts, viewer)
     );
-    return records.map((record) => toWorkflowDto(record, counts, viewer));
   },
 
   async get(
@@ -89,8 +99,11 @@ export const workflowService = {
     if (!record) {
       return null;
     }
-    const counts = await loadRunCounts(organizationId, [record.id]);
-    return toWorkflowDto(record, counts, viewer);
+    const [counts, caseCounts] = await Promise.all([
+      loadRunCounts(organizationId, [record.id]),
+      loadCaseCounts(organizationId, orchestratedIds([record])),
+    ]);
+    return toWorkflowDto(record, counts, caseCounts, viewer);
   },
 
   async create(
@@ -509,6 +522,16 @@ function addRunCount(
   };
 }
 
+function orchestratedIds(records: WorkflowRecord[]): string[] {
+  return records
+    .filter(
+      (record) =>
+        readAgentConfig(record.agentConfig)?.mode ===
+        WorkflowAgentMode.Orchestrated
+    )
+    .map((record) => record.id);
+}
+
 function emptyRunCounts(): Workflow["runCounts"] {
   return { total: 0, active: 0, succeeded: 0, failed: 0 };
 }
@@ -516,6 +539,7 @@ function emptyRunCounts(): Workflow["runCounts"] {
 function toWorkflowDto(
   record: WorkflowRecord,
   counts: RunCountsByWorkflow,
+  caseCounts: CaseCountsByWorkflow,
   viewer: ConfigViewer
 ): Workflow {
   return {
@@ -579,6 +603,7 @@ function toWorkflowDto(
       .sort(compareActions),
     runCounts: counts.get(record.id) ?? emptyRunCounts(),
     lastRunAt: record.lastRunAt,
+    caseCounts: caseCounts.get(record.id) ?? null,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };

@@ -20,6 +20,7 @@ import type {
 } from "@repo/api/src/types/orchestrator";
 import { OrchestratorCaseStatus } from "@repo/api/src/types/orchestrator";
 import { z } from "zod";
+import type { CaseStats } from "@/app/orchestrator/cases/service/case-stats";
 import { readTaskResult } from "@/lib/orchestrator/task-result";
 
 /**
@@ -119,7 +120,8 @@ export type CaseDetailRow = CaseSummaryRow & {
 
 export function toCaseSummary(
   row: CaseSummaryRow,
-  turnRunning: boolean
+  turnRunning: boolean,
+  stats: CaseStats
 ): OrchestratorCaseSummary {
   return {
     id: row.id,
@@ -132,6 +134,9 @@ export function toCaseSummary(
     pendingDecisionCount: row._count.decisions,
     activeTaskCount: row._count.tasks,
     turnRunning,
+    taskCount: stats.taskCount,
+    turnCount: stats.turnCount,
+    costUsd: stats.costUsd,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -139,10 +144,11 @@ export function toCaseSummary(
 
 export function toCaseDetail(
   row: CaseDetailRow,
-  turnRunning: boolean
+  turnRunning: boolean,
+  stats: CaseStats
 ): OrchestratorCaseDetail {
   return {
-    ...toCaseSummary(row, turnRunning),
+    ...toCaseSummary(row, turnRunning, stats),
     notes: row.notes,
     project: row.project,
     workflow: row.workflow,
@@ -259,6 +265,13 @@ function toTask(row: CaseDetailRow["tasks"][number]): OrchestratorCaseTask {
     resumeTaskId: row.resumeTaskId,
     loopId: row.loopId,
     reply: result?.reply ?? null,
+    files: (result?.files ?? []).map((file) => ({
+      name: file.name,
+      size: file.size,
+      stored: file.storageKey !== null,
+      skipped: file.skipped,
+    })),
+    filesOmitted: result?.filesOmitted ?? 0,
     questions: result?.questions ?? [],
     error: result?.error ?? cancelledError(result),
     waiting: result?.waiting ?? null,

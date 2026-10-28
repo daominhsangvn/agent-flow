@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../hooks/use-orchestrator-cases", () => ({
+  isCaseActive: () => true,
   useOrchestratorCase: () => mocks.query,
   useSetOrchestratorCaseStatus: () => ({
     mutate: vi.fn(),
@@ -45,6 +46,10 @@ vi.mock("../../hooks/use-orchestrator-cases", () => ({
     mutateAsync: vi.fn(),
     isPending: false,
   }),
+}));
+
+vi.mock("../orchestrator-case-work-cards", () => ({
+  OrchestratorCaseWorkCards: () => <div data-testid="work-cards" />,
 }));
 
 vi.mock("@repo/navigation/use-org-path", () => ({
@@ -79,6 +84,9 @@ function makeDetail(): OrchestratorCaseDetail {
     pendingDecisionCount: 1,
     activeTaskCount: 1,
     turnRunning: true,
+    taskCount: 1,
+    turnCount: 2,
+    costUsd: null,
     createdAt: "2026-10-26T08:00:00.000Z",
     updatedAt: "2026-10-26T08:10:00.000Z",
     notes: "",
@@ -134,6 +142,11 @@ function makeDetail(): OrchestratorCaseDetail {
         resumeTaskId: null,
         loopId: LOOP_ID,
         reply: null,
+        files: [
+          { name: "plan.md", size: 12_595, stored: true, skipped: null },
+          { name: "big.bin", size: 900, stored: false, skipped: "too large" },
+        ],
+        filesOmitted: 0,
         questions: [],
         error: null,
         waiting: null,
@@ -186,6 +199,16 @@ describe("OrchestratorCaseDetailView", () => {
     expect(screen.queryByRole("button", { name: "Close case" })).toBeNull();
   });
 
+  it("lists task files with size and skipped reason", () => {
+    render(<OrchestratorCaseDetailView caseId={CASE_ID} isAdmin />);
+
+    const list = screen.getByTestId("orchestrator-task-files");
+    expect(list).toHaveTextContent("plan.md");
+    expect(list).toHaveTextContent("12.3 KB");
+    expect(list).toHaveTextContent("big.bin");
+    expect(list).toHaveTextContent("too large");
+  });
+
   it("links a task to its loop", () => {
     render(<OrchestratorCaseDetailView caseId={CASE_ID} isAdmin />);
 
@@ -193,6 +216,25 @@ describe("OrchestratorCaseDetailView", () => {
       "href",
       `/acme/loops/${LOOP_ID}`
     );
+  });
+
+  it("links the header to the workflow's cases tab and shows the cost", () => {
+    mocks.query.data = { ...makeDetail(), costUsd: 1.5 };
+    render(<OrchestratorCaseDetailView caseId={CASE_ID} isAdmin />);
+
+    expect(screen.getByRole("link", { name: "Orchestrated" })).toHaveAttribute(
+      "href",
+      "/acme/workflows/w1?tab=cases"
+    );
+    expect(screen.getByText("$1.50", { exact: false })).toBeInTheDocument();
+  });
+
+  it("says the cost is unknown when it is null", () => {
+    render(<OrchestratorCaseDetailView caseId={CASE_ID} isAdmin />);
+
+    expect(
+      screen.getByText("cost unknown", { exact: false })
+    ).toBeInTheDocument();
   });
 
   it("shows a dash, not $0.00, when usage is unknown", () => {

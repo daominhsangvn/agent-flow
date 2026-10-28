@@ -1,4 +1,5 @@
 import { IntegrationToolCallStatus } from "@repo/api/src/types/integration-tools";
+import type { WorkflowCaseCounts } from "@repo/api/src/types/workflow";
 import {
   WorkflowActionRunStatus,
   WorkflowActionStage,
@@ -7,6 +8,7 @@ import {
   WorkflowRunStatus,
 } from "@repo/api/src/types/workflow";
 import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
+import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
 
 /** Badge tones used by the workflows UI (a subset of the design-system Badge variants). */
 export type WorkflowBadgeTone =
@@ -196,3 +198,20 @@ export const WORKFLOW_TOOL_CALL_STATUS_LABELS: Record<
 
 /** The action label of an instruction (it is no provider's action type). */
 export const WORKFLOW_INSTRUCTION_LABEL = "Instruction";
+
+export function describeCaseCount(total: number): string {
+  return total === 1 ? "1 case" : `${total} cases`;
+}
+
+export function describeWorkflowCaseActivity(
+  counts: WorkflowCaseCounts
+): string {
+  if (counts.total === 0) {
+    return "No cases yet";
+  }
+  const base = `${describeCaseCount(counts.total)} (${counts.open} open)`;
+  if (counts.lastActivityAt === null) {
+    return base;
+  }
+  return `${base} · last activity ${formatRelativeTime(counts.lastActivityAt)}`;
+}

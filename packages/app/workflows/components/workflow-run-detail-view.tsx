@@ -1,9 +1,5 @@
 "use client";
 
-import {
-  LoopCommandSchema,
-  LoopStatusSchema,
-} from "@agentflow-ai/loops-api/commands";
 import { DocumentType } from "@repo/api/src/types/document";
 import {
   type WorkflowActionRun,
@@ -13,7 +9,6 @@ import {
   type WorkflowRunDetail,
   type WorkflowRunDocumentRef,
   type WorkflowRunError,
-  type WorkflowRunLoopRef,
   type WorkflowRunSourceClassification,
   WorkflowRunSourceClassificationOrigin,
 } from "@repo/api/src/types/workflow";
@@ -25,14 +20,9 @@ import { ProviderIcon } from "@repo/app/integrations/components/provider-icon";
 import { QueryErrorMessage } from "@repo/app/integrations/components/query-error-message";
 import { useIntegrationProviders } from "@repo/app/integrations/hooks/use-integrations";
 import { getProviderDisplayName } from "@repo/app/integrations/lib/integration-labels";
-import { LoopStatusBadge } from "@repo/app/loops/components/loop-status-badge";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dialog";
-import { loopCommandLabels } from "@repo/app/shared/components/status-badge";
-import {
-  formatDateTime,
-  formatRelativeTime,
-} from "@repo/app/shared/lib/date-utils";
+import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
 import {
   formatCostPrecise,
   formatTokenCount,
@@ -65,19 +55,18 @@ import { useOrgPath } from "@repo/navigation/use-org-path";
 import {
   AlertCircleIcon,
   BanIcon,
-  ExternalLinkIcon,
   HistoryIcon,
   Loader2Icon,
   RotateCcwIcon,
 } from "lucide-react";
 import { Fragment, useState } from "react";
-import { z } from "zod";
 import {
   isFinalWorkflowRunStatus,
   useCancelWorkflowRun,
   useRetryWorkflowActionRun,
   useWorkflowRun,
 } from "../hooks/use-workflows";
+import { getLoopCommandLabel } from "../lib/loop-command-label";
 import { getActionLabel } from "../lib/workflow-catalog";
 import { describeWorkflowRunError } from "../lib/workflow-error-messages";
 import {
@@ -85,6 +74,8 @@ import {
   WORKFLOW_INSTRUCTION_OPERATION_STATUS_LABELS,
   WORKFLOW_RUN_EVENT_LABELS,
 } from "../lib/workflow-labels";
+import { ExternalOrText, isHttpUrl } from "./external-or-text";
+import { WorkflowRunLoopsCard } from "./workflow-run-loops-card";
 import { WorkflowRunProcessCard } from "./workflow-run-process-card";
 import { WorkflowRunPullRequests } from "./workflow-run-pull-requests";
 import { WorkflowRunRetryAction } from "./workflow-run-retry-action";
@@ -219,7 +210,10 @@ function RunDetailContent({
         )}
         run={run}
       />
-      <RunLoopsCard loops={run.loops} stepNames={stepNames(run)} />
+      <WorkflowRunLoopsCard
+        loops={run.loops}
+        stepName={(stepId) => stepNames(run).get(stepId) ?? stepId}
+      />
       <WorkflowRunSessionsCard
         commandLabel={getLoopCommandLabel}
         sessions={run.sessions}
@@ -378,120 +372,6 @@ function DocumentLink({
       {label}
     </Link>
   );
-}
-
-function ExternalOrText({
-  href,
-  text,
-}: Readonly<{ href: string | null; text: string }>) {
-  if (!(href && isHttpUrl(href))) {
-    return <span>{text}</span>;
-  }
-  return (
-    <a
-      className="inline-flex items-center gap-1 text-[var(--link)] hover:underline"
-      href={href}
-      rel="noreferrer noopener"
-      target="_blank"
-    >
-      {text}
-      <ExternalLinkIcon className="size-3" />
-    </a>
-  );
-}
-
-function RunLoopsCard({
-  loops,
-  stepNames,
-}: Readonly<{
-  loops: WorkflowRunLoopRef[];
-  /** Process step names by id, for the loops that ran a step. */
-  stepNames: ReadonlyMap<string, string>;
-}>) {
-  const buildOrgPath = useOrgPath();
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Agent loops</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {loops.length === 0 ? (
-          <p className="text-muted-foreground text-sm">
-            No loop has been launched for this run yet.
-          </p>
-        ) : (
-          <div className="overflow-x-auto rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Command</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Started</TableHead>
-                  <TableHead>Finished</TableHead>
-                  <TableHead>Pull request</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {loops.map((loop) => (
-                  <TableRow key={loop.loopId}>
-                    <TableCell>
-                      <Link
-                        className="font-medium hover:underline"
-                        href={buildOrgPath(`/loops/${loop.loopId}`)}
-                      >
-                        {getLoopCommandLabel(loop.command)}
-                      </Link>
-                      {loop.stepId ? (
-                        <span className="ml-2 text-muted-foreground text-xs">
-                          {stepNames.get(loop.stepId) ?? loop.stepId}
-                        </span>
-                      ) : null}
-                      {loop.adopted ? (
-                        <Badge
-                          className="ml-2"
-                          title="Started by a person and attached to this run"
-                          variant="muted"
-                        >
-                          Adopted
-                        </Badge>
-                      ) : null}
-                    </TableCell>
-                    <TableCell>
-                      <RunLoopStatus status={loop.status} />
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-muted-foreground">
-                      {loop.startedAt ? formatDateTime(loop.startedAt) : "-"}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-muted-foreground">
-                      {loop.completedAt
-                        ? formatDateTime(loop.completedAt)
-                        : "-"}
-                    </TableCell>
-                    <TableCell>
-                      {loop.prUrl ? (
-                        <ExternalOrText href={loop.prUrl} text="Open" />
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function RunLoopStatus({ status }: Readonly<{ status: string }>) {
-  const parsed = LoopStatusSchema.safeParse(status);
-  if (parsed.success) {
-    return <LoopStatusBadge status={parsed.data} />;
-  }
-  return <Badge variant="muted">{status}</Badge>;
 }
 
 function ActionRunsCard({
@@ -747,11 +627,6 @@ function stepNames(run: WorkflowRunDetail): ReadonlyMap<string, string> {
   return new Map(run.process?.steps.map((step) => [step.id, step.name]) ?? []);
 }
 
-function getLoopCommandLabel(command: string): string {
-  const parsed = LoopCommandSchema.safeParse(command);
-  return parsed.success ? loopCommandLabels[parsed.data] : command;
-}
-
 /** Tokens and cost of an instruction's agent; an unknown cost says so. */
 function describeInstructionUsage(
   detail: WorkflowInstructionRunDetail
@@ -763,12 +638,6 @@ function describeInstructionUsage(
       : formatCostPrecise(detail.costUsd);
   return `${tokens} · ${cost}`;
 }
-
-function isHttpUrl(value: string): boolean {
-  return httpUrlSchema.safeParse(value).success;
-}
-
-const httpUrlSchema = z.url({ protocol: /^https?$/ });
 
 const RETRYABLE_ACTION_RUN_STATUSES: readonly WorkflowActionRunStatus[] = [
   WorkflowActionRunStatus.Failed,

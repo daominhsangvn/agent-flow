@@ -1,5 +1,6 @@
 import {
   type OrchestratorCaseDetail,
+  type OrchestratorCaseLoops,
   OrchestratorCaseStatus,
   OrchestratorConversationStatus,
   OrchestratorDecisionStatus,
@@ -28,6 +29,9 @@ const fixture: OrchestratorCaseDetail = {
   pendingDecisionCount: 1,
   activeTaskCount: 1,
   turnRunning: true,
+  taskCount: 1,
+  turnCount: 2,
+  costUsd: 1.37,
   createdAt: "2026-10-26T08:00:00.000Z",
   updatedAt: "2026-10-26T08:10:00.000Z",
   notes: "Reproduced on Safari 17. Waiting for the plan approval.",
@@ -83,6 +87,11 @@ const fixture: OrchestratorCaseDetail = {
       resumeTaskId: null,
       loopId: "01LOOP0000000000000000001",
       reply: null,
+      files: [
+        { name: "plan.md", size: 12_595, stored: true, skipped: null },
+        { name: "big.bin", size: 900, stored: false, skipped: "too large" },
+      ],
+      filesOmitted: 0,
       questions: [],
       error: "The runner lost its session.",
       waiting: null,
@@ -117,7 +126,61 @@ const fixture: OrchestratorCaseDetail = {
   ],
 };
 
+const loopsFixture: OrchestratorCaseLoops = {
+  loops: [
+    {
+      loopId: "01LOOP0000000000000000001",
+      command: "ba-prd",
+      status: "COMPLETED",
+      adopted: false,
+      stepId: null,
+      prUrl: "https://example.test/acme/web/pull/7",
+      startedAt: new Date("2026-10-26T08:02:00.000Z"),
+      completedAt: new Date("2026-10-26T08:05:00.000Z"),
+    },
+    {
+      loopId: "01LOOP0000000000000000002",
+      command: "/plan",
+      status: "RUNNING",
+      adopted: false,
+      stepId: null,
+      prUrl: null,
+      startedAt: new Date("2026-10-26T08:06:00.000Z"),
+      completedAt: null,
+    },
+  ],
+  sessions: [
+    {
+      id: "01SESSION00000000000000001",
+      slug: "plan-proj-7",
+      name: "Plan PROJ-7",
+      loopId: "01LOOP0000000000000000002",
+      command: "/plan",
+      stepId: null,
+      status: "active",
+      harness: "claude",
+      model: null,
+      startedAt: new Date("2026-10-26T08:06:00.000Z"),
+      lastActivityAt: new Date("2026-10-26T08:09:00.000Z"),
+      endedAt: null,
+    },
+  ],
+  pullRequests: [
+    {
+      url: "https://example.test/acme/web/pull/7",
+      number: 7,
+      repository: "acme/web",
+      branch: "proj-7-login",
+    },
+  ],
+};
+
 const caseRoutes: FixtureRoute[] = [
+  {
+    method: "GET",
+    path: `/orchestrator/cases/${CASE_ID}/loops`,
+    respond: () => loopsFixture,
+  },
   { method: "GET", path: "/orchestrator/cases/*", respond: () => fixture },
   { method: "POST", path: "/orchestrator/decisions/*", respond: () => ({}) },
 ];

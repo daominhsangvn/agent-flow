@@ -722,6 +722,8 @@ export type Workflow = {
   httpEndpointConnectionId: string | null;
   runCounts: WorkflowRunCounts;
   lastRunAt: Date | null;
+  /** Orchestrated workflows: their cases (they have no workflow runs); null for process workflows. */
+  caseCounts: WorkflowCaseCounts | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -1010,3 +1012,11 @@ export function resolveWorkflowOrchestratorConfig(
 ): WorkflowOrchestratorConfig {
   return agent.orchestrator ?? workflowOrchestratorConfigSchema.parse({});
 }
+
+export type WorkflowCaseCounts = {
+  total: number;
+  open: number;
+  closed: number;
+  /** Max case updatedAt; null without cases. */
+  lastActivityAt: Date | null;
+};

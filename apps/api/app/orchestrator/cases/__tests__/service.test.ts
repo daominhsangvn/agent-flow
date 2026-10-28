@@ -22,6 +22,11 @@ const mocks = vi.hoisted(() => ({
   turnUpdateMany: vi.fn(),
   userFindFirst: vi.fn(),
   cancel: vi.fn(),
+  loadCaseStats: vi.fn(),
+}));
+
+vi.mock("@/app/orchestrator/cases/service/case-stats", () => ({
+  loadCaseStats: mocks.loadCaseStats,
 }));
 
 vi.mock("@repo/database", () => {
@@ -154,6 +159,16 @@ const DETAIL_ROW = {
         questions: [{ id: "q1", question: "Which?" }],
         error: "boom",
         waiting: "Waiting for runner-1.",
+        files: [
+          { name: "PRD.md", size: 1200, storageKey: "k/PRD.md", skipped: null },
+          {
+            name: "big.bin",
+            size: 9_000_000,
+            storageKey: null,
+            skipped: "too large",
+          },
+        ],
+        filesOmitted: 2,
       },
       createdAt: D("2026-10-23T08:03:30.000Z"),
       finishedAt: null,
@@ -165,6 +180,9 @@ const DETAIL_ROW = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.turnFindMany.mockResolvedValue([]);
+  mocks.loadCaseStats.mockResolvedValue(
+    new Map([[CASE_ID, { taskCount: 4, turnCount: 5, costUsd: 0.5 }]])
+  );
   mocks.workflowFindFirst.mockResolvedValue({ id: "workflow-1" });
 });
 
@@ -200,6 +218,9 @@ describe("orchestratorCaseService.listForWorkflow", () => {
       pendingDecisionCount: 2,
       activeTaskCount: 3,
       turnRunning: true,
+      taskCount: 4,
+      turnCount: 5,
+      costUsd: 0.5,
       updatedAt: "2026-10-23T09:00:00.000Z",
     });
   });
@@ -258,9 +279,26 @@ describe("orchestratorCaseService.get", () => {
       error: "boom",
       runnerName: "runner-1",
       waiting: "Waiting for runner-1.",
+      filesOmitted: 2,
     });
+    expect(detail?.tasks[0]?.files).toEqual([
+      { name: "PRD.md", size: 1200, stored: true, skipped: null },
+      { name: "big.bin", size: 9_000_000, stored: false, skipped: "too large" },
+    ]);
     expect(detail?.workflow).toEqual({ id: "workflow-1", name: "Questions" });
     expect(detail?.waits[0]?.taskIds).toEqual(["task-1"]);
+  });
+});
+
+describe("orchestratorCaseService.getLoops", () => {
+  it("is null for an unknown or other-organization case", async () => {
+    mocks.caseFindFirst.mockResolvedValue(null);
+
+    expect(await orchestratorCaseService.getLoops(ORG, "nope")).toBeNull();
+    expect(mocks.caseFindFirst.mock.calls[0]?.[0].where).toEqual({
+      id: "nope",
+      organizationId: ORG,
+    });
   });
 });
 

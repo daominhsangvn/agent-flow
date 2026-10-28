@@ -47,12 +47,16 @@ export function WorkflowRunSessionsCard({
   sessions,
   commandLabel,
   stepName,
+  description = "The agent sessions the run's loops ran.",
+  emptyText = "No session has synced for this run yet.",
 }: Readonly<{
   sessions: readonly WorkflowRunSession[];
   /** Display label of a loop command. */
   commandLabel: (command: string) => string;
   /** The process step's name for a step id. */
   stepName: (stepId: string) => string;
+  description?: string;
+  emptyText?: string;
 }>) {
   const buildOrgPath = useOrgPath();
   const live = sessions.filter(isLiveSession).length;
@@ -66,14 +70,12 @@ export function WorkflowRunSessionsCard({
         <CardDescription>
           {live > 0
             ? `${live} ${live === 1 ? "session is" : "sessions are"} running. Open one to follow it live.`
-            : "The agent sessions the run's loops ran."}
+            : description}
         </CardDescription>
       </CardHeader>
       <CardContent>
         {sessions.length === 0 ? (
-          <p className="text-muted-foreground text-sm">
-            No session has synced for this run yet.
-          </p>
+          <p className="text-muted-foreground text-sm">{emptyText}</p>
         ) : (
           <div className="overflow-x-auto rounded-md border">
             <Table>

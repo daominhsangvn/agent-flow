@@ -1,5 +1,6 @@
 import {
   type OrchestratorCaseDetail,
+  type OrchestratorCaseLoops,
   type OrchestratorCaseSummary,
   OrchestratorDecisionStatus,
   OrchestratorTaskStatus,
@@ -12,6 +13,11 @@ import {
   toCaseDetail,
   toCaseSummary,
 } from "@/app/orchestrator/cases/case-mappers";
+import { loadCaseLoops } from "@/app/orchestrator/cases/service/case-loops";
+import {
+  type CaseStats,
+  loadCaseStats,
+} from "@/app/orchestrator/cases/service/case-stats";
 import { dispatchOrchestratorTurnCancel } from "@/lib/loops/loop-desktop";
 import { readTurnTimeoutMs } from "@/lib/orchestrator/turn-usage";
 import { displayUserName } from "@/lib/user-display-name";
@@ -80,11 +86,14 @@ export const orchestratorCaseService = {
         },
       })
     );
-    const running = await runningCaseIds(
-      organizationId,
-      rows.map((row) => row.id)
+    const ids = rows.map((row) => row.id);
+    const [running, stats] = await Promise.all([
+      runningCaseIds(organizationId, ids),
+      loadCaseStats(organizationId, ids),
+    ]);
+    return rows.map((row) =>
+      toCaseSummary(row, running.has(row.id), stats.get(row.id) ?? EMPTY_STATS)
     );
-    return rows.map((row) => toCaseSummary(row, running.has(row.id)));
   },
 
   async get(
@@ -139,8 +148,32 @@ export const orchestratorCaseService = {
     if (!row) {
       return null;
     }
-    const running = await runningCaseIds(organizationId, [row.id]);
-    return toCaseDetail(row, running.has(row.id));
+    const [running, stats] = await Promise.all([
+      runningCaseIds(organizationId, [row.id]),
+      loadCaseStats(organizationId, [row.id]),
+    ]);
+    return toCaseDetail(
+      row,
+      running.has(row.id),
+      stats.get(row.id) ?? EMPTY_STATS
+    );
+  },
+
+  /** Null when the organization has no such case. */
+  async getLoops(
+    organizationId: string,
+    caseId: string
+  ): Promise<OrchestratorCaseLoops | null> {
+    const found = await withDb((db) =>
+      db.orchestratorCase.findFirst({
+        where: { id: caseId, organizationId },
+        select: { id: true },
+      })
+    );
+    if (!found) {
+      return null;
+    }
+    return loadCaseLoops(organizationId, caseId);
   },
 
   /** Close or reopen a case. Only the status changes. */
@@ -250,3 +283,5 @@ async function runningCaseIds(
   );
   return new Set(turns.map((turn) => turn.conversation.caseId));
 }
+
+const EMPTY_STATS: CaseStats = { taskCount: 0, turnCount: 0, costUsd: null };

@@ -1,7 +1,10 @@
 "use client";
 
 import type { IntegrationProviderSummary } from "@repo/api/src/types/integration";
-import type { Workflow } from "@repo/api/src/types/workflow";
+import type {
+  Workflow,
+  WorkflowCaseCounts,
+} from "@repo/api/src/types/workflow";
 // Cross-slice: trigger labels come from the integrations provider catalog, and
 // the provider glyph map / inline error state are owned by that slice.
 import { ProviderIcon } from "@repo/app/integrations/components/provider-icon";
@@ -27,6 +30,7 @@ import { useOrgPath } from "@repo/navigation/use-org-path";
 import { PlusIcon, ZapIcon } from "lucide-react";
 import { useSetWorkflowEnabled, useWorkflows } from "../hooks/use-workflows";
 import { getTriggerLabel, getTypeProviderKey } from "../lib/workflow-catalog";
+import { describeCaseCount } from "../lib/workflow-labels";
 
 export type WorkflowsListProps = {
   isAdmin: boolean;
@@ -141,10 +145,14 @@ function WorkflowRow({
         {workflow.project?.name ?? "Project removed"}
       </TableCell>
       <TableCell className="whitespace-nowrap text-muted-foreground">
-        {workflow.lastRunAt ? formatRelativeTime(workflow.lastRunAt) : "Never"}
+        {describeLastActivity(workflow)}
       </TableCell>
       <TableCell>
-        <RunCounts workflow={workflow} />
+        {workflow.caseCounts ? (
+          <CaseCounts counts={workflow.caseCounts} />
+        ) : (
+          <RunCounts workflow={workflow} />
+        )}
       </TableCell>
       <TableCell className="text-right">
         <EnabledCell isAdmin={isAdmin} workflow={workflow} />
@@ -231,5 +239,28 @@ function EnabledCell({
         setEnabled.mutate({ id: workflow.id, input: { enabled } })
       }
     />
+  );
+}
+
+function describeLastActivity(workflow: Workflow): string {
+  const at = workflow.caseCounts
+    ? workflow.caseCounts.lastActivityAt
+    : workflow.lastRunAt;
+  return at ? formatRelativeTime(at) : "Never";
+}
+
+function CaseCounts({ counts }: Readonly<{ counts: WorkflowCaseCounts }>) {
+  if (counts.total === 0) {
+    return <span className="text-muted-foreground">0</span>;
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      <span className="font-medium tabular-nums">
+        {describeCaseCount(counts.total)}
+      </span>
+      {counts.open > 0 ? (
+        <Badge variant="info">{counts.open} open</Badge>
+      ) : null}
+    </div>
   );
 }

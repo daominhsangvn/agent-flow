@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isCaseActive,
   useOrchestratorCase,
+  useOrchestratorCaseLoops,
   useWorkflowOrchestratorCases,
 } from "../use-orchestrator-cases";
 
@@ -79,5 +80,71 @@ describe("useWorkflowOrchestratorCases", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(mockApiClient.get).toHaveBeenCalledWith("/workflows/w%201/cases");
+  });
+});
+
+describe("useOrchestratorCaseLoops", () => {
+  beforeEach(() => {
+    mockApiClient.get.mockReset();
+    mockApiClient.get.mockResolvedValue({
+      loops: [],
+      sessions: [],
+      pullRequests: [],
+    });
+  });
+
+  it("reads the loops from the encoded case path", async () => {
+    const { result } = renderHook(() => useOrchestratorCaseLoops("c 1"), {
+      wrapper,
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(mockApiClient.get).toHaveBeenCalledWith(
+      "/orchestrator/cases/c%201/loops"
+    );
+  });
+
+  it("polls only while polling is requested or work is live", async () => {
+    const poll = (opts?: { poll?: boolean }) => {
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const { result } = renderHook(
+        () => useOrchestratorCaseLoops("c1", opts),
+        {
+          wrapper: ({ children }: { children: ReactNode }) => (
+            <QueryClientProvider client={client}>
+              {children}
+            </QueryClientProvider>
+          ),
+        }
+      );
+      return { client, result };
+    };
+    const interval = (c: QueryClient) =>
+      c.getQueryCache().getAll()[0]?.observers[0]?.options.refetchInterval as (
+        q: unknown
+      ) => unknown;
+    const run = async (opts: { poll?: boolean } | undefined, data: unknown) => {
+      mockApiClient.get.mockResolvedValue(data);
+      const { client, result } = poll(opts);
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      const query = client.getQueryCache().getAll()[0];
+      return interval(client)(query);
+    };
+    const idle = { loops: [], sessions: [], pullRequests: [] };
+    const liveLoop = {
+      ...idle,
+      loops: [{ loopId: "l", status: "RUNNING" }],
+    };
+    const liveSession = {
+      ...idle,
+      sessions: [{ status: "active" }],
+    };
+
+    expect(await run(undefined, idle)).toBe(false);
+    expect(await run({ poll: true }, idle)).toBe(5000);
+    expect(await run(undefined, liveLoop)).toBe(5000);
+    expect(await run(undefined, liveSession)).toBe(5000);
   });
 });

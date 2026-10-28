@@ -112,6 +112,36 @@ describe("WorkflowDetailView", () => {
     expect(screen.queryByRole("tab", { name: "Runs" })).not.toBeInTheDocument();
   });
 
+  it("shows case counts for an orchestrated workflow and runs otherwise", () => {
+    const base = makeWorkflow();
+    mocks.workflow = {
+      ...base,
+      agent: { ...base.agent, mode: WorkflowAgentMode.Orchestrated },
+      caseCounts: { total: 2, open: 1, closed: 1, lastActivityAt: null },
+    };
+    const { unmount } = render(
+      <WorkflowDetailView
+        computeTargets={COMPUTE_TARGETS}
+        isAdmin
+        workflowId={WORKFLOW_ID}
+      />
+    );
+    expect(screen.getByText("2 cases (1 open)")).toBeInTheDocument();
+    unmount();
+
+    mocks.workflow = base;
+    render(
+      <WorkflowDetailView
+        computeTargets={COMPUTE_TARGETS}
+        isAdmin
+        workflowId={WORKFLOW_ID}
+      />
+    );
+    expect(
+      screen.getByText("4 runs (1 active)", { exact: false })
+    ).toBeInTheDocument();
+  });
+
   it("shows the workflow summary and its configuration", () => {
     render(
       <WorkflowDetailView

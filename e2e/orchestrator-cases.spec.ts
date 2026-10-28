@@ -9,7 +9,9 @@ import {
   OrchestratorDecisionStatus,
   OrchestratorMessageKind,
   OrchestratorMessageOrigin,
+  OrchestratorTaskStatus,
 } from "@repo/api/src/types/orchestrator";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import type { Workflow } from "@repo/api/src/types/workflow";
 import { WorkflowAgentMode } from "@repo/api/src/types/workflow-agent-mode";
 import { bearer, readApiResult } from "./helpers/api-result";
@@ -37,6 +39,12 @@ const ADMIN_REQUIRED_MESSAGE =
 const CASE_TITLE = "Add rate limiting to the export endpoint";
 const MESSAGE_TEXT = "Please plan the rate limiting work.";
 const DECISION_QUESTION = "Ship the plan to the dev runner?";
+const LOOP_COMMAND = "ba-prd";
+// LoopStatus.Completed; @agentflow-ai/loops-api does not resolve from the e2e root.
+const LOOP_STATUS_COMPLETED = "COMPLETED";
+const SESSION_NAME = "BA session";
+const TASK_FILE_NAME = "prd-summary.md";
+const PR_URL = "https://example.test/pr/1";
 
 test("orchestrator cases: open a case from the workflow and approve its decision", {
   tag: E2ETag.Smoke,
@@ -50,8 +58,19 @@ test("orchestrator cases: open a case from the workflow and approve its decision
 
     await page.goto(`/${orgSlug}/workflows/${workflow.id}?tab=cases`);
 
+    // The real API: an orchestrated workflow without cases.
+    await expect(page.getByText("No cases yet").first()).toBeVisible({
+      timeout: 30_000,
+    });
+
     const list = page.getByTestId("orchestrator-case-list");
     await expect(list).toBeVisible({ timeout: 30_000 });
+    for (const header of ["Tasks", "Turns", "Cost"]) {
+      await expect(
+        list.getByRole("columnheader", { name: header })
+      ).toBeVisible();
+    }
+    await expect(list.getByText("$0.42")).toBeVisible();
     const link = list.getByRole("link", { name: CASE_TITLE });
     await expect(link).toHaveAttribute(
       "href",
@@ -67,6 +86,14 @@ test("orchestrator cases: open a case from the workflow and approve its decision
     await expect(detail).toBeVisible({ timeout: 30_000 });
     await expect(detail.getByText(MESSAGE_TEXT)).toBeVisible();
     await expect(detail.getByText(DECISION_QUESTION)).toBeVisible();
+    await expect(detail.getByText("Agent loops")).toBeVisible();
+    await expect(
+      detail.getByRole("link", { name: LOOP_COMMAND })
+    ).toHaveAttribute("href", `/${orgSlug}/loops/${served.loopId}`);
+    await expect(
+      detail.getByTestId("run-session").filter({ hasText: SESSION_NAME })
+    ).toBeVisible();
+    await expect(detail.getByText(TASK_FILE_NAME)).toBeVisible();
 
     await expect(
       page.getByRole("link", { name: workflow.name })
@@ -164,6 +191,7 @@ async function setUpOrchestratedWorkflow(
 
 type ServedCases = {
   caseId: string;
+  loopId: string;
   /** Bodies POSTed to the decision endpoint. */
   decisions: unknown[];
 };
@@ -176,6 +204,7 @@ async function serveCases(
 ): Promise<ServedCases> {
   const caseId = randomUUID();
   const decisionId = randomUUID();
+  const loopId = randomUUID();
   const now = new Date().toISOString();
   const summary: OrchestratorCaseSummary = {
     id: caseId,
@@ -188,6 +217,9 @@ async function serveCases(
     pendingDecisionCount: 1,
     activeTaskCount: 0,
     turnRunning: false,
+    taskCount: 2,
+    turnCount: 3,
+    costUsd: 0.42,
     createdAt: now,
     updatedAt: now,
   };
@@ -217,7 +249,33 @@ async function serveCases(
         turns: [],
       },
     ],
-    tasks: [],
+    tasks: [
+      {
+        id: randomUUID(),
+        conversationId: "c",
+        turnId: null,
+        command: LOOP_COMMAND,
+        args: "",
+        prompt: "Write the PRD",
+        mode: "execute",
+        runnerName: null,
+        computeTargetId: null,
+        status: OrchestratorTaskStatus.Succeeded,
+        fork: false,
+        resumeTaskId: null,
+        loopId,
+        reply: null,
+        files: [
+          { name: TASK_FILE_NAME, size: 2048, stored: true, skipped: null },
+        ],
+        filesOmitted: 0,
+        questions: [],
+        error: null,
+        waiting: null,
+        createdAt: now,
+        finishedAt: now,
+      },
+    ],
     waits: [],
     decisions: [
       {
@@ -241,9 +299,49 @@ async function serveCases(
   await page.route(`**/orchestrator/cases/${caseId}`, (route) =>
     route.fulfill({ json: { success: true, data: detail } })
   );
+  await page.route(`**/orchestrator/cases/${caseId}/loops`, (route) =>
+    route.fulfill({
+      json: {
+        success: true,
+        data: {
+          loops: [
+            {
+              loopId,
+              command: LOOP_COMMAND,
+              status: LOOP_STATUS_COMPLETED,
+              adopted: false,
+              stepId: null,
+              prUrl: PR_URL,
+              startedAt: now,
+              completedAt: now,
+            },
+          ],
+          sessions: [
+            {
+              id: randomUUID(),
+              slug: "ba-session",
+              name: SESSION_NAME,
+              loopId,
+              command: LOOP_COMMAND,
+              stepId: null,
+              status: SESSION_STATUS.INACTIVE,
+              harness: "claude",
+              model: null,
+              startedAt: now,
+              lastActivityAt: now,
+              endedAt: now,
+            },
+          ],
+          pullRequests: [
+            { url: PR_URL, number: 1, repository: null, branch: null },
+          ],
+        },
+      },
+    })
+  );
   await page.route(`**/orchestrator/decisions/${decisionId}`, (route) => {
     decisions.push(route.request().postDataJSON());
     return route.fulfill({ json: { success: true, data: {} } });
   });
-  return { caseId, decisions };
+  return { caseId, decisions, loopId };
 }

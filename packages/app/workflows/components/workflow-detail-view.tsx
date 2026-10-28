@@ -30,6 +30,7 @@ import { useState } from "react";
 import { useDeleteWorkflow, useWorkflow } from "../hooks/use-workflows";
 import { getManualRunTriggers } from "../lib/workflow-catalog";
 import type { WorkflowComputeTargetChoices } from "../lib/workflow-editor-options";
+import { describeWorkflowCaseActivity } from "../lib/workflow-labels";
 import { WorkflowEditor } from "./workflow-editor";
 import { WorkflowRunNowDialog } from "./workflow-run-now-dialog";
 import { WorkflowRunHistory } from "./workflow-runs-table";
@@ -145,16 +146,7 @@ function WorkflowDetailContent({
               {workflow.enabled ? "Enabled" : "Disabled"}
             </Badge>
           </div>
-          {isOrchestrated ? null : (
-            <p className="text-muted-foreground text-sm">
-              {workflow.runCounts.total} runs ({workflow.runCounts.active}{" "}
-              active)
-              {" · "}
-              {workflow.lastRunAt
-                ? `last run ${formatRelativeTime(workflow.lastRunAt)}`
-                : "never run"}
-            </p>
-          )}
+          <WorkflowActivityLine workflow={workflow} />
         </div>
         {isAdmin ? (
           <div className="flex shrink-0 flex-wrap gap-2">
@@ -251,4 +243,23 @@ function detailTabsFor(mode: WorkflowAgentMode): readonly WorkflowDetailTab[] {
     return [WorkflowDetailTab.Configuration, WorkflowDetailTab.Cases];
   }
   return [WorkflowDetailTab.Configuration, WorkflowDetailTab.Runs];
+}
+
+function WorkflowActivityLine({ workflow }: Readonly<{ workflow: Workflow }>) {
+  if (workflow.caseCounts) {
+    return (
+      <p className="text-muted-foreground text-sm">
+        {describeWorkflowCaseActivity(workflow.caseCounts)}
+      </p>
+    );
+  }
+  return (
+    <p className="text-muted-foreground text-sm">
+      {workflow.runCounts.total} runs ({workflow.runCounts.active} active)
+      {" · "}
+      {workflow.lastRunAt
+        ? `last run ${formatRelativeTime(workflow.lastRunAt)}`
+        : "never run"}
+    </p>
+  );
 }

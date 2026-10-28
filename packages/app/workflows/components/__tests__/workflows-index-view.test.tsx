@@ -129,6 +129,18 @@ describe("WorkflowsIndexView", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows case counts for an orchestrated workflow", () => {
+    mocks.workflows.data = [
+      makeWorkflow({
+        caseCounts: { total: 3, open: 1, closed: 2, lastActivityAt: null },
+      }),
+    ];
+    render(<WorkflowsIndexView isAdmin />);
+
+    expect(screen.getByText("3 cases")).toBeInTheDocument();
+    expect(screen.getByText("1 open")).toBeInTheDocument();
+  });
+
   it("lets admins disable a workflow by flipping only its enabled flag", async () => {
     const user = userEvent.setup();
     render(<WorkflowsIndexView isAdmin />);
