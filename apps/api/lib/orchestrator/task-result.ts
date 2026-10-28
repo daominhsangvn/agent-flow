@@ -21,6 +21,8 @@ export type TaskResult = {
   filesOmitted?: number;
   /** Text files of earlier tasks, handed to this task until it launches. */
   inputs?: TaskInputFile[];
+  /** The ref of the message (comment) this task's answer replies to (task_run replyTo). */
+  replyTo?: string | null;
 };
 
 /**
@@ -75,9 +77,39 @@ const taskResultSchema = z.object({
   files: z.array(taskFileSchema).optional(),
   filesOmitted: z.number().optional(),
   inputs: z.array(taskInputFileSchema).optional(),
+  replyTo: z.string().nullish(),
 });
 
 export function readTaskResult(value: unknown): TaskResult | null {
   const parsed = taskResultSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
+}
+
+const KEPT_FIELDS = [
+  "inputs",
+  "waiting",
+  "cancelled",
+  "cancelledFrom",
+  "replyTo",
+] as const;
+
+/**
+ * The result to store: `next` over the fields an earlier write left (inputs,
+ * waiting, cancel notes), so a later write does not erase them.
+ */
+export function mergeTaskResult(
+  previous: unknown,
+  next: TaskResult
+): TaskResult {
+  const stored = readTaskResult(previous);
+  if (!stored) {
+    return next;
+  }
+  const kept: Partial<TaskResult> = {};
+  for (const field of KEPT_FIELDS) {
+    if (stored[field] !== undefined) {
+      Object.assign(kept, { [field]: stored[field] });
+    }
+  }
+  return { ...kept, ...next };
 }

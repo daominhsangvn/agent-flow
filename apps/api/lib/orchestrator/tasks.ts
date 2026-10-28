@@ -59,7 +59,12 @@ import {
   type TaskFileRef,
   taskFilesFromStep,
 } from "./task-files";
-import { readTaskResult, type TaskResult } from "./task-result";
+import {
+  mergeTaskResult,
+  readTaskResult,
+  type TaskInputFile,
+  type TaskResult,
+} from "./task-result";
 
 /**
  * The orchestrator's tasks (docs/orchestrator.md): one command of one runner,
@@ -95,6 +100,8 @@ export type StartTaskInput = {
   fork: boolean;
   /** Files of earlier tasks of the case, written to the task's `inputs/`. */
   files: TaskFileRef[];
+  /** The message ref the task answers (reply's replyTo); null when none. */
+  replyTo: string | null;
 };
 
 export async function startTask(input: StartTaskInput): Promise<
@@ -105,6 +112,7 @@ export async function startTask(input: StartTaskInput): Promise<
       runner: string;
       error: string | null;
       waiting: string | null;
+      replyTo: string | null;
     },
     string
   >
@@ -158,6 +166,10 @@ export async function startTask(input: StartTaskInput): Promise<
   if (inputs && !inputs.ok) {
     return Result.err(inputs.error);
   }
+  const initial = initialTaskResult(
+    inputs?.ok ? inputs.value : null,
+    input.replyTo
+  );
   const task = await withDb((db) =>
     db.orchestratorTask.create({
       data: {
@@ -173,16 +185,7 @@ export async function startTask(input: StartTaskInput): Promise<
         resumeTaskId: input.resumeTaskId,
         fork: input.fork,
         status: OrchestratorTaskStatus.Queued,
-        ...(inputs?.ok
-          ? {
-              result: {
-                reply: null,
-                questions: [],
-                error: null,
-                inputs: inputs.value,
-              } as Prisma.InputJsonValue,
-            }
-          : {}),
+        ...(initial ? { result: initial as Prisma.InputJsonValue } : {}),
       },
       select: { id: true },
     })
@@ -201,6 +204,7 @@ export async function startTask(input: StartTaskInput): Promise<
     runner: runner.runnerName,
     error: result?.error ?? null,
     waiting: result?.waiting ?? null,
+    replyTo: input.replyTo,
   });
 }
 
@@ -234,11 +238,11 @@ export async function advanceTasks(now: Date): Promise<{
     db.orchestratorTask.findMany({
       where: { status: OrchestratorTaskStatus.Running },
       take: TICK_LIMIT,
-      select: { id: true, conversationId: true, loopId: true },
+      select: { id: true, conversationId: true, loopId: true, result: true },
     })
   );
   for (const task of running) {
-    if (task.loopId && (await settleTask(task.id, task.loopId, now))) {
+    if (task.loopId && (await settleTask(task, task.loopId, now))) {
       settled.add(task.conversationId);
     }
   }
@@ -445,14 +449,12 @@ async function markStarted(
   loopId: string
 ): Promise<boolean> {
   const taskId = task.id;
-  const inputs = readTaskResult(task.result)?.inputs;
-  const started: TaskResult = {
+  const started = mergeTaskResult(task.result, {
     reply: null,
     questions: [],
     error: null,
     waiting: null,
-    ...(inputs ? { inputs } : {}),
-  };
+  });
   const updated = await withDb((db) =>
     db.orchestratorTask.updateMany({
       where: { id: taskId, status: OrchestratorTaskStatus.Queued },
@@ -618,10 +620,11 @@ const DOCUMENT_TITLE_MAX = 255;
 
 /** Settles a running task whose loop ended; true when it did. */
 async function settleTask(
-  taskId: string,
+  task: { id: string; result: unknown },
   loopId: string,
   now: Date
 ): Promise<boolean> {
+  const taskId = task.id;
   const loop = await withDb((db) =>
     db.loop.findUnique({
       where: { id: loopId },
@@ -657,13 +660,13 @@ async function settleTask(
       ?.content.slice(0, ORCHESTRATOR_TASK_REPLY_MAX) ?? null;
   const succeeded = loop.status === LoopStatus.Completed;
   const { files, filesOmitted } = taskFilesFromStep(outputs);
-  const result: TaskResult = {
+  const result = mergeTaskResult(task.result, {
     reply,
     questions: outputs?.questions ?? [],
     error: succeeded ? null : loopErrorText(loop.status, loop.error),
     ...(files.length > 0 ? { files } : {}),
     ...(filesOmitted > 0 ? { filesOmitted } : {}),
-  };
+  });
   const updated = await withDb((db) =>
     db.orchestratorTask.updateMany({
       where: { id: taskId, status: OrchestratorTaskStatus.Running },
@@ -681,11 +684,17 @@ async function settleTask(
 
 async function failTask(taskId: string, error: string): Promise<void> {
   log.warn(`${LOG_PREFIX} task failed`, { taskId, error });
-  const result: TaskResult = {
+  const stored = await withDb((db) =>
+    db.orchestratorTask.findUnique({
+      where: { id: taskId },
+      select: { result: true },
+    })
+  );
+  const result = mergeTaskResult(stored?.result, {
     reply: null,
     questions: [],
     error: error.slice(0, ERROR_MAX),
-  };
+  });
   await withDb((db) =>
     db.orchestratorTask.updateMany({
       where: {
@@ -746,14 +755,12 @@ async function queueWaiting(
   waiting: string
 ): Promise<Result<string, string>> {
   const taskId = task.id;
-  const inputs = readTaskResult(task.result)?.inputs;
-  const result: TaskResult = {
+  const result = mergeTaskResult(task.result, {
     reply: null,
     questions: [],
     error: null,
     waiting: waiting.slice(0, ERROR_MAX),
-    ...(inputs ? { inputs } : {}),
-  };
+  });
   await withDb((db) =>
     db.orchestratorTask.updateMany({
       where: { id: taskId, status: OrchestratorTaskStatus.Queued },
@@ -805,4 +812,20 @@ async function loopCreateFailure(
     return Result.err(mapped.message);
   }
   throw error;
+}
+
+function initialTaskResult(
+  inputs: TaskInputFile[] | null,
+  replyTo: string | null
+): TaskResult | null {
+  if (!(inputs || replyTo)) {
+    return null;
+  }
+  return {
+    reply: null,
+    questions: [],
+    error: null,
+    ...(inputs ? { inputs } : {}),
+    ...(replyTo ? { replyTo } : {}),
+  };
 }

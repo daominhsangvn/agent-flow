@@ -70,13 +70,18 @@ export async function evaluateWaits(
       orderBy: { createdAt: "asc" },
     })
   );
-  let fired = false;
+  const fired: FiredWait[] = [];
   for (const wait of waits) {
-    if (await evaluateWait(wait, now)) {
-      fired = true;
+    const claimed = await claimWait(wait, now);
+    if (claimed) {
+      fired.push(claimed);
     }
   }
-  return fired;
+  if (fired.length === 0) {
+    return false;
+  }
+  await postFiredWaits(fired, now);
+  return true;
 }
 
 /** The tick: waits whose deadline passed. */
@@ -88,13 +93,21 @@ export async function fireDueDeadlines(now: Date): Promise<number> {
       take: DEADLINE_LIMIT,
     })
   );
-  let fired = 0;
+  const byConversation = new Map<string, FiredWait[]>();
+  let count = 0;
   for (const wait of due) {
-    if (await evaluateWait(wait, now)) {
-      fired += 1;
+    const claimed = await claimWait(wait, now);
+    if (claimed) {
+      count += 1;
+      const group = byConversation.get(wait.conversationId) ?? [];
+      group.push(claimed);
+      byConversation.set(wait.conversationId, group);
     }
   }
-  return fired;
+  for (const group of byConversation.values()) {
+    await postFiredWaits(group, now);
+  }
+  return count;
 }
 
 type WaitRow = {
@@ -115,59 +128,6 @@ type WaitTask = {
   result: unknown;
   computeTarget: { machineName: string } | null;
 };
-
-async function evaluateWait(wait: WaitRow, now: Date): Promise<boolean> {
-  const ids = taskIdsSchema.catch([]).parse(wait.taskIds);
-  const tasks = await withDb((db) =>
-    db.orchestratorTask.findMany({
-      where: { id: { in: ids }, organizationId: wait.organizationId },
-      orderBy: { createdAt: "asc" },
-      select: {
-        id: true,
-        command: true,
-        args: true,
-        status: true,
-        result: true,
-        computeTarget: { select: { machineName: true } },
-      },
-    })
-  );
-  const reason = waitReason(wait, tasks, now);
-  if (!reason) {
-    return false;
-  }
-  const claimed = await withDb((db) =>
-    db.orchestratorWait.updateMany({
-      where: { id: wait.id, firedAt: null },
-      data: { firedAt: now },
-    })
-  );
-  if (claimed.count !== 1) {
-    return false;
-  }
-  await withDb.tx(async (tx) => {
-    await tx.orchestratorMessage.create({
-      data: {
-        organizationId: wait.organizationId,
-        conversationId: wait.conversationId,
-        origin: OrchestratorMessageOrigin.Internal,
-        kind:
-          reason === WaitReason.Deadline
-            ? OrchestratorMessageKind.Deadline
-            : OrchestratorMessageKind.TaskResults,
-        actor: null,
-        text: describeResults(reason, wait, tasks),
-        dedupKey: `wait:${wait.id}`,
-        payload: { waitId: wait.id, taskIds: ids },
-      },
-    });
-    await tx.orchestratorConversation.update({
-      where: { id: wait.conversationId },
-      data: { nextWakeAt: now },
-    });
-  });
-  return true;
-}
 
 const WaitReason = {
   Done: "done",
@@ -215,13 +175,98 @@ export function waitReason(
   return null;
 }
 
-function describeResults(
-  reason: WaitReason,
-  wait: Pick<WaitRow, "kind">,
-  tasks: WaitTask[]
-): string {
-  const heading = {
-    [WaitReason.Done]: `The tasks you waited for (${wait.kind}) are done.`,
+type FiredWait = {
+  wait: WaitRow;
+  reason: WaitReason;
+  taskIds: string[];
+  tasks: WaitTask[];
+};
+
+async function claimWait(wait: WaitRow, now: Date): Promise<FiredWait | null> {
+  const taskIds = taskIdsSchema.catch([]).parse(wait.taskIds);
+  const tasks = await withDb((db) =>
+    db.orchestratorTask.findMany({
+      where: { id: { in: taskIds }, organizationId: wait.organizationId },
+      orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        command: true,
+        args: true,
+        status: true,
+        result: true,
+        computeTarget: { select: { machineName: true } },
+      },
+    })
+  );
+  const reason = waitReason(wait, tasks, now);
+  if (!reason) {
+    return null;
+  }
+  const claimed = await withDb((db) =>
+    db.orchestratorWait.updateMany({
+      where: { id: wait.id, firedAt: null },
+      data: { firedAt: now },
+    })
+  );
+  if (claimed.count !== 1) {
+    return null;
+  }
+  return { wait, reason, taskIds, tasks };
+}
+
+/** One message for all waits of a conversation that fired together. */
+async function postFiredWaits(fired: FiredWait[], now: Date): Promise<void> {
+  const first = fired[0].wait;
+  const allDeadline = fired.every((f) => f.reason === WaitReason.Deadline);
+  let kind: OrchestratorMessageKind = OrchestratorMessageKind.TaskResults;
+  if (allDeadline) {
+    kind = OrchestratorMessageKind.Deadline;
+  }
+  const headings = [
+    ...new Set(fired.map((f) => waitHeading(f.reason, f.wait.kind))),
+  ];
+  const tasks = new Map<string, WaitTask>();
+  const taskIds = new Set<string>();
+  for (const f of fired) {
+    for (const id of f.taskIds) {
+      taskIds.add(id);
+    }
+    for (const t of f.tasks) {
+      if (!tasks.has(t.id)) {
+        tasks.set(t.id, t);
+      }
+    }
+  }
+  const text = [...headings, ...[...tasks.values()].map(describeTask)].join(
+    "\n\n"
+  );
+  await withDb.tx(async (tx) => {
+    await tx.orchestratorMessage.create({
+      data: {
+        organizationId: first.organizationId,
+        conversationId: first.conversationId,
+        origin: OrchestratorMessageOrigin.Internal,
+        kind,
+        actor: null,
+        text,
+        dedupKey: `wait:${first.id}`,
+        payload: {
+          waitId: first.id,
+          waitIds: fired.map((f) => f.wait.id),
+          taskIds: [...taskIds],
+        },
+      },
+    });
+    await tx.orchestratorConversation.update({
+      where: { id: first.conversationId },
+      data: { nextWakeAt: now },
+    });
+  });
+}
+
+function waitHeading(reason: WaitReason, kind: string): string {
+  return {
+    [WaitReason.Done]: `The tasks you waited for (${kind}) are done.`,
     [WaitReason.Cancelled]:
       "A task you waited for was cancelled when the ticket changed; the others may still run.",
     [WaitReason.Failure]:
@@ -229,13 +274,17 @@ function describeResults(
     [WaitReason.Deadline]:
       "The time you gave the tasks is up; here is where they are.",
   }[reason];
-  return [heading, ...tasks.map(describeTask)].join("\n\n");
 }
 
 function describeTask(task: WaitTask): string {
   const result = readTaskResult(task.result);
   const head = `- Task ${task.id}: \`${[task.command, task.args].filter(Boolean).join(" ")}\` on ${task.computeTarget?.machineName ?? "a removed runner"}: ${statusText(task, result)}`;
   const lines = [head];
+  if (result?.replyTo) {
+    lines.push(
+      `  Answers message ref="${result.replyTo}": reply with replyTo ${result.replyTo}.`
+    );
+  }
   if (result?.reply) {
     lines.push(
       `  Answer:\n${indent(result.reply.slice(0, ANSWER_PREVIEW_MAX))}`

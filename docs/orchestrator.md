@@ -147,6 +147,13 @@ as `superseded`, its input messages (not its replies) go back to the next
 turn with the new one, and that turn resumes the stopped turn's session. A
 turn that finished before the stop arrived settles as usual.
 
+In a `supersede` conversation, from the moment a newer external message
+waits (or a stop was requested for the turn), the running turn's write
+tools (`reply`, `edit_reply`, `task_run`, `task_cancel`, `request_decision`,
+`record_decision`, `close_case`) are refused with `superseded: a newer message
+arrived; end the turn`. Reads, `case_update_notes`, `wait_for` and `wait_human`
+stay allowed (`lib/orchestrator/supersede.ts`).
+
 **Threads without a mention.** An event no trigger matched and that replies
 to no anchor still reaches the orchestrator when its channel already has a
 conversation (`orchestrator_conversations.channelKey` on the same workflow
@@ -169,8 +176,8 @@ tools for that token from `GET /orchestrator-tools/session` and
 | `runners_list` | Each runner's AGENTFLOW.md (commands, skills, online) |
 | `source_item_get` | The conversation's item through its project connection |
 | `reply` | Posts in the conversation's thread through the provider's `replyOnItem` (Jira: a comment in the thread of the comment answered, on the issue when the site refuses threads; Teams: a reply in the thread mentioning who asked last). Kept as a `reply` message and an anchor |
-| `task_run` | Starts a runner's command as a task (below) |
-| `task_get` | A task's status, answer, questions and error |
+| `task_run` | Starts a runner's command as a task (below); optional `replyTo`: the message ref the task answers |
+| `task_get` | A task's status, answer, questions and error, and the message it answers (`replyTo`) |
 | `task_cancel` | Cancels a task of the case with a reason ("Cancelling tasks" below); only in a turn that took a ticket change listed in `cancelOn` |
 | `wait_for` | Ends the turn waiting for tasks: `all` (default) or `any`, `timeoutMinutes`, `wakeOnFailure` (default true) |
 | `request_decision` | Asks people to approve or reject: a decision row, and the question posted in the thread with the case's link |
@@ -232,13 +239,17 @@ lists them (name, size) in `task_get`, wait results and CASE.md.
 - `task_run files: [{taskId, name}]` passes text files of earlier tasks (at
   most 5, 200 KB each, 400 KB together) to the new task. They are written to
   `inputs/` in its work directory and kept in the task result until launch.
+- `task_run replyTo` is checked against the conversation's messages, stored in
+  the task result, and shown in `task_get`, wait results and CASE.md ("answers
+  ref ...").
 
 The case pages are on Workflow → Cases, with a breadcrumb back to the workflow.
 
 The tick (`advanceDueConversations`) launches queued tasks, settles running
 ones whose loop ended (`isLoopSettled`: a revivable timed-out loop is still
 running): `succeeded` with the answer file and the questions, `failed` with
-the loop's error.
+the loop's error. The task's result keeps its `inputs`, `replyTo` and
+cancel/waiting notes when it settles or fails.
 
 **Waits** (`waits.ts`). `wait_for` stores what the conversation waits for and
 ends the turn. The engine evaluates it in code whenever one of its tasks
@@ -247,7 +258,9 @@ nothing happens (no turn, no model call); once it does (or a task failed,
 with `wakeOnFailure`, or the deadline passed) the wait fires once, an
 internal message (`task_results`, `deadline`) carries each task's status,
 answer, questions and error, and the conversation's next turn is due at once.
-Tasks that already finished fire the wait as soon as it is stored.
+Tasks that already finished fire the wait as soon as it is stored. Waits of
+one conversation that fire in the same evaluation (or the same deadline tick)
+post one combined message, with each task listed once.
 
 **Cancelling tasks** (`task-cancel.ts`). `task_cancel { taskId, reason }` is
 accepted only in a turn that took a message whose kind is in `cancelOn`

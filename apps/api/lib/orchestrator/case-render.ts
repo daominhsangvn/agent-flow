@@ -101,7 +101,7 @@ export async function renderCase(caseId: string): Promise<string> {
   }
   for (const task of found.tasks) {
     lines.push(
-      `- ${task.id} ${task.command}${task.args ? ` ${task.args}` : ""} on ${task.computeTarget?.machineName ?? "a removed runner"} (${task.mode}): ${task.status}${taskNote(task)}${taskFilesNote(task)} — started for: ${startedFor(task)}`
+      `- ${task.id} ${task.command}${task.args ? ` ${task.args}` : ""} on ${task.computeTarget?.machineName ?? "a removed runner"} (${task.mode}): ${task.status}${taskNote(task)}${taskFilesNote(task)}${taskReplyToNote(task)} — started for: ${startedFor(task)}`
     );
   }
   lines.push("", "## Decisions");
@@ -146,6 +146,12 @@ function taskFilesNote(task: { result: unknown }): string {
     file.skipped ? `${file.name} (not collected)` : file.name
   );
   return ` — files: ${names.join(", ")}`;
+}
+
+/** The message ref a task answers, or nothing. */
+function taskReplyToNote(task: { result: unknown }): string {
+  const replyTo = readTaskResult(task.result)?.replyTo;
+  return replyTo ? ` — answers ref ${replyTo}` : "";
 }
 
 type StartedForTask = {

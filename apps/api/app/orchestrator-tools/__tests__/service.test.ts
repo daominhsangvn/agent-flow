@@ -5,9 +5,11 @@ import {
   OrchestratorTurnEnd,
 } from "@repo/api/src/types/orchestrator";
 import { Status } from "@repo/api/src/types/result";
+import { RunnerCommandMode } from "@repo/api/src/types/runner-capabilities";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { orchestratorToolService } from "@/app/orchestrator-tools/service";
 import { hashOrchestratorToken } from "@/app/orchestrator-tools/token";
+import { TURN_SUPERSEDED_ERROR } from "@/lib/orchestrator/supersede";
 
 /**
  * The orchestrator's tools for one turn (docs/orchestrator.md): the token is
@@ -44,6 +46,7 @@ const mocks = vi.hoisted(() => ({
   getLoopAttachment: vi.fn(),
   hasAttachFile: true,
   taskRow: null as Row | null,
+  turnSuperseded: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => {
@@ -125,6 +128,10 @@ vi.mock("@/lib/loops/loop-state", () => ({
 vi.mock("@/lib/orchestrator/case-render", () => ({
   renderCase: () => Promise.resolve("# LD-7"),
 }));
+vi.mock("@/lib/orchestrator/supersede", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/orchestrator/supersede")>()),
+  turnSuperseded: mocks.turnSuperseded,
+}));
 vi.mock("@/lib/orchestrator/tasks", () => ({ startTask: mocks.startTask }));
 vi.mock("@/lib/orchestrator/task-cancel", () => ({
   cancelTask: mocks.cancelTask,
@@ -174,6 +181,7 @@ beforeEach(() => {
   mocks.taskCount = 0;
   mocks.hasAttachFile = true;
   mocks.taskRow = null;
+  mocks.turnSuperseded.mockResolvedValue(false);
   mocks.getLoopAttachment.mockResolvedValue(new Uint8Array([1]));
   mocks.anchor = null;
   mocks.anchorUpdates = [];
@@ -213,6 +221,42 @@ describe("orchestratorToolService", () => {
       OrchestratorToolName.WaitHuman,
       OrchestratorToolName.CloseCase,
     ]);
+  });
+
+  it("refuses task_run and reply once a newer message arrived", async () => {
+    mocks.turnSuperseded.mockResolvedValue(true);
+
+    const run = await orchestratorToolService.call(
+      TOKEN,
+      OrchestratorToolName.TaskRun,
+      { runner: "runner-qc", command: "/qa-test" }
+    );
+    const reply = await orchestratorToolService.call(
+      TOKEN,
+      OrchestratorToolName.Reply,
+      { text: "Answer." }
+    );
+
+    for (const result of [run, reply]) {
+      expect(result).toMatchObject({
+        ok: true,
+        value: { ok: false, error: TURN_SUPERSEDED_ERROR },
+      });
+    }
+    expect(mocks.startTask).not.toHaveBeenCalled();
+    expect(mocks.replyOnItem).not.toHaveBeenCalled();
+  });
+
+  it("still reads in a superseded turn", async () => {
+    mocks.turnSuperseded.mockResolvedValue(true);
+
+    const result = await orchestratorToolService.call(
+      TOKEN,
+      OrchestratorToolName.CaseGet,
+      {}
+    );
+
+    expect(result).toMatchObject({ ok: true, value: { ok: true } });
   });
 
   it("replies in the thread of the message it answers and keeps the reply as an anchor", async () => {
@@ -392,8 +436,8 @@ describe("orchestratorToolService", () => {
         id: TASK_ID,
         command: "/ba-requirement",
         args: "LD-7",
-        mode: "write",
-        status: "succeeded",
+        mode: RunnerCommandMode.Write,
+        status: OrchestratorTaskStatus.Succeeded,
         computeTarget: { machineName: "runner-1" },
         result: {
           reply: null,
@@ -506,10 +550,71 @@ describe("orchestratorToolService", () => {
       resumeTaskId: null,
       fork: false,
       files: [],
+      replyTo: null,
     });
     expect(result.ok && result.value).toMatchObject({
       ok: true,
       output: { taskId: TASK_ID, status: "running" },
+    });
+  });
+
+  it("task_run stores the message it answers", async () => {
+    mocks.latestMessage = { externalRef: "10500", payload: null };
+    mocks.startTask.mockResolvedValue({
+      ok: true,
+      value: {
+        taskId: TASK_ID,
+        status: "running",
+        runner: "runner-1",
+        error: null,
+        waiting: null,
+      },
+    });
+
+    await orchestratorToolService.call(TOKEN, OrchestratorToolName.TaskRun, {
+      runner: "runner-1",
+      command: "/ba-requirement",
+      replyTo: "10500",
+    });
+
+    expect(mocks.startTask).toHaveBeenCalledWith(
+      expect.objectContaining({ replyTo: "10500" })
+    );
+  });
+
+  it("task_run refuses an unknown replyTo", async () => {
+    mocks.latestMessage = null;
+
+    const result = await orchestratorToolService.call(
+      TOKEN,
+      OrchestratorToolName.TaskRun,
+      { runner: "runner-1", command: "/ba-requirement", replyTo: "999" }
+    );
+
+    expect(result.ok && result.value).toMatchObject({ ok: false });
+    expect(mocks.startTask).not.toHaveBeenCalled();
+  });
+
+  it("task_get shows replyTo", async () => {
+    mocks.taskRow = {
+      id: TASK_ID,
+      command: "/ba-requirement",
+      args: "",
+      mode: RunnerCommandMode.Write,
+      status: OrchestratorTaskStatus.Succeeded,
+      computeTarget: { machineName: "runner-1" },
+      result: { reply: "ok", error: null, replyTo: "10500" },
+    };
+
+    const result = await orchestratorToolService.call(
+      TOKEN,
+      OrchestratorToolName.TaskGet,
+      { taskId: TASK_ID }
+    );
+
+    expect(result.ok && result.value).toMatchObject({
+      ok: true,
+      output: { replyTo: "10500" },
     });
   });
 

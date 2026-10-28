@@ -4,7 +4,6 @@ import {
   OrchestratorConcurrency,
   OrchestratorConversationStatus,
   OrchestratorMessageKind,
-  OrchestratorMessageOrigin,
   OrchestratorTurnEnd,
   type OrchestratorTurnResult,
   OrchestratorTurnStatus,
@@ -22,6 +21,7 @@ import {
 } from "@/lib/loops/loop-desktop";
 import { renderCase } from "./case-render";
 import { readChannel } from "./channel";
+import { newerMessageWaiting, supersedeRequested } from "./supersede";
 import { advanceTasks } from "./tasks";
 import { buildTurnPrompt } from "./turn-prompt";
 import { readTurnTimeoutMs } from "./turn-usage";
@@ -158,7 +158,7 @@ async function step(conversationId: string, now: Date): Promise<void> {
  */
 async function supersedeIfAsked(turn: TurnRow, now: Date): Promise<void> {
   if (
-    supersedeRequested(turn) ||
+    supersedeRequested(turn.usage) ||
     readCancelRequest(turn) ||
     !turn.computeTargetId
   ) {
@@ -183,16 +183,7 @@ async function supersedeIfAsked(turn: TurnRow, now: Date): Promise<void> {
   const workflowId = conversation.case.workflowId;
   const [workflows, newer] = await Promise.all([
     loadOrchestratorWorkflows(conversation.organizationId, [workflowId]),
-    withDb((db) =>
-      db.orchestratorMessage.findFirst({
-        where: {
-          conversationId: turn.conversationId,
-          turnId: null,
-          origin: OrchestratorMessageOrigin.External,
-        },
-        select: { id: true },
-      })
-    ),
+    newerMessageWaiting(turn.conversationId),
   ]);
   const concurrency = workflows.get(workflowId)?.concurrency;
   if (concurrency !== OrchestratorConcurrency.Supersede || !newer) {
@@ -221,12 +212,6 @@ async function supersedeIfAsked(turn: TurnRow, now: Date): Promise<void> {
       error: error instanceof Error ? error.message : String(error),
     });
   }
-}
-
-const supersedeRequestSchema = z.object({ supersedeRequestedAt: z.string() });
-
-function supersedeRequested(turn: TurnRow): boolean {
-  return supersedeRequestSchema.safeParse(turn.usage).success;
 }
 
 /** An admin asked to stop the turn (`cancelTurn`): the turn is not retried. */
@@ -304,7 +289,7 @@ async function settleTurn(turn: TurnRow, now: Date): Promise<boolean> {
     });
     return true;
   }
-  if (supersedeRequested(turn)) {
+  if (supersedeRequested(turn.usage)) {
     await settleSuperseded(turn, progress.sessionId, now);
     return true;
   }

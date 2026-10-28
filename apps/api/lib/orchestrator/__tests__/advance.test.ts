@@ -19,6 +19,7 @@ import {
   advanceConversation,
   advanceDueConversations,
 } from "@/lib/orchestrator/advance";
+import { turnSuperseded } from "@/lib/orchestrator/supersede";
 
 /**
  * A conversation's turns (docs/orchestrator.md): one at a time, started once
@@ -453,6 +454,49 @@ describe("concurrency", () => {
       data: { nextWakeAt: NOW },
     });
   }
+
+  it("supersede: a message arriving mid-turn makes the turn's writes refused", async () => {
+    await startTurnThenWrite("supersede");
+
+    expect(
+      await turnSuperseded({
+        turnId: fake.turns[0]?.id as string,
+        organizationId: ORG_ID,
+        conversationId,
+      })
+    ).toBe(true);
+  });
+
+  it("queue: a message arriving mid-turn does not refuse the turn's writes", async () => {
+    await startTurnThenWrite("queue");
+
+    expect(
+      await turnSuperseded({
+        turnId: fake.turns[0]?.id as string,
+        organizationId: ORG_ID,
+        conversationId,
+      })
+    ).toBe(false);
+  });
+
+  it("supersede: writes are allowed while nothing newer waits", async () => {
+    await startTurnThenWrite("supersede");
+    const newer = fake.messages.find(
+      (message) => message.externalRef === "501"
+    );
+    await fake.db.orchestratorMessage.updateMany({
+      where: { id: newer?.id as string },
+      data: { turnId: fake.turns[0]?.id as string },
+    });
+
+    expect(
+      await turnSuperseded({
+        turnId: fake.turns[0]?.id as string,
+        organizationId: ORG_ID,
+        conversationId,
+      })
+    ).toBe(false);
+  });
 
   it("supersede: a newer message stops the running turn, once", async () => {
     await startTurnThenWrite("supersede");

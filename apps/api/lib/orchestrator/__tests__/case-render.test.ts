@@ -95,6 +95,16 @@ describe("renderCase task lines", () => {
     expect(await renderCase("c1")).toContain("— cancelled: label removed");
   });
 
+  it("shows which message a task answers", async () => {
+    mockCase([
+      task("t1", [], {
+        status: OrchestratorTaskStatus.Succeeded,
+        result: { reply: null, questions: [], error: null, replyTo: "10500" },
+      }),
+    ]);
+    expect(await renderCase("c1")).toContain("answers ref 10500");
+  });
+
   it("ends a task line with the names of its files", async () => {
     mockCase([
       task("t1", [], {
